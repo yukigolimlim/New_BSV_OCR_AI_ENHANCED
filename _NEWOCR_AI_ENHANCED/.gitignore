@@ -1,0 +1,26 @@
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Environment / secrets ──────────────────────────────────────────────────────
+.env
+*.env
+
+chroma_db/
+*.sqlite3
+*.bin
+# ── Temp files created during OCR processing ──────────────────────────────────
+temp_preprocessed.jpg
+temp_preprocessed_gray.jpg
+tmp_pg_*.jpg
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE folders ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.db

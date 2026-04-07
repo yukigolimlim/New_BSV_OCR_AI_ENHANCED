@@ -1,0 +1,763 @@
+{
+  "bank_name": "Banco San Vicente",
+  "catalog_title": "Loans Product Catalog",
+  "location": "Camarines Norte, Philippines",
+  "categories": [
+    {
+      "category_id": "unsecured",
+      "category_name": "Unsecured Loans",
+      "products": [
+        {
+          "product_id": "salary_loan",
+          "product_name": "Salary Loan",
+          "purpose": null,
+          "qualification": "Regular government employees with good credit standing and capacity to pay",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "23%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "24%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "25%", "service_charge": "5%"}
+          ],
+          "collateral": ["ATM", "Checking Account (PDC)"],
+          "requirements": [
+            "Appointment",
+            "Service Record",
+            "ITR",
+            "Latest payslip",
+            "Proof of Address",
+            "SALN",
+            "CI/BI",
+            "Barangay Clearance",
+            "Cash Flow",
+            "Bank Statement",
+            "Court clearance (for loans ≥₱100,000)",
+            "2 Valid IDs",
+            "Picture (webcam)"
+          ],
+          "loan_amount": {
+            "first_loan_maximum": 50000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "pension_loan",
+          "product_name": "Pension Loan",
+          "purpose": null,
+          "qualification": "SSS/GSIS/PVAO pensioners; age limits: up to 64 yrs (monthly pension × 10 mos), ≥65 yrs (monthly pension × 6 mos); max term 1 year",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "23%", "service_charge": "5%"}
+          ],
+          "collateral": ["ATM", "1 co-maker (pensioner/immediate family member with income)"],
+          "requirements": [
+            "Proof of Pension",
+            "Bank Statement",
+            "CI/BI",
+            "Cash Flow",
+            "Valid ID",
+            "Proof of Address"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": "Pension loan max 1 year; no credit life insurance for first 6 months"
+        },
+        {
+          "product_id": "business_booster_loan",
+          "product_name": "Business Booster Loan",
+          "purpose": "Working capital and other business needs",
+          "qualification": "Entrepreneurs with MSMEs: profitable ≥6 months, positive cash flow ≥3 months, feasible business opportunity, operating within Camarines Norte",
+          "interest_rates": [
+            {"term": "6 months", "interest_rate": "2.5% per month", "service_charge": "5% per term"},
+            {"term": "1 year", "interest_rate": "2.5% per month", "service_charge": "8% per term"}
+          ],
+          "collateral": {
+            "tier_1": {
+              "range": {"min": 50000, "max": 300000},
+              "items": ["PhilGuarantee", "Security agreement on personal properties", "10% amortized savings"]
+            },
+            "tier_2": {
+              "range": {"min": 300001, "max": 500000},
+              "items": ["PhilGuarantee", "Security agreement", "Hold-out deposit", "Optional PDC"]
+            }
+          },
+          "requirements": [
+            "2 Valid IDs (3 specimen signatures)",
+            "Photocopy of 1 valid ID of spouse (3 specimen signatures)",
+            "Proof of address (ID/barangay clearance/billing sample)",
+            "Barangay clearance",
+            "Picture of borrower",
+            "Picture of spouse",
+            "Police clearance",
+            "Interview (Barangay, neighbors, suppliers)",
+            "CIBI & Cashflow"
+          ],
+          "loan_amount": {
+            "minimum": 50000,
+            "maximum": 500000,
+            "calculation": "Loanable ≤ twice borrower's total current assets + marketable serialized assets",
+            "currency": "PHP"
+          },
+          "mode_of_payment": "Weekly or monthly based on client's cashflow schedule",
+          "other_notes": "No pre-term; ₱100 savings"
+        },
+        {
+          "product_id": "microfinance_loan",
+          "product_name": "Microfinance Loan",
+          "purpose": "Additional working capital (start-up not allowed)",
+          "qualification": "Enterprising applicants with good credit history / no negative record; ≥1 year business experience; business located in Camarines Norte; permanent residency ≥2 years (if renting, ≥5 years at address)",
+          "interest_rates": [
+            {"term": "6 months", "interest_rate": "30%", "service_charge": "9%"},
+            {"term": "1 year", "interest_rate": "30%", "service_charge": "18%"}
+          ],
+          "collateral": {
+            "tier_1": {
+              "range": {"min": 5000, "max": 50000},
+              "items": ["Serialized assets", "1 co-maker", "Security agreement", "VOS", "Deed of assignment of deposits"]
+            },
+            "tier_2": {
+              "range": {"min": 50001, "max": 100000},
+              "items": ["Serialized assets", "1 co-maker", "Security agreement", "VOS", "Deed of assignment of deposits", "REM or OR/CR or PDC", "10% savings"]
+            },
+            "tier_3": {
+              "range": {"min": 100001, "max": 300000},
+              "items": ["1 co-maker (relative)", "REM or Chattel & PDC", "or Chattel & 10% savings"]
+            }
+          },
+          "requirements": [
+            "3 pcs 1×1 pictures",
+            "Valid IDs / Barangay certificate",
+            "Barangay / Municipal business permit",
+            "CIBI",
+            "Cashflow"
+          ],
+          "loan_amount": {
+            "first_cycle": {"min": 10000, "max": 50000},
+            "succeeding_cycles": "50% increase",
+            "maximum": 300000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "CI at barangay"
+        },
+        {
+          "product_id": "pineapple_crop_financing",
+          "product_name": "Pineapple Crop Financing",
+          "purpose": "Finance pineapple inventory and other personal assets",
+          "qualification": "Farmer with ≥1 year cycle in pineapple farming",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "20%", "service_charge": "5%"}
+          ],
+          "collateral": [
+            "AGFP Guarantee",
+            "Crop Insurance",
+            "Deed of assignment of deposit",
+            "Security agreement of pineapple inventory and other personal assets"
+          ],
+          "requirements": [
+            "Disbursement & monitoring (advance interest, 4 tranches)",
+            "Photocopy of 2 valid IDs (client and co-makers)",
+            "2 pcs 2×2 picture (client)",
+            "1 pc 2×2 picture of spouse (if applicable)",
+            "Proof of address",
+            "Optional: Deed of assignment of title/tax declaration, tenancy agreement"
+          ],
+          "loan_amount": {
+            "calculation": "Not more than 80% of farmer's target output",
+            "currency": "PHP"
+          },
+          "mode_of_payment": "Lumpsum at end of cycle (1 year)",
+          "other_notes": "Fund disbursement schedule; verification from Municipal Agricultural Office, barangay, neighbor; check soil quality, cross-planting"
+        },
+        {
+          "product_id": "tol",
+          "product_name": "Tricycle Operator's Loan (TOL)",
+          "purpose": "Various needs aside from business capital (collateral security)",
+          "qualification": "Good credit standing, capacity to pay",
+          "interest_rates": [
+            {"term": "3-6 months", "interest_rate": "27%", "service_charge": "5%"}
+          ],
+          "collateral": ["OR/CR and/or Franchise (for safekeeping only)"],
+          "requirements": [
+            "Barangay clearance",
+            "Police clearance",
+            "Proof of address",
+            "Voter's affidavit",
+            "Stencil of chassis & engine",
+            "Photo 3 pcs 2×2",
+            "ITR/TIN & SALN",
+            "Contractual savings",
+            "Proof of income"
+          ],
+          "loan_amount": {
+            "or_cr_only": {"maximum": 10000},
+            "franchise_only": {"maximum": 50000},
+            "or_cr_and_franchise": {"maximum": 60000},
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "Extension of term subject to credit committee approval"
+        },
+        {
+          "product_id": "adl",
+          "product_name": "Asawa ng Driver Loan (ADL)",
+          "purpose": "Start-up / existing business",
+          "qualification": "PUV operator (tricycle, jeepney, bus, van)",
+          "interest_rates": [
+            {"term": "max 1 year", "interest_rate": "27%", "service_charge": "5%"}
+          ],
+          "collateral": ["OR/CR and Franchise for safekeeping"],
+          "requirements": [
+            "Barangay clearance",
+            "Police clearance",
+            "Proof of address",
+            "Voter's affidavit",
+            "Stencil",
+            "Photo",
+            "ITR/TIN & SALN",
+            "Contractual savings",
+            "Proof of income"
+          ],
+          "loan_amount": {
+            "maximum": 50000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": "Daily or weekly depending on cashflow",
+          "other_notes": "Husband serves as co-borrower; re-availment allowed after 60% payment"
+        },
+        {
+          "product_id": "quick_cash_loan",
+          "product_name": "Quick Cash Loan",
+          "purpose": "Immediate cash needs",
+          "qualification": "Private or PUV operator",
+          "interest_rates": [
+            {"term": "max 6 months", "interest_rate": "27%", "service_charge": "5%"}
+          ],
+          "collateral": ["OR/CR", "TITLE (for safekeeping only)"],
+          "requirements": {
+            "for_or_cr": [
+              "Brgy clearance",
+              "Police clearance",
+              "Proof of address",
+              "Voter's affidavit",
+              "Driver's license",
+              "Stencil",
+              "3 pcs 2×2 picture",
+              "ITR/TIN"
+            ],
+            "for_title": [
+              "Proof of address",
+              "3 pcs 2×2",
+              "ITR/TIN",
+              "Same as REM requirements"
+            ]
+          },
+          "loan_amount": {
+            "general": "max 40% of appraised value or max ₱100,000 (whichever lower)",
+            "tricycle_with_franchise_other_municipality": {"maximum": 10000},
+            "jeepney_van_bus": "max 40% of appraised value",
+            "private_car_truck": {"maximum": 100000},
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "10% contractual saving if PUV; if higher amount needed, use usual chattel loan"
+        },
+        {
+          "product_id": "gadget_loan",
+          "product_name": "Gadget Loan",
+          "purpose": "Finance gadget and IT equipment",
+          "qualification": [
+            "Existing clients of Regular/Microfinance with good payment history",
+            "New regular government/private employees residing in Camarines Norte",
+            "New self-employed residing in Camarines Norte"
+          ],
+          "interest_rates": [
+            {"term": "6-12 months", "interest_rate": "30%", "service_charge": "5%"}
+          ],
+          "collateral": ["30% Equity", "Financed IT equipment/gadget"],
+          "requirements": [
+            "Quotation from store",
+            "Proof of income (payslip, company ID, employer contact)",
+            "Proof of address (billing)",
+            "Proof of support (remittances, relation)",
+            "Proof of business registration",
+            "Record of sales & purchases",
+            "Photocopy of contracts",
+            "Latest bank statement",
+            "Proof of purchase (after purchase)"
+          ],
+          "loan_amount": {
+            "minimum": 10000,
+            "maximum": 80000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "generators_loan",
+          "product_name": "Generator's Loan",
+          "purpose": "Purchase generator for personal/business use",
+          "qualification": "New/existing clients with established business or regular stable income, residing in Camarines Norte",
+          "interest_rates": [
+            {"term": "3-12 months", "interest_rate": "25%", "service_charge": "5%"},
+            {"term": "3-18 months", "interest_rate": "30%", "service_charge": "5%"}
+          ],
+          "collateral": ["Equity (varies)", "VOS"],
+          "requirements": [
+            "Proof of income (payslip)",
+            "Proof of address (billing)",
+            "Proof of support (remittances)",
+            "Quotation from store (price, model, warranty, DP, monthly installment)",
+            "1 Government ID"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": "Below ₱75k → basic savings; above ₱75k → regular savings"
+        }
+      ]
+    },
+    {
+      "category_id": "secured",
+      "category_name": "Secured Loans",
+      "products": [
+        {
+          "product_id": "multipurpose_loan_rem",
+          "product_name": "Multipurpose Loan (REM)",
+          "purpose": "Personal used",
+          "qualification": null,
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "20%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "22%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "23%", "service_charge": "5%"}
+          ],
+          "collateral": {
+            "titled_property": [
+              "Certificate of Title",
+              "Tax Declaration",
+              "Realty Tax Receipt",
+              "Certification from Municipal Treasurer (5 years)",
+              "Survey plan",
+              "Deed of sale/donation",
+              "Property clearance from clerk of court",
+              "Agricultural clearance from MARO",
+              "Certified true copy of title from ROD"
+            ],
+            "tax_declaration_property": [
+              "Tax Declaration",
+              "Affidavit of adjoining owners",
+              "Certification from CENRO",
+              "Certified true copies of previous tax declaration",
+              "Certification from Assessor that property is free from liens",
+              "Certification from ROD that no title issued",
+              "Certification from Bureau of Land (cadastral survey)",
+              "MARO clearance"
+            ]
+          },
+          "requirements": [
+            "Tax Declaration (if untitled)",
+            "KYC: Photocopy of 2 valid IDs (3 specimen signatures)",
+            "Photocopy of 1 valid ID of spouse (3 specimen signatures)",
+            "Barangay clearance",
+            "Proof of address (ID/barangay clearance/billing sample)",
+            "Picture of spouse",
+            "Picture of borrower (webcam)",
+            "CIBI & Cashflow"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": "Residential with fire insurance; processing fee (ROD registration allocation)"
+        },
+        {
+          "product_id": "revolving_capital_line",
+          "product_name": "Revolving Capital Line (RCL)",
+          "purpose": "Working capital for SMEs",
+          "qualification": "Good credit history, established business, at least 3 years business experience, purpose working capital only",
+          "interest_rates": [
+            {"term": "not specified", "interest_rate": "12% to 18%", "service_charge": "5%"}
+          ],
+          "collateral": "Same as multi-purpose loan (fully secured by Real Estate Mortgage)",
+          "requirements": "Same documentary requirements as multi-purpose loan",
+          "loan_amount": {
+            "minimum": 200000,
+            "maximum": "Based on loan value of collateral and borrower's cashflow",
+            "currency": "PHP"
+          },
+          "mode_of_payment": [
+            "Monthly amortization with min 10% partial payment on principal per term (incl. interest)",
+            "Equal amortization per term",
+            "Weekly payment with min 10% partial payment",
+            "Monthly interest only"
+          ],
+          "other_notes": "Loan term max 5 years; interest rate varies with credit scoring, CI/BI, cashflow; client must have 2 years Financial Statement & ITR; same deductions as multi-purpose"
+        },
+        {
+          "product_id": "business_loan_rem",
+          "product_name": "Business Loan (REM)",
+          "purpose": "Working capital for SMEs",
+          "qualification": "Good credit history, established business, working capital only, with existing business permits, ITR, FS",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "14%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "16%", "service_charge": "5%"},
+            {"term": "3-5 years", "interest_rate": "18%", "service_charge": "5%"}
+          ],
+          "collateral": null,
+          "requirements": "Same as multi-purpose loan",
+          "loan_amount": {
+            "minimum": null,
+            "maximum": "Based on collateral value and capacity; a portion may be clean",
+            "currency": "PHP"
+          },
+          "mode_of_payment": "Equal amortization",
+          "other_notes": "Loan term max 5 years; client must have 2 years Financial Statement & ITR; same deductions as multi-purpose"
+        },
+        {
+          "product_id": "housing_loan_secured",
+          "product_name": "Housing Loan",
+          "purpose": null,
+          "qualification": null,
+          "interest_rates": [
+            {"term": "5-15 years", "interest_rate": "12%", "service_charge": "7%"}
+          ],
+          "collateral": "REM, Title Property (TCT/OCT) or Tax Declaration (client must have existing lot; if no lot, 30% equity)",
+          "requirements": [
+            "CI/BI & Cash Flow",
+            "Building Plan",
+            "Bill of Materials",
+            "Release of fund staggered",
+            "Constant monitoring"
+          ],
+          "loan_amount": {
+            "minimum": 250000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "Staggered release"
+        },
+        {
+          "product_id": "real_estate_financing",
+          "product_name": "Real Estate Financing",
+          "purpose": "Purchase of real estate (commercial/non-commercial)",
+          "qualification": null,
+          "interest_rates": [
+            {"term": "5 years", "interest_rate": "14%", "service_charge": "7%"},
+            {"term": "15 years", "interest_rate": "16%", "service_charge": "7%"}
+          ],
+          "collateral": {
+            "types": [
+              "Commercial lot/building",
+              "Residential house/lot",
+              "Agricultural lot"
+            ],
+            "equity": {
+              "commercial": "10%",
+              "non_commercial": "min 20%"
+            }
+          },
+          "requirements": [
+            "Same REM requirements",
+            "Letter of Guarantee",
+            "CI/BI & Cash Flow"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": "Transfer costs shouldered by client"
+        },
+        {
+          "product_id": "motorcycle_loan",
+          "product_name": "Motorcycle Loan",
+          "purpose": "Purchase of motorcycle for business/personal use",
+          "qualification": "Regular government employee, Entrepreneurs",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "22%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "23%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "24%", "service_charge": "5%"}
+          ],
+          "collateral": "Prerequisite: Quotation from dealer; OR/CR (chattel mortgage)",
+          "requirements": [
+            "Photocopy of Driver's license",
+            "Barangay clearance",
+            "Proof of address (water/electric bill)",
+            "Proof of income (payslip)",
+            "If with business: proof of business registration, record of sales/purchases, photocopy of contracts, latest bank statement (3 months)"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "tricycle_franchise_financing",
+          "product_name": "Tricycle & Franchise Financing (Pampasada loan)",
+          "purpose": "Purchase tricycle & franchise",
+          "qualification": "Good credit standing, capacity to pay",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "22%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "23%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "24%", "service_charge": "5%"}
+          ],
+          "collateral": ["OR/CR (chattel mortgage)", "Franchise"],
+          "requirements": [
+            "Barangay clearance",
+            "Police clearance",
+            "Minimum equity (20%)",
+            "Proof of address and income",
+            "Voter's affidavit",
+            "Photocopy of Driver's license",
+            "Stencil of chassis & engine",
+            "Photo 3 pcs (2×2)",
+            "ITR/TIN & SALN",
+            "Proof of income",
+            "If employed: latest 3 months payslip",
+            "If business: proof of registration, record of sales/purchases, photocopy of contracts, latest bank statement"
+          ],
+          "loan_amount": {
+            "franchise_value": {
+              "daet": 170000,
+              "labo": 10000
+            },
+            "vehicle_sidecar": "70% of appraisal",
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "Only financing of franchise from Daet & Labo accepted; no mortgage"
+        },
+        {
+          "product_id": "pampasada_loan_non_financing",
+          "product_name": "Pampasada Loan (Non-Financing)",
+          "purpose": "Other purposes (medical, personal, business capital)",
+          "qualification": "Good credit standing, capacity to pay",
+          "interest_rates": [
+            {"term": "1 year", "interest_rate": "22%", "service_charge": "5%"},
+            {"term": "2 years", "interest_rate": "23%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "24%", "service_charge": "5%"}
+          ],
+          "collateral": ["OR/CR (Chattel Mortgage)", "Franchise"],
+          "requirements": [
+            "Barangay clearance",
+            "Police clearance",
+            "Proof of address and income",
+            "Voter's affidavit",
+            "Photocopy of Driver's license",
+            "Stencil of chassis",
+            "Photo 3 pcs (2×2)",
+            "ITR/TIN & SALN",
+            "Proof of income",
+            "If employed: latest 3 months payslip",
+            "If business: proof of registration, record of sales/purchases, photocopy of contracts, latest bank statement"
+          ],
+          "loan_amount": {
+            "franchise_value": {
+              "daet": 130000,
+              "labo": 10000
+            },
+            "vehicle_sidecar": "70% of appraisal",
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": "No mortgage; encumbrance up to 3 years"
+        },
+        {
+          "product_id": "truck_loan",
+          "product_name": "Truck Loan",
+          "purpose": "Purchase of truck",
+          "qualification": "Good credit standing, capacity to pay",
+          "interest_rates": [
+            {"term": "not specified", "interest_rate": "18%", "service_charge": "5%"},
+            {"note": "For units below ₱300k use prevailing chattel rate"},
+            {"term": "alternative", "interest_rate": "21%", "service_charge": "0%"}
+          ],
+          "collateral": "OR/CR (Chattel Mortgage) for encumbrance, Minimum equity 25%",
+          "requirements": [
+            "Proof of address and income",
+            "Barangay clearance",
+            "Stencil of chassis & engine",
+            "Photo 3 pcs (2×2)",
+            "ITR/TIN & SALN",
+            "PDC",
+            "If employed: latest 3 months payslip",
+            "If business: proof of registration, record of sales/purchases, photocopy of contracts, financial statement, latest bank statement (3 months)"
+          ],
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "personal_vehicle_financing",
+          "product_name": "Personal Vehicle Financing of Private Unit",
+          "purpose": "Purchase of vehicle for private use",
+          "qualification": null,
+          "interest_rates": [
+            {"term": "5 years", "interest_rate": "18%", "service_charge": "5%"},
+            {"term": "3 years", "interest_rate": "18%", "service_charge": "5%"}
+          ],
+          "equity": {
+            "brand_new": "20%",
+            "second_hand": "30%"
+          },
+          "collateral": "OR/CR (Chattel Mortgage) for encumbrance",
+          "requirements": "Same as Truck Loan (Proof of address, income, Barangay clearance, Stencil, Photo, ITR/TIN & SALN, PDC)",
+          "loan_amount": null,
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "hauler_financing",
+          "product_name": "Hauler Financing",
+          "purpose": "Finance hauling needs of coconut farmers/rural folk",
+          "qualification": "18–65 y/o, positive cash flow, at least 1 year farming experience as livelihood",
+          "interest_rates": [
+            {"term": "not specified", "interest_rate": "20%", "service_charge": "3.5%"}
+          ],
+          "collateral": "10% Equity, Security agreement OR/CR of motorcycle, inventory, other personal properties; Title to meet loan amount",
+          "requirements": [
+            "Proof of income (if employed: latest 3 months payslip; if business: proof of business registration, record of sales/purchases, photocopy of contracts, latest bank statement)",
+            "Proof of address (billings)",
+            "Proof of support (remittances, relation)",
+            "Proof of registration (hauler registration / Deed of Undertaking)",
+            "Verification from DAR/PCA",
+            "Valid ID of spouse (1 gov't ID) with 3 specimen signatures",
+            "Barangay clearance"
+          ],
+          "loan_amount": {
+            "maximum": 150000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": "1 cycle = 45 days",
+          "other_notes": null
+        }
+      ]
+    },
+    {
+      "category_id": "fringe_benefit",
+      "category_name": "Fringe Benefit Loans",
+      "products": [
+        {
+          "product_id": "housing_loan_fringe",
+          "product_name": "Housing Loan",
+          "purpose": null,
+          "qualification": "5–10 years in service",
+          "interest_rates": [
+            {"term": "10 years", "interest_rate": "7%", "service_charge": "0%"},
+            {"term": "15 years", "interest_rate": "9%", "service_charge": "0%"}
+          ],
+          "collateral": "REM",
+          "requirements": null,
+          "loan_amount": {
+            "rank_and_file": {"maximum": 800000},
+            "officers": {"maximum": 1200000},
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "transportation_equipment",
+          "product_name": "Transportation Equipment",
+          "purpose": null,
+          "qualification": "5 years in service",
+          "interest_rates": [
+            {"term": "5 years", "interest_rate": "12%", "service_charge": "0%"}
+          ],
+          "collateral": "Chattel Mortgage",
+          "requirements": null,
+          "loan_amount": {
+            "amount": 100000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "household_ffe",
+          "product_name": "Household FFE",
+          "purpose": null,
+          "qualification": "3 years in service",
+          "interest_rates": [
+            {"term": "3 years", "interest_rate": "12%", "service_charge": "0%"}
+          ],
+          "collateral": "Security Agreement, VOS, 1 co-maker (co-employee)",
+          "requirements": null,
+          "loan_amount": {
+            "amount": 50000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "emergency_loan",
+          "product_name": "Emergency Loan",
+          "purpose": null,
+          "qualification": "2–3 years in service",
+          "interest_rates": [
+            {"term": "3 years", "interest_rate": "12%", "service_charge": "0%"}
+          ],
+          "collateral": "1 co-maker (co-employee)",
+          "requirements": null,
+          "loan_amount": {
+            "calculation": "₱10,000 per year of service",
+            "maximum": 75000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        },
+        {
+          "product_id": "medical_dental_care",
+          "product_name": "Medical & Dental Care",
+          "purpose": null,
+          "qualification": "5 years minimum in service",
+          "interest_rates": null,
+          "collateral": "Reimbursement of actual expenses (doctor, medicines, lab tests, eye check-up, glasses, dental)",
+          "requirements": null,
+          "loan_amount": {
+            "officers": 10000,
+            "rank_and_file": 5000,
+            "currency": "PHP"
+          },
+          "mode_of_payment": null,
+          "other_notes": null
+        }
+      ]
+    }
+  ],
+  "additional_notes": {
+    "interest_rate_service_charge": "INT = annual interest rate; SC = service charge (likely one-time or per term).",
+    "collateral": "Varies widely – from ATM/checking account to real estate, chattel, or personal property.",
+    "requirements": "Many include government IDs, income proofs, business documents, and clearances.",
+    "loan_amount": "Often capped or based on capacity/collateral value.",
+    "mode_of_payment": "Some specify daily/weekly/monthly/lumpsum; others not indicated.",
+    "other_notes": "Include restrictions (e.g., no pre-term, specific municipalities, required savings accounts)."
+  },
+  "abbreviations": {
+    "INT": "Interest Rate",
+    "SC": "Service Charge",
+    "ATM": "Automated Teller Machine",
+    "PDC": "Post-Dated Checks",
+    "ITR": "Income Tax Return",
+    "SALN": "Statement of Assets, Liabilities, and Net Worth",
+    "CI/BI": "Credit Investigation / Background Investigation",
+    "SSS": "Social Security System",
+    "GSIS": "Government Service Insurance System",
+    "PVAO": "Philippine Veterans Affairs Office",
+    "MSME": "Micro, Small and Medium Enterprises",
+    "PhilGuarantee": "Philippine Guarantee Corporation",
+    "VOS": "Voluntary Offer to Sell",
+    "REM": "Real Estate Mortgage",
+    "OR/CR": "Official Receipt / Certificate of Registration",
+    "CIBI": "Credit Information Bureau Inc.",
+    "AGFP": "Agricultural Guarantee Fund Pool",
+    "TCT": "Transfer Certificate of Title",
+    "OCT": "Original Certificate of Title",
+    "ROD": "Registry of Deeds",
+    "MARO": "Municipal Agrarian Reform Officer",
+    "CENRO": "Community Environment and Natural Resources Office",
+    "DAR": "Department of Agrarian Reform",
+    "PCA": "Philippine Coconut Authority",
+    "FFE": "Furniture, Fixtures, and Equipment",
+    "PUV": "Public Utility Vehicle",
+    "ADL": "Asawa ng Driver Loan",
+    "TOL": "Tricycle Operator's Loan",
+    "RCL": "Revolving Capital Line",
+    "KYC": "Know Your Customer"
+  }
+}

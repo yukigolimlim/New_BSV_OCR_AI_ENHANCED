@@ -1,0 +1,93 @@
+{
+  "declarant_name": "DELA CRUZ MARIA S",
+  "position": "Teacher III",
+  "agency": "DepEd - Daet Central School",
+  "office_address": "Vinzons Ave, Daet, Camarines Norte",
+  "saln_year": "2025",
+  "spouse_name": "DELA CRUZ JOSE R",
+  "spouse_position": "Farmer/Self-employed",
+  "real_properties": [
+    {
+      "description": "Residential House and Lot",
+      "kind": "Residential",
+      "location": "Brgy Lag-on, Daet, Camarines Norte",
+      "area": "120 sqm",
+      "assessed_value": 185000,
+      "current_fair_value": 850000,
+      "year_acquired": "2015",
+      "mode_of_acquisition": "Purchase",
+      "acquisition_cost": 750000,
+      "current_value": 850000
+    }
+  ],
+  "personal_properties": [
+    {
+      "description": "Personal Belongings/Clothing",
+      "year_acquired": "Various Years",
+      "acquisition_cost": 45000,
+      "current_value": 45000
+    },
+    {
+      "description": "Computer/Laptop/Cellphone",
+      "year_acquired": "2023",
+      "acquisition_cost": 55000,
+      "current_value": 55000
+    },
+    {
+      "description": "Appliances/Furniture",
+      "year_acquired": "Various Years",
+      "acquisition_cost": 80000,
+      "current_value": 80000
+    },
+    {
+      "description": "1 Motorcycle",
+      "year_acquired": "2019",
+      "acquisition_cost": 65000,
+      "current_value": 65000
+    }
+  ],
+  "cash_on_hand": 15000,
+  "cash_in_bank": 42500,
+  "cash_on_hand_and_in_bank": null,
+  "receivables": null,
+  "business_interests": null,
+  "total_assets": 1052500,
+  "liabilities": [
+    {
+      "nature": "Housing Loan",
+      "creditor": "PAGIBIG",
+      "outstanding_balance": 412000
+    },
+    {
+      "nature": "Salary Loan",
+      "creditor": "GSIS",
+      "outstanding_balance": 185420
+    },
+    {
+      "nature": "Salary Loan",
+      "creditor": "LANDBANK",
+      "outstanding_balance": 52300
+    }
+  ],
+  "financial_liabilities": null,
+  "personal_liabilities": null,
+  "total_liabilities": 649720,
+  "net_worth": 402780,
+  "children": [
+    {
+      "name": "Dela Cruz Angelo R",
+      "date_of_birth": null,
+      "age": 16
+    },
+    {
+      "name": "Dela Cruz Patricia R",
+      "date_of_birth": null,
+      "age": 13
+    },
+    {
+      "name": "Dela Cruz Miguel R",
+      "date_of_birth": null,
+      "age": 8
+    }
+  ]
+}

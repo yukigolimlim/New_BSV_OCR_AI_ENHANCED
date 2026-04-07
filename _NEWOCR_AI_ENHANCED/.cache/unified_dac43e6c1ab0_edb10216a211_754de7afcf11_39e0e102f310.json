@@ -1,0 +1,161 @@
+{
+  "cic": {},
+  "payslip": {
+    "employee_name": "DELA CRUZ, MARIA S.",
+    "employer_name": "Department of Education - SCHOOLS DIVISION OF CAMARINES NORTE",
+    "position": "TEACHER III",
+    "department": "Daet Central School",
+    "period_from": "01/01/2025",
+    "period_to": "12/31/2025",
+    "pay_date": null,
+    "period_count": 1,
+    "date_of_birth": null,
+    "pay_periods": [],
+    "monthly_rate": 27000,
+    "basic_pay": 27000,
+    "allowances": 2000,
+    "gross_pay": 29000,
+    "gsis_deduction": 756,
+    "sss_deduction": null,
+    "philhealth_deduction": 337.5,
+    "pagibig_deduction": 100,
+    "tax_deduction": 1374.41,
+    "other_deductions": null,
+    "total_deductions": 2567.91,
+    "net_pay": 26432.09,
+    "tin": null,
+    "sss_number": null,
+    "philhealth_number": null,
+    "pagibig_number": null,
+    "business_income": null,
+    "rental_income": null,
+    "remittance_income": null,
+    "other_income_label": null,
+    "other_income_amount": null
+  },
+  "saln": {
+    "declarant_name": "DELA CRUZ Maria S",
+    "position": "Teacher III",
+    "agency": "DepEd - Daet Central School",
+    "office_address": "Vinzons Ave, Daet, Camarines Norte",
+    "saln_year": 2025,
+    "spouse_name": "DELA CRUZ Jose R",
+    "spouse_position": "Farmer/Self-employed",
+    "real_properties": [
+      {
+        "description": "Residential House and Lot",
+        "kind": "Residential",
+        "location": "Brgy Lag-on, Daet, Camarines Norte",
+        "current_fair_market_value": 850000,
+        "acquisition_cost": 750000,
+        "year_acquired": 2015,
+        "assessed_value": 185000
+      }
+    ],
+    "personal_properties": [
+      {
+        "description": "Personal Belongings/Clothing",
+        "year_acquired": "Various Years",
+        "acquisition_cost": 45000,
+        "current_value": 45000
+      },
+      {
+        "description": "Computer/Laptop/Cellphone",
+        "year_acquired": 2023,
+        "acquisition_cost": 55000,
+        "current_value": 55000
+      },
+      {
+        "description": "Appliances/Furniture",
+        "year_acquired": "Various Years",
+        "acquisition_cost": 80000,
+        "current_value": 80000
+      },
+      {
+        "description": "1 Motorcycle",
+        "year_acquired": 2019,
+        "acquisition_cost": 65000,
+        "current_value": 65000
+      }
+    ],
+    "cash_on_hand": 15000,
+    "cash_in_bank": 42500,
+    "cash_on_hand_and_in_bank": null,
+    "receivables": null,
+    "business_interests": null,
+    "total_assets": 1052500,
+    "liabilities": [
+      {
+        "nature": "Housing Loan",
+        "creditor": "PAGIBIG",
+        "outstanding_balance": 412000
+      },
+      {
+        "nature": "Salary Loan",
+        "creditor": "GSIS",
+        "outstanding_balance": 185420
+      },
+      {
+        "nature": "Salary Loan",
+        "creditor": "LANDBANK",
+        "outstanding_balance": 52300
+      }
+    ],
+    "financial_liabilities": null,
+    "personal_liabilities": null,
+    "total_liabilities": 649720,
+    "net_worth": 402780,
+    "children": [
+      {
+        "name": "Dela Cruz Angelo R",
+        "date_of_birth": null,
+        "age": 16
+      },
+      {
+        "name": "Dela Cruz Patricia R",
+        "date_of_birth": null,
+        "age": 13
+      },
+      {
+        "name": "Dela Cruz Miguel R",
+        "date_of_birth": null,
+        "age": 8
+      }
+    ]
+  },
+  "itr": {
+    "taxpayer_name": "DELA CRUZ, MARIA S.",
+    "tin": "12345677890000",
+    "tax_year": 2025,
+    "form_type": "2316",
+    "registered_address": "Brgy Lag-on, Daet, Camarines Norte",
+    "zip_code": "4600",
+    "taxpayer_type": null,
+    "civil_status": null,
+    "citizenship": null,
+    "date_of_birth": "06/15/1985",
+    "business_name": null,
+    "business_address": null,
+    "business_tin": null,
+    "line_of_business": null,
+    "gross_compensation_income": 648000,
+    "gross_business_income": null,
+    "gross_professional_income": null,
+    "total_gross_income": 648000,
+    "gross_annual_income": 648000,
+    "gross_monthly_income": 54000,
+    "net_taxable_income": 337455.8,
+    "net_pay": null,
+    "allowable_deductions": 310544.2,
+    "tax_due": 16492.9,
+    "tax_credits": null,
+    "tax_paid": 16492.9,
+    "tax_still_due": null,
+    "surcharge": null,
+    "interest": null,
+    "compromise": null,
+    "total_amount_payable": null,
+    "spouse_name": null,
+    "spouse_tin": null
+  }
+}

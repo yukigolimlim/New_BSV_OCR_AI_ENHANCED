@@ -1,0 +1,46 @@
+{
+  "employee_name": "PSSg RYAN IBITA SAMONTE",
+  "employer_name": "NATIONAL HEADQUARTERS, PHILIPPINE NATIONAL POLICE",
+  "position": "PSSg",
+  "department": null,
+  "period_from": "DEC 2025",
+  "period_to": "FEB 2026",
+  "pay_date": null,
+  "period_count": 3,
+  "pay_periods": [
+    {
+      "period": "FEB 2026",
+      "gross_pay": 53821.2,
+      "total_deductions": 37401.2,
+      "net_pay": 16420.0
+    },
+    {
+      "period": "JAN 2026",
+      "gross_pay": 46728.0,
+      "total_deductions": 37077.99,
+      "net_pay": 9650.01
+    },
+    {
+      "period": "DEC 2025",
+      "gross_pay": 46728.0,
+      "total_deductions": 37077.99,
+      "net_pay": 9650.01
+    }
+  ],
+  "monthly_rate": 32649.33,
+  "basic_pay": 32649.33,
+  "allowances": 16443.07,
+  "gross_pay": 49092.4,
+  "gsis_deduction": 6.0,
+  "sss_deduction": null,
+  "philhealth_deduction": 816.23,
+  "pagibig_deduction": 200.0,
+  "tax_deduction": 1619.96,
+  "other_deductions": 34543.53,
+  "total_deductions": 37185.73,
+  "net_pay": 11906.67,
+  "tin": "934-368-007",
+  "sss_number": null,
+  "philhealth_number": null,
+  "pagibig_number": null
+}

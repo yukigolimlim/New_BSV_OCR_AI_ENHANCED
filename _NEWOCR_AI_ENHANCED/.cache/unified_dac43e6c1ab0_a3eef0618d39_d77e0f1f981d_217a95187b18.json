@@ -1,0 +1,177 @@
+{
+  "cic": {},
+  "payslip": {
+    "employee_name": "GOLIMLIM, KENT Q.",
+    "employer_name": "DOH - Camarines Norte Provincial Hospital",
+    "position": "NURSE II",
+    "department": null,
+    "period_from": "01/01/2025",
+    "period_to": "12/31/2025",
+    "pay_date": null,
+    "period_count": 1,
+    "date_of_birth": null,
+    "pay_periods": [
+      {
+        "period_from": "01/01/2025",
+        "period_to": "12/31/2025",
+        "basic_pay": 22316,
+        "allowances": 2000,
+        "gross_pay": 24316,
+        "gsis_deduction": 630.45,
+        "sss_deduction": null,
+        "philhealth_deduction": 279,
+        "pagibig_deduction": 100,
+        "tax_deduction": 872.25,
+        "other_deductions": null,
+        "total_deductions": 1881.7,
+        "net_pay": 22434.3
+      }
+    ],
+    "monthly_rate": null,
+    "basic_pay": 22316,
+    "allowances": 2000,
+    "gross_pay": 24316,
+    "gsis_deduction": 630.45,
+    "sss_deduction": null,
+    "philhealth_deduction": 279,
+    "pagibig_deduction": 100,
+    "tax_deduction": 872.25,
+    "other_deductions": null,
+    "total_deductions": 1881.7,
+    "net_pay": 22434.3,
+    "tin": null,
+    "sss_number": null,
+    "philhealth_number": null,
+    "pagibig_number": null,
+    "business_income": null,
+    "rental_income": null,
+    "remittance_income": null,
+    "other_income_label": null,
+    "other_income_amount": null
+  },
+  "saln": {
+    "declarant_name": "GOLIMLIM Kent Q",
+    "position": "Nurse II",
+    "agency": "DOH - Camarines Norte Provincial Hospital",
+    "office_address": "Bagasbas, Daet, Camarines Norte",
+    "saln_year": 2025,
+    "spouse_name": "GOLIMLIM Ana P",
+    "spouse_position": "Housewife / Self-employed",
+    "real_properties": [
+      {
+        "description": "Residential House & Lot",
+        "kind": "Residential",
+        "location": "Brgy Lag-on, Daet, CN",
+        "current_fair_market_value": 780000,
+        "acquisition_cost": 600000,
+        "year_acquired": 2018,
+        "assessed_value": 180000
+      }
+    ],
+    "personal_properties": [
+      {
+        "description": "Personal Belongings/Clothing",
+        "year_acquired": "Various Years",
+        "acquisition_cost": 38000,
+        "current_value": 38000
+      },
+      {
+        "description": "Computer/Laptop/Cellphone",
+        "year_acquired": 2024,
+        "acquisition_cost": 62000,
+        "current_value": 62000
+      },
+      {
+        "description": "Appliances/Furniture",
+        "year_acquired": "Various Years",
+        "acquisition_cost": 75000,
+        "current_value": 75000
+      },
+      {
+        "description": "Motorcycle",
+        "year_acquired": 2021,
+        "acquisition_cost": 58000,
+        "current_value": 58000
+      }
+    ],
+    "cash_on_hand": 12000,
+    "cash_in_bank": 38500,
+    "cash_on_hand_and_in_bank": null,
+    "receivables": null,
+    "business_interests": null,
+    "total_assets": 883500,
+    "liabilities": [
+      {
+        "nature": "Housing Loan",
+        "creditor": "PAG-IBIG (HDMF)",
+        "outstanding_balance": 380500
+      },
+      {
+        "nature": "Salary Loan",
+        "creditor": "GSIS",
+        "outstanding_balance": 95000
+      },
+      {
+        "nature": "Salary Loan",
+        "creditor": "LANDBANK",
+        "outstanding_balance": 35000
+      }
+    ],
+    "financial_liabilities": null,
+    "personal_liabilities": null,
+    "total_liabilities": 510500,
+    "net_worth": 373000,
+    "children": [
+      {
+        "name": "Golimlim, Bea Q.",
+        "date_of_birth": null,
+        "age": 14
+      },
+      {
+        "name": "Golimlim, Luke Q.",
+        "date_of_birth": null,
+        "age": 10
+      },
+      {
+        "name": "Golimlim, Zoe Q.",
+        "date_of_birth": null,
+        "age": 6
+      }
+    ]
+  },
+  "itr": {
+    "taxpayer_name": "GOLIMLIM, KENT Q.",
+    "tin": "9876543210000",
+    "tax_year": 2025,
+    "form_type": "2316",
+    "registered_address": "Brgy Lag-on, Daet, Camarines Norte",
+    "zip_code": null,
+    "taxpayer_type": null,
+    "civil_status": null,
+    "citizenship": null,
+    "date_of_birth": "03/22/1990",
+    "business_name": null,
+    "business_address": null,
+    "business_tin": null,
+    "line_of_business": null,
+    "gross_compensation_income": 498000,
+    "gross_business_income": null,
+    "gross_professional_income": null,
+    "total_gross_income": null,
+    "gross_annual_income": 498000,
+    "gross_monthly_income": null,
+    "net_taxable_income": 222560,
+    "net_pay": null,
+    "allowable_deductions": 275440,
+    "tax_due": 8512,
+    "tax_credits": null,
+    "tax_paid": 8512,
+    "tax_still_due": null,
+    "surcharge": null,
+    "interest": null,
+    "compromise": null,
+    "total_amount_payable": null,
+    "spouse_name": null,
+    "spouse_tin": null
+  }
+}
