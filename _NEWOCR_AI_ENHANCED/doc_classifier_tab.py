@@ -841,6 +841,8 @@ class DocClassifierTabMixin:
     def _build_classifier_panel(self, parent):
         self._txt_frame = tk.Frame(parent, bg=CARD_WHITE)
 
+        self._build_extract_toolbar(self._txt_frame)
+
         self._clf_tag_bar = tk.Frame(self._txt_frame, bg=CARD_WHITE)
         self._clf_tag_bar.pack(fill="x", padx=0, pady=0)
 
