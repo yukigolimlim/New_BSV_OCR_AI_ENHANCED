@@ -11,6 +11,20 @@ DEDUPLICATION POLICY (client_id):
     incoming values — existing data is NEVER overwritten.
   • On startup: if the DB already contains duplicate client_ids (legacy
     data), they are collapsed into one row (most-complete record kept).
+
+DATA POPULATION SOURCES:
+  • From Look-Up tab (automatic on extraction):
+      applicant_name, residence_address, office_address,
+      income_items, income_total, business_items, business_total,
+      household_items, household_total, net_income,
+      petrol_risk, transport_risk, results_json, page_map,
+      amort_history_total, source_file, status, session_id
+  • From "Other Data" import (manual):
+      client_id, pn, industry_name, loan_balance, amortized_cost
+  • From "Amort." import (manual):
+      amort_current_total
+  • From "P.Loan" import (manual):
+      principal_loan, maturity, interest_rate
 """
 
 import re
@@ -58,21 +72,34 @@ STATUS_COLORS = {
     "waiting": ("#F3F4F6", "#6B7280", "… Waiting"),
 }
 
-# ── client_id and pn are the first two columns; industry_name goes after office_address
-# ── loan_balance is after amort_current_total; principal_loan is the last column
+# ── Virtual columns: derived from results_json at render time, not real DB cols.
+# ── These must never be used in ORDER BY or WHERE clauses.
+_VIRTUAL_COLS = {
+    "spouse_info",
+    "personal_assets",
+    "business_assets",
+    "business_inventory",
+}
+
+# ── TABLE_COLS definition ─────────────────────────────────────────────
+# (db_col, label, width_px, is_monetary, is_text_block)
+# Columns populated by Look-Up are marked with ★ in comments.
 TABLE_COLS = [
+    # ── Populated by Other Data import ───────────────────────────────
     ("client_id",           "Client ID",                           130, False, False),
     ("pn",                  "PN",                                  100, False, False),
+    # ── ★ Populated by Look-Up ────────────────────────────────────────
     ("applicant_name",      "Applicant",                           200, False, False),
     ("residence_address",   "Residence Address",                   220, False, True),
     ("office_address",      "Office Address",                      180, False, True),
+    # ── Populated by Other Data import ───────────────────────────────
     ("industry_name",       "Industry Name",                       160, False, False),
-    # ── CIBI detail columns ───────────────────────────────────────────
+    # ── ★ Virtual — derived from results_json (Look-Up) ──────────────
     ("spouse_info",         "Spouse Info",                         220, False, True),
     ("personal_assets",     "Personal Assets",                     220, False, True),
     ("business_assets",     "Business Assets",                     220, False, True),
     ("business_inventory",  "Business Inventory",                  200, False, True),
-    # ─────────────────────────────────────────────────────────────────
+    # ── ★ Populated by Look-Up ────────────────────────────────────────
     ("income_items",        "Source of Income",                    200, False, True),
     ("income_total",        "Total Income",                        130, True,  False),
     ("business_items",      "Business Expenses",                   200, False, True),
@@ -80,15 +107,17 @@ TABLE_COLS = [
     ("household_items",     "Household Expenses",                  200, False, True),
     ("household_total",     "Total Household",                     130, True,  False),
     ("net_income",          "Total Net Income",                    130, True,  False),
+    # ── ★ Populated by Look-Up (real DB column) ───────────────────────
     ("amort_history_total", "Total Amort. History",                150, True,  False),
+    # ── Populated by Amort. import ────────────────────────────────────
     ("amort_current_total", "Total Current Amort.",                150, True,  False),
+    # ── Populated by Other Data import ───────────────────────────────
     ("loan_balance",        "Loan Balance",                        150, True,  False),
     ("amortized_cost",      "Total Amortized Cost",                160, True,  False),
+    # ── Populated by P.Loan import ────────────────────────────────────
     ("principal_loan",      "Principal Loan",                      150, True,  False),
-    # ── NEW: P.Loan details ───────────────────────────────────────────
     ("maturity",            "Maturity",                            140, False, False),
     ("interest_rate",       "Interest Rate",                       120, False, False),
-    # ─────────────────────────────────────────────────────────────────
 ]
 
 TREE_COLS = [c[0] for c in TABLE_COLS]
@@ -122,28 +151,23 @@ NON_MONETARY = {"cibi_place_of_work", "cibi_temp_residence",
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  HELPERS — extract the 4 CIBI display fields from results_json
+#  HELPERS — derive display fields from results_json
 # ═══════════════════════════════════════════════════════════════════════
 
 def _extract_spouse_info(results: dict) -> str:
     parts = []
 
-    spouse_items = []
     raw_spouse = results.get("cibi_spouse", {})
-    if isinstance(raw_spouse, dict):
-        spouse_items = raw_spouse.get("items", [])
+    spouse_items = raw_spouse.get("items", []) if isinstance(raw_spouse, dict) else []
 
-    office_items = []
     raw_office = results.get("cibi_spouse_office", {})
-    if isinstance(raw_office, dict):
-        office_items = raw_office.get("items", [])
+    office_items = raw_office.get("items", []) if isinstance(raw_office, dict) else []
 
     def _clean(text: str) -> str:
         return re.sub(r"\s*\[N/A\]\s*$", "", text).strip()
 
     for item in spouse_items:
         parts.append(_clean(item))
-
     for item in office_items:
         cleaned = _clean(item)
         if cleaned:
@@ -158,6 +182,23 @@ def _extract_asset_items(results: dict, key: str) -> str:
         return ""
     items = raw.get("items", [])
     return "  ·  ".join(items) if items else ""
+
+
+def _parse_amort_history_total(results_json_str: str) -> float | None:
+    """
+    Derive amort_history_total from results_json string.
+    Returns float or None.
+    """
+    try:
+        blob = json.loads(results_json_str or "{}")
+        data = blob.get("credit_history_amort", {})
+        raw  = data.get("total", "") if isinstance(data, dict) else ""
+        if raw:
+            cleaned = re.sub(r"[^\d.]", "", str(raw).replace(",", ""))
+            return float(cleaned) if cleaned else None
+    except Exception:
+        pass
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -177,14 +218,13 @@ _CHECKLIST_PREVIEW_COLS = [
     ("Total Business Expenses",                  120, True),
     ("Total Household / Personal Expenses",      130, True),
     ("Total Net Income",                         120, True),
+    ("Total Amortization History",               130, True),
     ("Total Current Amortization",               130, True),
     ("Loan Balance",                             110, True),
     ("Total Amortized Cost",                     120, True),
     ("Principal Loan",                           120, True),
-    # ── NEW ──────────────────────────────────────────────────────────
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
-    # ─────────────────────────────────────────────────────────────────
 ]
 
 _ALL_EXPORT_COLS = [
@@ -210,10 +250,8 @@ _ALL_EXPORT_COLS = [
     ("Loan Balance",                             110, True),
     ("Total Amortized Cost",                     120, True),
     ("Principal Loan",                           120, True),
-    # ── NEW ──────────────────────────────────────────────────────────
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
-    # ─────────────────────────────────────────────────────────────────
 ]
 
 
@@ -230,33 +268,18 @@ def _apply_checklist_tree_style():
     style = ttk.Style()
     style.configure(
         "Checklist.Treeview",
-        background=WHITE,
-        foreground=TXT_NAVY,
-        fieldbackground=WHITE,
-        rowheight=30,
-        font=("Segoe UI", 9),
-        borderwidth=0,
-        relief="flat",
+        background=WHITE, foreground=TXT_NAVY, fieldbackground=WHITE,
+        rowheight=30, font=("Segoe UI", 9), borderwidth=0, relief="flat",
     )
     style.configure(
         "Checklist.Treeview.Heading",
-        background=HDR_BG,
-        foreground=HDR_FG,
-        font=("Segoe UI", 9, "bold"),
-        relief="flat",
-        borderwidth=0,
-        padding=(6, 6),
+        background=HDR_BG, foreground=HDR_FG,
+        font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0, padding=(6, 6),
     )
-    style.map(
-        "Checklist.Treeview.Heading",
-        background=[("active", "#7AB567")],
-        relief=[("active", "flat")],
-    )
-    style.map(
-        "Checklist.Treeview",
-        background=[("selected", "#C8E6C9")],
-        foreground=[("selected", NAVY_DEEP)],
-    )
+    style.map("Checklist.Treeview.Heading",
+        background=[("active", "#7AB567")], relief=[("active", "flat")])
+    style.map("Checklist.Treeview",
+        background=[("selected", "#C8E6C9")], foreground=[("selected", NAVY_DEEP)])
 
 
 def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
@@ -271,42 +294,30 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
     win.resizable(True, True)
     win.grab_set()
 
-    p_x = parent.winfo_rootx()
-    p_y = parent.winfo_rooty()
-    p_w = parent.winfo_width()
-    p_h = parent.winfo_height()
+    p_x = parent.winfo_rootx(); p_y = parent.winfo_rooty()
+    p_w = parent.winfo_width(); p_h = parent.winfo_height()
     w_w, w_h = 1140, 720
-    cx = p_x + (p_w - w_w) // 2
-    cy = p_y + (p_h - w_h) // 2
+    cx = p_x + (p_w - w_w) // 2; cy = p_y + (p_h - w_h) // 2
     win.geometry(f"{w_w}x{w_h}+{cx}+{cy}")
     win.minsize(760, 500)
 
     result = [None]
-
     checked:     dict[str, bool] = {str(i): True for i in range(len(flat_rows))}
     col_checked: dict[str, bool] = {c[0]: True for c in _ALL_EXPORT_COLS}
 
     hdr = tk.Frame(win, bg=NAVY_DEEP)
     hdr.pack(fill="x")
-
     title_f = tk.Frame(hdr, bg=NAVY_DEEP)
     title_f.pack(side="left", padx=16, pady=10)
-    tk.Label(
-        title_f, text="Export Preview — Select Rows & Columns to Include",
-        font=("Segoe UI", 13, "bold"), fg=WHITE, bg=NAVY_DEEP,
-    ).pack(anchor="w")
-    tk.Label(
-        title_f,
-        text="Tick the rows and columns you want. Only checked items will appear in the Excel file.",
-        font=("Segoe UI", 8), fg="#8DA8C8", bg=NAVY_DEEP,
-    ).pack(anchor="w", pady=(1, 0))
+    tk.Label(title_f, text="Export Preview — Select Rows & Columns to Include",
+             font=("Segoe UI", 13, "bold"), fg=WHITE, bg=NAVY_DEEP).pack(anchor="w")
+    tk.Label(title_f,
+             text="Tick the rows and columns you want. Only checked items will appear in the Excel file.",
+             font=("Segoe UI", 8), fg="#8DA8C8", bg=NAVY_DEEP).pack(anchor="w", pady=(1, 0))
 
     count_var = tk.StringVar()
-    tk.Label(
-        hdr, textvariable=count_var,
-        font=("Segoe UI", 11, "bold"), fg="#B9F5A0", bg=NAVY_DEEP,
-        padx=16,
-    ).pack(side="right", pady=10)
+    tk.Label(hdr, textvariable=count_var, font=("Segoe UI", 11, "bold"),
+             fg="#B9F5A0", bg=NAVY_DEEP, padx=16).pack(side="right", pady=10)
 
     def _refresh_count():
         nr = sum(1 for v in checked.values() if v)
@@ -318,24 +329,20 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
     col_outer = tk.Frame(win, bg="#E8F0FB",
                          highlightbackground=BORDER_MID, highlightthickness=1)
     col_outer.pack(fill="x", padx=16, pady=(8, 0))
-
     col_hdr = tk.Frame(col_outer, bg="#E8F0FB")
     col_hdr.pack(fill="x", padx=8, pady=(6, 2))
-
     tk.Label(col_hdr, text="📋  Columns to export:",
-             font=("Segoe UI", 8, "bold"), fg=NAVY_MID,
-             bg="#E8F0FB").pack(side="left")
+             font=("Segoe UI", 8, "bold"), fg=NAVY_MID, bg="#E8F0FB").pack(side="left")
 
     def _col_set_all(val: bool):
         for k, v in _col_vars.items():
-            v.set(val)
-            col_checked[k] = val
+            v.set(val); col_checked[k] = val
         _refresh_count()
 
     tk.Button(col_hdr, text="All", font=("Segoe UI", 7, "bold"),
               fg=TXT_ON_LIME, bg=LIME_MID, activebackground=LIME_BRIGHT,
-              activeforeground=TXT_ON_LIME,
-              relief="flat", bd=0, padx=8, pady=2, cursor="hand2",
+              activeforeground=TXT_ON_LIME, relief="flat", bd=0,
+              padx=8, pady=2, cursor="hand2",
               command=lambda: _col_set_all(True)).pack(side="right", padx=(4, 0))
     tk.Button(col_hdr, text="None", font=("Segoe UI", 7, "bold"),
               fg=TXT_NAVY, bg="#D8E4F4", activebackground="#C0D0EC",
@@ -344,7 +351,6 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
 
     col_grid = tk.Frame(col_outer, bg="#E8F0FB")
     col_grid.pack(fill="x", padx=8, pady=(0, 6))
-
     _col_vars: dict[str, tk.BooleanVar] = {}
     COLS_PER_ROW = 6
 
@@ -353,55 +359,41 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
         _col_vars[col_key] = var
 
         def _on_toggle(k=col_key, v=var):
-            col_checked[k] = v.get()
-            _refresh_count()
+            col_checked[k] = v.get(); _refresh_count()
 
-        row_idx = idx // COLS_PER_ROW
-        col_idx = idx % COLS_PER_ROW
-
+        row_idx = idx // COLS_PER_ROW; col_idx = idx % COLS_PER_ROW
         pill = tk.Frame(col_grid, bg="#D8E8FB",
                         highlightbackground="#B8CFF0", highlightthickness=1)
         pill.grid(row=row_idx, column=col_idx, padx=3, pady=3, sticky="w")
-
-        cb = tk.Checkbutton(
-            pill, text=col_key, variable=var,
-            font=("Segoe UI", 8), fg=TXT_NAVY, bg="#D8E8FB",
-            activebackground="#C0D4F0", selectcolor=WHITE,
-            relief="flat", bd=0, padx=6, pady=3,
-            command=_on_toggle,
-        )
-        cb.pack()
+        tk.Checkbutton(pill, text=col_key, variable=var,
+                       font=("Segoe UI", 8), fg=TXT_NAVY, bg="#D8E8FB",
+                       activebackground="#C0D4F0", selectcolor=WHITE,
+                       relief="flat", bd=0, padx=6, pady=3,
+                       command=_on_toggle).pack()
 
     toolbar = tk.Frame(win, bg="#F0F4FA",
                        highlightbackground=BORDER_MID, highlightthickness=1)
     toolbar.pack(fill="x", padx=16, pady=(8, 0))
 
     def _mk_toolbar_btn(text, bg, fg, hov, cmd):
-        return tk.Button(
-            toolbar, text=text,
-            font=("Segoe UI", 8, "bold"),
-            fg=fg, bg=bg, activebackground=hov, activeforeground=fg,
-            relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
-            command=cmd,
-        )
+        return tk.Button(toolbar, text=text, font=("Segoe UI", 8, "bold"),
+                         fg=fg, bg=bg, activebackground=hov, activeforeground=fg,
+                         relief="flat", bd=0, padx=10, pady=4,
+                         cursor="hand2", command=cmd)
 
-    _mk_toolbar_btn("☑  Select All Rows",   LIME_MID,  TXT_ON_LIME, LIME_BRIGHT,
+    _mk_toolbar_btn("☑  Select All Rows", LIME_MID, TXT_ON_LIME, LIME_BRIGHT,
                     lambda: _set_all(True)).pack(side="left", padx=(8, 4), pady=6)
-    _mk_toolbar_btn("☐  Deselect All Rows", "#E0E8F0", TXT_NAVY,    "#C8D8EC",
+    _mk_toolbar_btn("☐  Deselect All Rows", "#E0E8F0", TXT_NAVY, "#C8D8EC",
                     lambda: _set_all(False)).pack(side="left", padx=(0, 12), pady=6)
 
     tk.Frame(toolbar, bg=BORDER_MID, width=1).pack(side="left", fill="y", pady=4)
-
-    tk.Label(toolbar, text="Quick filter:",
-             font=("Segoe UI", 8), fg=TXT_MUTED,
-             bg="#F0F4FA").pack(side="left", padx=(12, 4), pady=6)
+    tk.Label(toolbar, text="Quick filter:", font=("Segoe UI", 8),
+             fg=TXT_MUTED, bg="#F0F4FA").pack(side="left", padx=(12, 4), pady=6)
     filter_var = tk.StringVar()
     filter_var.trace_add("write", lambda *_: _apply_filter())
-    tk.Entry(
-        toolbar, textvariable=filter_var,
-        font=("Segoe UI", 9), fg=TXT_NAVY, bg=WHITE,
-        relief="solid", bd=1, insertbackground=NAVY_MID, width=24,
-    ).pack(side="left", pady=6, ipady=3)
+    tk.Entry(toolbar, textvariable=filter_var, font=("Segoe UI", 9),
+             fg=TXT_NAVY, bg=WHITE, relief="solid", bd=1,
+             insertbackground=NAVY_MID, width=24).pack(side="left", pady=6, ipady=3)
 
     CHECK_COL = "#check"
     TCOLS     = [CHECK_COL] + [c[0] for c in _CHECKLIST_PREVIEW_COLS]
@@ -410,8 +402,7 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
     tbl_outer.pack(fill="both", expand=True, padx=16, pady=(6, 0))
     tbl_wrap = tk.Frame(tbl_outer, bg=CARD_WHITE)
     tbl_wrap.pack(fill="both", expand=True, padx=1, pady=1)
-    tbl_wrap.rowconfigure(0, weight=1)
-    tbl_wrap.columnconfigure(0, weight=1)
+    tbl_wrap.rowconfigure(0, weight=1); tbl_wrap.columnconfigure(0, weight=1)
 
     vscroll = tk.Scrollbar(tbl_wrap, orient="vertical", relief="flat",
                            troughcolor=OFF_WHITE, bg=BORDER_LIGHT, width=8, bd=0)
@@ -420,33 +411,24 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
                            troughcolor=OFF_WHITE, bg=BORDER_LIGHT, bd=0)
     hscroll.grid(row=1, column=0, columnspan=2, sticky="ew")
 
-    tree = ttk.Treeview(
-        tbl_wrap, columns=TCOLS, show="headings",
-        style="Checklist.Treeview",
-        yscrollcommand=vscroll.set,
-        xscrollcommand=hscroll.set,
-        selectmode="browse",
-    )
+    tree = ttk.Treeview(tbl_wrap, columns=TCOLS, show="headings",
+                        style="Checklist.Treeview",
+                        yscrollcommand=vscroll.set, xscrollcommand=hscroll.set,
+                        selectmode="browse")
     tree.grid(row=0, column=0, sticky="nsew")
-    vscroll.config(command=tree.yview)
-    hscroll.config(command=tree.xview)
-
+    vscroll.config(command=tree.yview); hscroll.config(command=tree.xview)
     tree.bind("<Enter>", lambda e: tree.bind_all(
         "<MouseWheel>",
-        lambda ev: tree.yview_scroll(int(-1 * (ev.delta / 120)), "units"),
-    ))
+        lambda ev: tree.yview_scroll(int(-1 * (ev.delta / 120)), "units")))
     tree.bind("<Leave>", lambda e: tree.unbind_all("<MouseWheel>"))
 
     _all_hdr = [True]
 
     def _header_toggle():
-        new_val = not _all_hdr[0]
-        _all_hdr[0] = new_val
-        _set_all(new_val)
+        new_val = not _all_hdr[0]; _all_hdr[0] = new_val; _set_all(new_val)
 
     tree.heading(CHECK_COL, text="☑ All", command=_header_toggle)
     tree.column(CHECK_COL, width=62, minwidth=50, anchor="center", stretch=False)
-
     for col_name, col_w, is_mon in _CHECKLIST_PREVIEW_COLS:
         tree.heading(col_name, text=col_name)
         tree.column(col_name, width=col_w, minwidth=50,
@@ -471,51 +453,41 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
 
     def _row_tag(idx: int) -> str:
         even = (idx % 2 == 0)
-        if checked[str(idx)]:
-            return "even_on"  if even else "odd_on"
-        return "even_off" if even else "odd_off"
+        return ("even_on" if even else "odd_on") if checked[str(idx)] \
+               else ("even_off" if even else "odd_off")
 
     def _apply_filter():
         term = filter_var.get().strip().lower()
-        tree.delete(*tree.get_children())
-        _visible_iids.clear()
+        tree.delete(*tree.get_children()); _visible_iids.clear()
         for i, row_dict in enumerate(flat_rows):
             iid = str(i)
             if term:
                 haystack = " ".join(
                     str(row_dict.get(c, "") or "").lower()
-                    for c, _, __ in _CHECKLIST_PREVIEW_COLS
-                )
+                    for c, _, __ in _CHECKLIST_PREVIEW_COLS)
                 if term not in haystack:
                     continue
             _visible_iids.append(iid)
             tree.insert("", "end", iid=iid,
-                        values=_row_values(i, row_dict),
-                        tags=(_row_tag(i),))
+                        values=_row_values(i, row_dict), tags=(_row_tag(i),))
         _refresh_count()
 
     _apply_filter()
 
     def _update_row_display(iid: str):
         idx = int(iid)
-        tree.item(iid,
-                  values=_row_values(idx, flat_rows[idx]),
+        tree.item(iid, values=_row_values(idx, flat_rows[idx]),
                   tags=(_row_tag(idx),))
 
     def _toggle_row(iid: str):
-        checked[iid] = not checked[iid]
-        _update_row_display(iid)
-        _refresh_count()
+        checked[iid] = not checked[iid]; _update_row_display(iid); _refresh_count()
         n = sum(1 for v in checked.values() if v)
         if n == len(flat_rows):
-            _all_hdr[0] = True
-            tree.heading(CHECK_COL, text="☑ All")
+            _all_hdr[0] = True; tree.heading(CHECK_COL, text="☑ All")
         elif n == 0:
-            _all_hdr[0] = False
-            tree.heading(CHECK_COL, text="☐ All")
+            _all_hdr[0] = False; tree.heading(CHECK_COL, text="☐ All")
         else:
-            _all_hdr[0] = False
-            tree.heading(CHECK_COL, text="— All")
+            _all_hdr[0] = False; tree.heading(CHECK_COL, text="— All")
 
     def _set_all(val: bool):
         _all_hdr[0] = val
@@ -526,55 +498,35 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
         tree.heading(CHECK_COL, text="☑ All" if val else "☐ All")
         _refresh_count()
 
-    def _on_click(event):
-        iid = tree.identify_row(event.y)
-        if iid:
-            _toggle_row(iid)
-
-    tree.bind("<ButtonRelease-1>", _on_click)
-
-    def _on_space(event):
-        iid = tree.focus()
-        if iid:
-            _toggle_row(iid)
-
-    tree.bind("<space>", _on_space)
+    tree.bind("<ButtonRelease-1>", lambda e: _toggle_row(tree.identify_row(e.y))
+              if tree.identify_row(e.y) else None)
+    tree.bind("<space>", lambda e: _toggle_row(tree.focus()) if tree.focus() else None)
 
     btn_bar = tk.Frame(win, bg=CARD_WHITE,
                        highlightbackground=BORDER_MID, highlightthickness=1)
     btn_bar.pack(fill="x", padx=16, pady=(4, 12))
 
     def _mk_btn(parent, text, bg, fg, hov, cmd):
-        return tk.Button(
-            parent, text=text,
-            font=("Segoe UI", 9, "bold"),
-            fg=fg, bg=bg, activebackground=hov, activeforeground=fg,
-            relief="flat", bd=0, padx=18, pady=7,
-            cursor="hand2", command=cmd,
-        )
+        return tk.Button(parent, text=text, font=("Segoe UI", 9, "bold"),
+                         fg=fg, bg=bg, activebackground=hov, activeforeground=fg,
+                         relief="flat", bd=0, padx=18, pady=7,
+                         cursor="hand2", command=cmd)
 
     def _on_export():
         selected_rows = [flat_rows[int(i)]
-                         for i in sorted(checked, key=int)
-                         if checked[i]]
+                         for i in sorted(checked, key=int) if checked[i]]
         selected_cols = [c[0] for c in _ALL_EXPORT_COLS if col_checked.get(c[0], True)]
-        result[0] = (selected_rows, selected_cols)
-        win.destroy()
+        result[0] = (selected_rows, selected_cols); win.destroy()
 
     def _on_cancel():
-        result[0] = None
-        win.destroy()
+        result[0] = None; win.destroy()
 
-    _mk_btn(btn_bar, "✕  Cancel",
-            "#F5F5F5", TXT_SOFT, "#E0E0E0",
+    _mk_btn(btn_bar, "✕  Cancel", "#F5F5F5", TXT_SOFT, "#E0E0E0",
             _on_cancel).pack(side="right", padx=(4, 8), pady=6)
-    _mk_btn(btn_bar, "📊  Export Selected to Excel",
-            LIME_MID, TXT_ON_LIME, LIME_BRIGHT,
+    _mk_btn(btn_bar, "📊  Export Selected to Excel", LIME_MID, TXT_ON_LIME, LIME_BRIGHT,
             _on_export).pack(side="right", padx=(0, 4), pady=6)
-
-    tk.Label(btn_bar, textvariable=count_var,
-             font=("Segoe UI", 9), fg=TXT_MUTED,
-             bg=CARD_WHITE).pack(side="left", padx=10, pady=6)
+    tk.Label(btn_bar, textvariable=count_var, font=("Segoe UI", 9),
+             fg=TXT_MUTED, bg=CARD_WHITE).pack(side="left", padx=10, pady=6)
 
     win.protocol("WM_DELETE_WINDOW", _on_cancel)
     parent.wait_window(win)
@@ -594,27 +546,29 @@ def _db_connect() -> sqlite3.Connection:
     return conn
 
 
-# ── columns that can be patched (never overwrite existing non-null data)
+# ── All columns that can be patched (never overwrite existing non-null data)
 _PATCHABLE_COLS = [
-    "applicant_name", "residence_address", "office_address", "industry_name",
-    "income_items", "income_total", "business_items", "business_total",
-    "household_items", "household_total", "net_income",
-    "petrol_risk", "transport_risk", "results_json", "page_map",
-    "amort_current_total", "pn", "loan_balance", "amortized_cost",
+    # ── Set by Look-Up ───────────────────────────────────────────────
+    "applicant_name", "residence_address", "office_address",
+    "income_items", "income_total",
+    "business_items", "business_total",
+    "household_items", "household_total",
+    "net_income", "petrol_risk", "transport_risk",
+    "results_json", "page_map",
+    "amort_history_total",          # ← real DB column, set by Look-Up
     "source_file", "status",
-    "principal_loan",
-    # ── NEW ─────────────────────────────────────────────────────────────
-    "maturity", "interest_rate",
-    # ────────────────────────────────────────────────────────────────────
+    # ── Set by Other Data import ─────────────────────────────────────
+    "client_id", "pn", "industry_name", "loan_balance", "amortized_cost",
+    # ── Set by Amort. import ─────────────────────────────────────────
+    "amort_current_total",
+    # ── Set by P.Loan import ─────────────────────────────────────────
+    "principal_loan", "maturity", "interest_rate",
 ]
 
 
 def _patch_existing(conn: sqlite3.Connection, existing_id: int,
                     incoming: dict) -> None:
-    """
-    Fill in only the columns that are currently NULL/empty in the existing row.
-    Existing non-null data is NEVER overwritten.
-    """
+    """Fill in only columns that are currently NULL/empty. Never overwrites."""
     existing = dict(conn.execute(
         "SELECT * FROM applicants WHERE id=?", (existing_id,)
     ).fetchone())
@@ -641,39 +595,48 @@ def _db_init():
     with _db_connect() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS applicants (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id        TEXT    NOT NULL,
-            processed_at      TEXT    NOT NULL,
-            source_file       TEXT,
-            status            TEXT    DEFAULT 'done',
-            client_id         TEXT,
-            pn                TEXT,
-            applicant_name    TEXT,
-            residence_address TEXT,
-            office_address    TEXT,
-            industry_name     TEXT,
-            income_items      TEXT,
-            income_total      REAL,
-            business_items    TEXT,
-            business_total    REAL,
-            household_items   TEXT,
-            household_total   REAL,
-            net_income        REAL,
-            petrol_risk       INTEGER DEFAULT 0,
-            transport_risk    INTEGER DEFAULT 0,
-            results_json      TEXT,
-            page_map          TEXT,
-            amort_current_total REAL
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id          TEXT    NOT NULL,
+            processed_at        TEXT    NOT NULL,
+            source_file         TEXT,
+            status              TEXT    DEFAULT 'done',
+            applicant_name      TEXT,
+            residence_address   TEXT,
+            office_address      TEXT,
+            income_items        TEXT,
+            income_total        REAL,
+            business_items      TEXT,
+            business_total      REAL,
+            household_items     TEXT,
+            household_total     REAL,
+            net_income          REAL,
+            petrol_risk         INTEGER DEFAULT 0,
+            transport_risk      INTEGER DEFAULT 0,
+            results_json        TEXT,
+            page_map            TEXT,
+            amort_history_total REAL,
+            amort_current_total REAL,
+            client_id           TEXT,
+            pn                  TEXT,
+            industry_name       TEXT,
+            loan_balance        REAL,
+            amortized_cost      REAL,
+            principal_loan      REAL,
+            maturity            TEXT,
+            interest_rate       TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session   ON applicants(session_id);
         CREATE INDEX IF NOT EXISTS idx_name      ON applicants(applicant_name COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_status    ON applicants(status);
         CREATE INDEX IF NOT EXISTS idx_processed ON applicants(processed_at);
+        CREATE INDEX IF NOT EXISTS idx_clientid  ON applicants(client_id);
         """)
 
-        # ── schema migrations ──────────────────────────────────────────
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(applicants)").fetchall()]
+        # ── schema migrations for legacy DBs ──────────────────────────
+        cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(applicants)").fetchall()]
         migrations = [
+            ("amort_history_total", "REAL"),
             ("amort_current_total", "REAL"),
             ("client_id",           "TEXT"),
             ("pn",                  "TEXT"),
@@ -681,27 +644,34 @@ def _db_init():
             ("loan_balance",        "REAL"),
             ("amortized_cost",      "REAL"),
             ("principal_loan",      "REAL"),
-            # ── NEW ─────────────────────────────────────────────────────
             ("maturity",            "TEXT"),
             ("interest_rate",       "TEXT"),
-            # ────────────────────────────────────────────────────────────
         ]
         for col_name, col_type in migrations:
             if col_name not in cols:
-                conn.execute(f"ALTER TABLE applicants ADD COLUMN {col_name} {col_type}")
+                conn.execute(
+                    f"ALTER TABLE applicants ADD COLUMN {col_name} {col_type}")
 
-    # ── collapse any pre-existing duplicate client_ids ─────────────────
+        # ── backfill amort_history_total for legacy rows ───────────────
+        rows_needing_backfill = conn.execute(
+            "SELECT id, results_json FROM applicants "
+            "WHERE amort_history_total IS NULL AND results_json IS NOT NULL"
+        ).fetchall()
+        for r in rows_needing_backfill:
+            val = _parse_amort_history_total(r["results_json"])
+            if val is not None:
+                conn.execute(
+                    "UPDATE applicants SET amort_history_total=? WHERE id=?",
+                    (val, r["id"]))
+
     _db_deduplicate_client_ids()
 
 
 def _db_deduplicate_client_ids() -> int:
     """
-    Find all groups of rows that share the same non-empty client_id.
-    For each group:
-      • Keep the row with the most non-null fields (most complete).
-      • Patch any missing fields from the other rows in the group.
-      • Delete the duplicates.
-    Returns the number of duplicate rows removed.
+    Collapse rows that share the same non-empty client_id.
+    Keeps the most-complete record; patches missing fields from duplicates;
+    deletes the extras. Returns number of duplicate rows removed.
     """
     removed = 0
     with _db_connect() as conn:
@@ -709,48 +679,42 @@ def _db_deduplicate_client_ids() -> int:
             SELECT client_id, COUNT(*) as cnt
             FROM applicants
             WHERE client_id IS NOT NULL AND TRIM(client_id) != ''
-            GROUP BY client_id
-            HAVING cnt > 1
+            GROUP BY client_id HAVING cnt > 1
         """).fetchall()
 
         for dup in dupes:
-            cid = dup["client_id"]
-            rows = conn.execute(
+            cid  = dup["client_id"]
+            rows = [dict(r) for r in conn.execute(
                 "SELECT * FROM applicants WHERE client_id=? ORDER BY id ASC",
-                (cid,)
-            ).fetchall()
-            rows = [dict(r) for r in rows]
+                (cid,)).fetchall()]
 
             def _score(r):
-                return sum(
-                    1 for v in r.values()
-                    if v is not None and str(v).strip() != ""
-                )
+                return sum(1 for v in r.values()
+                           if v is not None and str(v).strip() != "")
 
             rows.sort(key=_score, reverse=True)
+            keeper_id = rows[0]["id"]
             keeper    = rows[0]
-            keeper_id = keeper["id"]
 
             for dup_row in rows[1:]:
                 for col in _PATCHABLE_COLS:
                     if col not in keeper:
                         continue
-                    keeper_val = keeper.get(col)
-                    is_empty = (keeper_val is None or
-                                (isinstance(keeper_val, str) and keeper_val.strip() == ""))
-                    incoming_val = dup_row.get(col)
-                    has_value = (incoming_val is not None and
-                                 str(incoming_val).strip() != "")
+                    keeper_val  = keeper.get(col)
+                    is_empty    = (keeper_val is None or
+                                   (isinstance(keeper_val, str) and
+                                    keeper_val.strip() == ""))
+                    incoming    = dup_row.get(col)
+                    has_value   = (incoming is not None and
+                                   str(incoming).strip() != "")
                     if is_empty and has_value:
                         conn.execute(
                             f"UPDATE applicants SET {col}=? WHERE id=?",
-                            (incoming_val, keeper_id)
-                        )
-                        keeper[col] = incoming_val
-
-                conn.execute("DELETE FROM applicants WHERE id=?", (dup_row["id"],))
+                            (incoming, keeper_id))
+                        keeper[col] = incoming
+                conn.execute("DELETE FROM applicants WHERE id=?",
+                             (dup_row["id"],))
                 removed += 1
-
     return removed
 
 
@@ -758,12 +722,11 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
     """
     Insert or patch a row.
 
-    Priority order for finding an existing record:
+    Match priority:
       1. Non-empty client_id  → unique business key
-      2. session_id + source_file → original technical key (fallback)
+      2. session_id + source_file → technical fallback
 
-    When a match is found the existing record is only PATCHED
-    (missing/null fields filled in); no existing data is overwritten.
+    Existing data is NEVER overwritten — only empty fields are filled.
     """
     with _db_connect() as conn:
         existing_id = None
@@ -772,16 +735,14 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
         if client_id:
             row = conn.execute(
                 "SELECT id FROM applicants WHERE TRIM(client_id)=?",
-                (client_id,)
-            ).fetchone()
+                (client_id,)).fetchone()
             if row:
                 existing_id = row["id"]
 
         if existing_id is None:
             row = conn.execute(
                 "SELECT id FROM applicants WHERE session_id=? AND source_file=?",
-                (session_id, row_data.get("source_file", ""))
-            ).fetchone()
+                (session_id, row_data.get("source_file", ""))).fetchone()
             if row:
                 existing_id = row["id"]
 
@@ -789,33 +750,51 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
             _patch_existing(conn, existing_id, row_data)
             return existing_id
 
+        # ── Full INSERT covering all columns set by Look-Up ────────────
         cur = conn.execute("""
             INSERT INTO applicants (
                 session_id, processed_at, source_file, status,
-                client_id, pn, industry_name,
                 applicant_name, residence_address, office_address,
-                income_items, income_total, business_items, business_total,
-                household_items, household_total, net_income,
-                petrol_risk, transport_risk, results_json, page_map,
-                amort_current_total
+                income_items, income_total,
+                business_items, business_total,
+                household_items, household_total,
+                net_income, petrol_risk, transport_risk,
+                results_json, page_map,
+                amort_history_total,
+                amort_current_total,
+                client_id, pn, industry_name,
+                loan_balance, amortized_cost,
+                principal_loan, maturity, interest_rate
             ) VALUES (
                 :session_id, :processed_at, :source_file, :status,
-                :client_id, :pn, :industry_name,
                 :applicant_name, :residence_address, :office_address,
-                :income_items, :income_total, :business_items, :business_total,
-                :household_items, :household_total, :net_income,
-                :petrol_risk, :transport_risk, :results_json, :page_map,
-                :amort_current_total
+                :income_items, :income_total,
+                :business_items, :business_total,
+                :household_items, :household_total,
+                :net_income, :petrol_risk, :transport_risk,
+                :results_json, :page_map,
+                :amort_history_total,
+                :amort_current_total,
+                :client_id, :pn, :industry_name,
+                :loan_balance, :amortized_cost,
+                :principal_loan, :maturity, :interest_rate
             )
         """, row_data)
         return cur.lastrowid
 
 
+# ── Safe sortable columns (real DB columns only, no virtuals) ──────────
+_SORTABLE_COLS = (
+    {c[0] for c in TABLE_COLS}
+    - _VIRTUAL_COLS
+    | {"processed_at", "session_id", "source_file", "id"}
+)
+
+
 def _db_query(search: str = "", session_id: str = "",
               sort_col: str = "processed_at", sort_asc: bool = False,
               offset: int = 0, limit: int = PAGE_SIZE) -> tuple:
-    safe_cols = {c[0] for c in TABLE_COLS} | {"processed_at", "session_id", "source_file", "id"}
-    order_col = sort_col if sort_col in safe_cols else "processed_at"
+    order_col = sort_col if sort_col in _SORTABLE_COLS else "processed_at"
     direction = "ASC" if sort_asc else "DESC"
     where_parts, params = [], []
 
@@ -837,9 +816,11 @@ def _db_query(search: str = "", session_id: str = "",
 
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
-        total = conn.execute(f"SELECT COUNT(*) FROM applicants {where}", params).fetchone()[0]
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM applicants {where}", params).fetchone()[0]
         rows  = conn.execute(
-            f"SELECT * FROM applicants {where} ORDER BY {order_col} {direction} LIMIT ? OFFSET ?",
+            f"SELECT * FROM applicants {where} "
+            f"ORDER BY {order_col} {direction} LIMIT ? OFFSET ?",
             params + [limit, offset]).fetchall()
     return rows, total
 
@@ -866,11 +847,13 @@ def _db_totals(session_id: str = "", search: str = "") -> dict:
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
         row = conn.execute(f"""
-            SELECT COUNT(*) as total,
-                SUM(CASE WHEN status='done'  THEN 1 ELSE 0 END) as done,
-                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors,
-                SUM(income_total) as income, SUM(business_total) as business,
-                SUM(household_total) as household, SUM(net_income) as net
+            SELECT
+                COUNT(*)                                            AS total,
+                SUM(CASE WHEN status='done'  THEN 1 ELSE 0 END)   AS done,
+                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)   AS errors,
+                SUM(income_total)                                  AS income,
+                SUM(net_income)                                    AS net,
+                SUM(amort_current_total)                           AS amort_current
             FROM applicants {where}
         """, params).fetchone()
     return dict(row) if row else {}
@@ -885,11 +868,11 @@ def _db_clear_all():
     with _db_connect() as conn:
         conn.execute("DELETE FROM applicants")
 
+
 def _db_update_amort_current(row_id: int, value: float) -> bool:
     with _db_connect() as conn:
-        conn.execute(
-            "UPDATE applicants SET amort_current_total=? WHERE id=?",
-            (value, row_id))
+        conn.execute("UPDATE applicants SET amort_current_total=? WHERE id=?",
+                     (value, row_id))
     return True
 
 
@@ -931,10 +914,6 @@ def _db_update_other_data_all(matches: list, client_id: str, pn_joined: str,
 # ═══════════════════════════════════════════════════════════════════════
 
 SUFFIXES = {"JR", "SR", "II", "III", "IV", "V", "ESQ", "PHD", "MD", "CPA"}
-
-# Threshold: 0.0–1.0. 0.72 catches most reordered / initial-vs-full
-# middle name variants without too many false positives.
-# Raise to 0.80+ if you get unwanted matches; lower to 0.65 if still missing people.
 SIMILARITY_THRESHOLD = 0.72
 
 try:
@@ -944,27 +923,19 @@ try:
 except ImportError:
     from difflib import SequenceMatcher
     def _similarity(a: str, b: str) -> float:
-        # token_sort: sort tokens before comparing so word order doesn't matter
         a_sorted = " ".join(sorted(a.split()))
         b_sorted = " ".join(sorted(b.split()))
         return SequenceMatcher(None, a_sorted, b_sorted).ratio()
 
 
 def _normalise_for_sim(name: str) -> str:
-    """
-    Uppercase, strip punctuation, expand 'LASTNAME, FIRSTNAME' order,
-    remove suffixes and single-char initials so
-    'DE LA CRUZ, JUAN M.' and 'JUAN MIGUEL DE LA CRUZ' score highly.
-    """
-    # reorder LASTNAME, FIRSTNAME → FIRSTNAME LASTNAME
     if "," in name:
         parts = name.split(",", 1)
         name  = parts[1].strip() + " " + parts[0].strip()
-
     tokens = re.split(r"[\s.]+", name.strip().upper())
-    tokens = [re.sub(r"[^A-Z]", "", t) for t in tokens]   # letters only
+    tokens = [re.sub(r"[^A-Z]", "", t) for t in tokens]
     tokens = [t for t in tokens if t and t not in SUFFIXES]
-    tokens = [t for t in tokens if len(t) > 1]             # drop bare initials
+    tokens = [t for t in tokens if len(t) > 1]
     return " ".join(tokens)
 
 
@@ -972,69 +943,45 @@ def _db_candidates_all():
     with _db_connect() as conn:
         return conn.execute(
             "SELECT id, applicant_name, processed_at FROM applicants "
-            "WHERE applicant_name IS NOT NULL "
-            "ORDER BY processed_at DESC"
+            "WHERE applicant_name IS NOT NULL ORDER BY processed_at DESC"
         ).fetchall()
 
 
 def _resolve_name_similarity(client_name: str,
-                              threshold: float = SIMILARITY_THRESHOLD
-                              ) -> tuple:
-    """
-    Return (hits, label) where hits = [(id, applicant_name), ...]
-
-    Strategy:
-      1. Compute similarity between the normalised incoming name and every
-         DB applicant_name.
-      2. Collect all rows whose score >= threshold.
-      3. Among those, return only the ones at the single best score
-         (avoids returning multiple near-equal strangers).
-
-    label is one of:
-      'exact'    – score == 1.0
-      'high'     – score >= 0.90
-      'similar'  – score >= threshold
-      ''         – no match
-    """
-    candidates  = _db_candidates_all()
-    needle      = _normalise_for_sim(client_name)
-    best_score  = 0.0
-    scored      = []
+                              threshold: float = SIMILARITY_THRESHOLD) -> tuple:
+    candidates = _db_candidates_all()
+    needle     = _normalise_for_sim(client_name)
+    scored     = []
 
     for c in candidates:
         hay   = _normalise_for_sim(c["applicant_name"])
         score = _similarity(needle, hay)
         if score >= threshold:
             scored.append((score, c["id"], c["applicant_name"]))
-        if score > best_score:
-            best_score = score
 
     if not scored:
         return [], ""
 
-    # keep only the top-scoring cluster (within 0.02 of the best match found)
-    top = max(s for s, _, __ in scored)
-    hits = [
-        (rid, rname)
-        for score, rid, rname in scored
-        if score >= top - 0.02
-    ]
+    top  = max(s for s, _, __ in scored)
+    hits = [(rid, rname) for score, rid, rname in scored if score >= top - 0.02]
 
-    if top == 1.0:
-        label = "exact"
-    elif top >= 0.90:
-        label = "high"
-    else:
-        label = "similar"
-
+    label = "exact" if top == 1.0 else ("high" if top >= 0.90 else "similar")
     return hits, label
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  PUBLIC WRITER
+#  PUBLIC WRITER  (called from lookup_tab.py)
 # ═══════════════════════════════════════════════════════════════════════
 
 def db_save_applicant(session_id: str, results: dict):
+    """
+    Persist one applicant's Look-Up results to SQLite.
+
+    Only data that comes directly from the Look-Up extraction is written
+    here. client_id, pn, industry_name, loan_balance, amortized_cost,
+    principal_loan, maturity, and interest_rate are left as NULL/empty
+    intentionally — they are populated later via the import buttons.
+    """
     _db_init()
     gate = results.get("_gate_data", {})
 
@@ -1050,6 +997,7 @@ def db_save_applicant(session_id: str, results: dict):
         except Exception:
             return None
 
+    # ── Net income: prefer explicit Gemini value, fall back to calculated ──
     raw_net = str(results.get("_cfa_net_income", "")).strip()
     net_val = None
     if raw_net:
@@ -1066,17 +1014,22 @@ def db_save_applicant(session_id: str, results: dict):
 
     petrol    = bool(results.get("cibi_petrol_products",    {}).get("items"))
     transport = bool(results.get("cibi_transport_services", {}).get("items"))
-    slim      = {k: v for k, v in results.items()
-                if not k.startswith("_") and isinstance(v, dict)}
+
+    # ── Slim results_json (exclude internal _ keys) ────────────────────
+    slim = {k: v for k, v in results.items()
+            if not k.startswith("_") and isinstance(v, dict)}
+
+    results_json_str = json.dumps(slim, ensure_ascii=False)
+
+    # ── amort_history_total derived from the already-parsed results ────
+    amort_hist = _parse_amort_history_total(results_json_str)
 
     row_data = {
         "session_id":        session_id,
         "processed_at":      datetime.now().isoformat(timespec="seconds"),
         "source_file":       results.get("_source_file", ""),
         "status":            "done",
-        "client_id":         results.get("_client_id", ""),
-        "pn":                results.get("_pn", ""),
-        "industry_name":     results.get("_industry_name", ""),
+        # ── Look-Up extracted fields ───────────────────────────────────
         "applicant_name":    results.get("_applicant_name", ""),
         "residence_address": gate.get("residence_address", ""),
         "office_address":    gate.get("office_address", ""),
@@ -1089,9 +1042,19 @@ def db_save_applicant(session_id: str, results: dict):
         "net_income":        net_val,
         "petrol_risk":       1 if petrol    else 0,
         "transport_risk":    1 if transport else 0,
-        "results_json":      json.dumps(slim, ensure_ascii=False),
+        "results_json":      results_json_str,
         "page_map":          results.get("_page_map", ""),
+        "amort_history_total": amort_hist,
+        # ── Intentionally NULL — set later by import buttons ──────────
         "amort_current_total": None,
+        "client_id":           "",
+        "pn":                  "",
+        "industry_name":       "",
+        "loan_balance":        None,
+        "amortized_cost":      None,
+        "principal_loan":      None,
+        "maturity":            "",
+        "interest_rate":       "",
     }
     _db_upsert(session_id, row_data)
 
@@ -1128,15 +1091,16 @@ def _build_lookup_summary_panel(self, parent):
     main = tk.Frame(outer, bg=CARD_WHITE)
     main.pack(fill="both", expand=True)
 
+    # ── Header band ───────────────────────────────────────────────────
     header_band = tk.Frame(main, bg=NAVY_DEEP)
     header_band.pack(fill="x", padx=PAD, pady=(16, 0))
     title_block = tk.Frame(header_band, bg=NAVY_DEEP)
     title_block.pack(side="left", padx=16, pady=12)
     tk.Label(title_block, text="Look-Up Summary",
-            font=F(15, "bold"), fg=WHITE, bg=NAVY_DEEP).pack(anchor="w")
+             font=F(15, "bold"), fg=WHITE, bg=NAVY_DEEP).pack(anchor="w")
     tk.Label(title_block,
-            text="Persistent across sessions  ·  SQLite backed  ·  live view",
-            font=F(8), fg="#8DA8C8", bg=NAVY_DEEP).pack(anchor="w", pady=(2, 0))
+             text="Persistent across sessions  ·  SQLite backed  ·  live view",
+             font=F(8), fg="#8DA8C8", bg=NAVY_DEEP).pack(anchor="w", pady=(2, 0))
 
     btn_block = tk.Frame(header_band, bg=NAVY_DEEP)
     btn_block.pack(side="right", padx=12, pady=10)
@@ -1151,88 +1115,96 @@ def _build_lookup_summary_panel(self, parent):
     self._sum_export_xl_btn = ctk.CTkButton(
         btn_block, text="📊  Excel", command=lambda: _export_excel(self),
         width=74, height=30, corner_radius=6, fg_color=LIME_MID,
-        hover_color=LIME_BRIGHT, text_color=TXT_ON_LIME, font=FF(8, "bold"), border_width=0)
+        hover_color=LIME_BRIGHT, text_color=TXT_ON_LIME,
+        font=FF(8, "bold"), border_width=0)
     self._sum_export_xl_btn.pack(side="left", padx=(0, 4))
 
     self._sum_refresh_btn = ctk.CTkButton(
         btn_block, text="↺  Refresh", command=lambda: _refresh_summary(self),
         width=74, height=30, corner_radius=6, fg_color="#1A3A5C",
-        hover_color="#1E4A72", text_color=WHITE, font=FF(8, "bold"), border_width=0)
+        hover_color="#1E4A72", text_color=WHITE,
+        font=FF(8, "bold"), border_width=0)
     self._sum_refresh_btn.pack(side="left", padx=(0, 4))
 
     self._sum_clear_all_btn = ctk.CTkButton(
         btn_block, text="🗑  Clear All", command=lambda: _clear_all(self),
         width=80, height=30, corner_radius=6, fg_color="#3D1010",
-        hover_color="#5C1A1A", text_color="#FF8A80", font=FF(8, "bold"), border_width=0)
+        hover_color="#5C1A1A", text_color="#FF8A80",
+        font=FF(8, "bold"), border_width=0)
     self._sum_clear_all_btn.pack(side="left")
 
     self._sum_import_amort_btn = ctk.CTkButton(
         btn_block, text="⬆  Amort.", command=lambda: _import_amort_file(self),
         width=74, height=30, corner_radius=6, fg_color="#1A3A5C",
-        hover_color="#1E4A72", text_color=WHITE, font=FF(8, "bold"), border_width=0)
+        hover_color="#1E4A72", text_color=WHITE,
+        font=FF(8, "bold"), border_width=0)
     self._sum_import_amort_btn.pack(side="left", padx=(4, 0))
 
     self._sum_import_other_btn = ctk.CTkButton(
         btn_block, text="⬆  Other Data", command=lambda: _import_other_data_file(self),
         width=88, height=30, corner_radius=6, fg_color="#2A1A5C",
-        hover_color="#3A2472", text_color="#C8B8FF", font=FF(8, "bold"), border_width=0)
+        hover_color="#3A2472", text_color="#C8B8FF",
+        font=FF(8, "bold"), border_width=0)
     self._sum_import_other_btn.pack(side="left", padx=(4, 0))
 
     self._sum_import_ploan_btn = ctk.CTkButton(
         btn_block, text="⬆  P.Loan", command=lambda: _import_ploan_file(self),
         width=74, height=30, corner_radius=6, fg_color="#1A4A3C",
-        hover_color="#256050", text_color="#A0FFD8", font=FF(8, "bold"), border_width=0)
+        hover_color="#256050", text_color="#A0FFD8",
+        font=FF(8, "bold"), border_width=0)
     self._sum_import_ploan_btn.pack(side="left", padx=(4, 0))
 
     self._sum_merge_db_btn = ctk.CTkButton(
         btn_block, text="⛁  Merge DB", command=lambda: _merge_db_files(self),
         width=80, height=30, corner_radius=6, fg_color="#2D4A1E",
-        hover_color="#3D6128", text_color="#B9F5A0", font=FF(8, "bold"), border_width=0)
+        hover_color="#3D6128", text_color="#B9F5A0",
+        font=FF(8, "bold"), border_width=0)
     self._sum_merge_db_btn.pack(side="left", padx=(4, 0))
 
     self._sum_merge_xl_btn = ctk.CTkButton(
         btn_block, text="⛁  Merge Excel", command=lambda: _merge_excel_files(self),
         width=90, height=30, corner_radius=6, fg_color="#1E3D4A",
-        hover_color="#255262", text_color="#A0E4F5", font=FF(8, "bold"), border_width=0)
+        hover_color="#255262", text_color="#A0E4F5",
+        font=FF(8, "bold"), border_width=0)
     self._sum_merge_xl_btn.pack(side="left", padx=(4, 0))
 
     self._sum_dedup_btn = ctk.CTkButton(
         btn_block, text="🔗  Dedup", command=lambda: _run_dedup(self),
         width=72, height=30, corner_radius=6, fg_color="#4A2D1E",
-        hover_color="#623D28", text_color="#FFD0A0", font=FF(8, "bold"), border_width=0)
+        hover_color="#623D28", text_color="#FFD0A0",
+        font=FF(8, "bold"), border_width=0)
     self._sum_dedup_btn.pack(side="left", padx=(4, 0))
 
-    self._sum_dedup_btn.pack(side="left", padx=(4, 0))
-
-    # ── ADD THIS ──────────────────────────────────────────────────────
     self._sum_validate_btn = ctk.CTkButton(
         btn_block, text="✔  Validate", command=lambda: _validate_clients(self),
         width=80, height=30, corner_radius=6, fg_color="#1A4A2A",
-        hover_color="#256035", text_color="#A0FFB8", font=FF(8, "bold"), border_width=0)
+        hover_color="#256035", text_color="#A0FFB8",
+        font=FF(8, "bold"), border_width=0)
     self._sum_validate_btn.pack(side="left", padx=(4, 0))
-    # ──────────────────────────────────────────────────────────────────
 
+    # ── Controls row ──────────────────────────────────────────────────
     controls_row = tk.Frame(main, bg="#F0F4FA",
                             highlightbackground=BORDER_MID, highlightthickness=1)
-    controls_row.pack(fill="x", padx=PAD, pady=(0, 0))
+    controls_row.pack(fill="x", padx=PAD)
 
     stats_group = tk.Frame(controls_row, bg="#F0F4FA")
     stats_group.pack(side="left", padx=10, pady=8)
     self._sum_stat_labels = {}
     for key, label, color, pill_bg in [
-        ("total",  "Total",  NAVY_DEEP,      "#E8EEF8"),
-        ("done",   "Done",   ACCENT_SUCCESS, "#F0FDF4"),
-        ("errors", "Errors", ACCENT_RED,     "#FFF0F0"),
-        ("income", "Income", NAVY_MID,       "#EEF3FA"),
-        ("net",    "Net",    NET_GREEN,      "#F0FDF4"),
+        ("total",         "Total",          NAVY_DEEP,      "#E8EEF8"),
+        ("done",          "Done",           ACCENT_SUCCESS, "#F0FDF4"),
+        ("errors",        "Errors",         ACCENT_RED,     "#FFF0F0"),
+        ("income",        "Income",         NAVY_MID,       "#EEF3FA"),
+        ("net",           "Net",            NET_GREEN,      "#F0FDF4"),
+        ("amort_current", "Curr. Amort.",   ACCENT_GOLD,    "#FFFBF0"),
     ]:
         pill = tk.Frame(stats_group, bg=pill_bg,
                         highlightbackground=BORDER_MID, highlightthickness=1)
         pill.pack(side="left", padx=(0, 6))
         tk.Label(pill, text=label, font=F(7, "bold"), fg=TXT_MUTED,
-                bg=pill_bg, padx=10, pady=3).pack()
+                 bg=pill_bg, padx=10, pady=3).pack()
         lbl = tk.Label(pill, text="—", font=F(11, "bold"),
-                    fg=color, bg=pill_bg, padx=10, pady=4)
+                       fg=color, bg=pill_bg, padx=10, pady=4)
         lbl.pack()
         self._sum_stat_labels[key] = lbl
 
@@ -1240,28 +1212,26 @@ def _build_lookup_summary_panel(self, parent):
         side="left", fill="y", pady=6, padx=4)
 
     search_wrap = tk.Frame(controls_row, bg=WHITE,
-                        highlightbackground=BORDER_MID, highlightthickness=1)
+                           highlightbackground=BORDER_MID, highlightthickness=1)
     search_wrap.pack(side="left", fill="x", expand=True, padx=8, pady=8)
     tk.Label(search_wrap, text="🔍", font=("Segoe UI Emoji", 9),
-            bg=WHITE, fg=NAVY_PALE).pack(side="left", padx=(8, 2))
+             bg=WHITE, fg=NAVY_PALE).pack(side="left", padx=(8, 2))
     self._sum_search_var = tk.StringVar()
     self._sum_search_var.trace_add("write", lambda *a: _on_search_change(self))
     _HINT = "Search all fields… separate terms with commas for AND filtering"
     _se = tk.Entry(search_wrap, textvariable=self._sum_search_var,
-            font=F(9), fg=TXT_MUTED, bg=WHITE, relief="flat", bd=0,
-            insertbackground=NAVY_MID)
+                   font=F(9), fg=TXT_MUTED, bg=WHITE, relief="flat", bd=0,
+                   insertbackground=NAVY_MID)
     _se.pack(side="left", fill="x", expand=True, pady=6)
     _se.insert(0, _HINT)
 
     def _se_focus_in(e):
         if self._sum_search_var.get() == _HINT:
-            _se.delete(0, "end")
-            _se.config(fg=TXT_NAVY)
+            _se.delete(0, "end"); _se.config(fg=TXT_NAVY)
 
     def _se_focus_out(e):
         if not self._sum_search_var.get().strip():
-            _se.config(fg=TXT_MUTED)
-            _se.insert(0, _HINT)
+            _se.config(fg=TXT_MUTED); _se.insert(0, _HINT)
 
     _se.bind("<FocusIn>",  _se_focus_in)
     _se.bind("<FocusOut>", _se_focus_out)
@@ -1280,7 +1250,7 @@ def _build_lookup_summary_panel(self, parent):
         border_width=1, border_color=BORDER_MID, state="disabled")
     self._sum_prev_btn.pack(side="left", padx=(0, 4))
     self._sum_page_lbl = tk.Label(pg_sub, text="Page 1",
-                                font=F(8), fg=TXT_SOFT, bg="#F0F4FA")
+                                  font=F(8), fg=TXT_SOFT, bg="#F0F4FA")
     self._sum_page_lbl.pack(side="left", padx=4)
     self._sum_next_btn = ctk.CTkButton(
         pg_sub, text="▶", command=lambda: _page_next(self),
@@ -1289,18 +1259,18 @@ def _build_lookup_summary_panel(self, parent):
         border_width=1, border_color=BORDER_MID, state="disabled")
     self._sum_next_btn.pack(side="left", padx=(4, 0))
 
+    # ── Treeview ──────────────────────────────────────────────────────
     tbl_outer = tk.Frame(main, bg=BORDER_LIGHT)
     tbl_outer.pack(fill="both", expand=True, padx=PAD, pady=(8, PAD))
     tbl_wrap = tk.Frame(tbl_outer, bg=CARD_WHITE)
     tbl_wrap.pack(fill="both", expand=True, padx=1, pady=1)
-    tbl_wrap.rowconfigure(0, weight=1)
-    tbl_wrap.columnconfigure(0, weight=1)
+    tbl_wrap.rowconfigure(0, weight=1); tbl_wrap.columnconfigure(0, weight=1)
 
     vscroll = tk.Scrollbar(tbl_wrap, orient="vertical", relief="flat",
-                        troughcolor=OFF_WHITE, bg=BORDER_LIGHT, width=8, bd=0)
+                           troughcolor=OFF_WHITE, bg=BORDER_LIGHT, width=8, bd=0)
     vscroll.grid(row=0, column=1, sticky="ns")
     hscroll = tk.Scrollbar(tbl_wrap, orient="horizontal", relief="flat",
-                        troughcolor=OFF_WHITE, bg=BORDER_LIGHT, bd=0)
+                           troughcolor=OFF_WHITE, bg=BORDER_LIGHT, bd=0)
     hscroll.grid(row=1, column=0, columnspan=2, sticky="ew")
 
     self._sum_tree = ttk.Treeview(
@@ -1315,13 +1285,12 @@ def _build_lookup_summary_panel(self, parent):
     for db_col, label, width_px, is_mon, is_txt in TABLE_COLS:
         anchor = "e" if is_mon else "w"
         self._sum_tree.heading(db_col, text=label,
-            command=lambda c=db_col: _sort_by(self, c))
+                               command=lambda c=db_col: _sort_by(self, c))
         self._sum_tree.column(db_col, width=width_px, minwidth=60,
-                            anchor=anchor, stretch=False)
+                              anchor=anchor, stretch=False)
 
     self._sum_tree.tag_configure("even", background=ROW_BG_EVEN)
     self._sum_tree.tag_configure("odd",  background=ROW_BG_ODD)
-    self._sum_tree.tag_configure("net",  foreground=NET_GREEN)
     self._sum_tree.bind("<Double-1>", lambda e: _on_tree_double_click(self, e))
     self._sum_tree.bind("<Button-3>", lambda e: _on_tree_right_click(self, e))
     self._sum_tree.bind("<Enter>",
@@ -1377,83 +1346,77 @@ def _update_stats(self):
     raw    = self._sum_search_var.get().strip()
     search = "" if "separate terms with commas" in raw else raw
     tots   = _db_totals(session_id=self._sum_session_filter, search=search)
+
     def _fmt(val):
-        if val is None: return "—"
-        try: return f"P{float(val):,.0f}"
-        except Exception: return "—"
+        if val is None:
+            return "—"
+        try:
+            return f"P{float(val):,.0f}"
+        except Exception:
+            return "—"
+
     self._sum_stat_labels["total"].config(text=str(tots.get("total", 0)))
     self._sum_stat_labels["done"].config(text=str(tots.get("done", 0)))
     self._sum_stat_labels["errors"].config(text=str(tots.get("errors", 0)))
     self._sum_stat_labels["income"].config(text=_fmt(tots.get("income")))
     self._sum_stat_labels["net"].config(text=_fmt(tots.get("net")))
+    self._sum_stat_labels["amort_current"].config(text=_fmt(tots.get("amort_current")))
 
 
 def _update_pagination(self, total: int):
     total_pages = max(1, -(-total // PAGE_SIZE))
     cur_page    = self._sum_page + 1
     self._sum_page_lbl.config(text=f"Page {cur_page} / {total_pages}")
-    self._sum_prev_btn.configure(state="normal" if self._sum_page > 0 else "disabled")
-    self._sum_next_btn.configure(state="normal" if cur_page < total_pages else "disabled")
+    self._sum_prev_btn.configure(
+        state="normal" if self._sum_page > 0 else "disabled")
+    self._sum_next_btn.configure(
+        state="normal" if cur_page < total_pages else "disabled")
 
 
 def _page_prev(self):
     if self._sum_page > 0:
-        self._sum_page -= 1
-        _load_and_render(self)
+        self._sum_page -= 1; _load_and_render(self)
 
 
 def _page_next(self):
     total_pages = max(1, -(-self._sum_total_rows // PAGE_SIZE))
     if self._sum_page + 1 < total_pages:
-        self._sum_page += 1
-        _load_and_render(self)
+        self._sum_page += 1; _load_and_render(self)
 
 
 def _fmt_money(val) -> str:
-    if val in (None, ""): return "—"
-    try: return f"P{float(val):,.2f}"
-    except Exception: return str(val) or "—"
+    if val in (None, ""):
+        return "—"
+    try:
+        return f"P{float(val):,.2f}"
+    except Exception:
+        return str(val) or "—"
 
 
 def _render_tree(self, rows):
     self._sum_tree.delete(*self._sum_tree.get_children())
     self._sum_row_data = {}
+
     for i, row in enumerate(rows):
         row    = dict(row)
         row_id = row.get("id")
 
-        # ── parse results_json once for all derived fields ─────────────
+        # ── Parse results_json once for all virtual fields ─────────────
         try:
             results_blob = json.loads(row.get("results_json", "") or "{}")
         except Exception:
             results_blob = {}
 
-        # amort history total
-        try:
-            amort_data   = results_blob.get("credit_history_amort", {})
-            raw_total    = amort_data.get("total", "") if isinstance(amort_data, dict) else ""
-            if raw_total:
-                cleaned = re.sub(r"[^\d.]", "", str(raw_total).replace(",", ""))
-                row["amort_history_total"] = float(cleaned) if cleaned else None
-            else:
-                row["amort_history_total"] = None
-        except Exception:
-            row["amort_history_total"] = None
-
-        # CIBI display columns
+        # ── Virtual columns — derived at render time ───────────────────
         row["spouse_info"]        = _extract_spouse_info(results_blob)
         row["personal_assets"]    = _extract_asset_items(results_blob, "cibi_personal_assets")
         row["business_assets"]    = _extract_asset_items(results_blob, "cibi_business_assets")
         row["business_inventory"] = _extract_asset_items(results_blob, "cibi_business_inventory")
 
-        row["amort_current_total"] = row.get("amort_current_total")
-        row["loan_balance"]        = row.get("loan_balance")
-        row["amortized_cost"]      = row.get("amortized_cost")
-        row["principal_loan"]      = row.get("principal_loan")
-        # ── NEW: P.Loan detail columns are read directly from DB ───────
-        row["maturity"]            = row.get("maturity") or ""
-        row["interest_rate"]       = row.get("interest_rate") or ""
-        # ──────────────────────────────────────────────────────────────
+        # ── amort_history_total: use real DB value; backfill if missing ─
+        if row.get("amort_history_total") is None and results_blob:
+            row["amort_history_total"] = _parse_amort_history_total(
+                row.get("results_json", ""))
 
         tag    = "even" if i % 2 == 0 else "odd"
         values = []
@@ -1465,13 +1428,13 @@ def _render_tree(self, rows):
                 values.append(str(raw).replace("\n", "  ·  "))
             else:
                 values.append(str(raw))
-        self._sum_tree.insert("", "end", iid=str(row_id), values=values, tags=(tag,))
+        self._sum_tree.insert("", "end", iid=str(row_id),
+                              values=values, tags=(tag,))
         self._sum_row_data[str(row_id)] = row
 
 
 def _sort_by(self, col_key: str):
-    _VIRTUAL_COLS = {"spouse_info", "personal_assets", "business_assets", "business_inventory",
-                     "amort_history_total"}
+    # ── Virtual columns cannot be sorted by DB; fall back to name ─────
     if col_key in _VIRTUAL_COLS:
         col_key = "applicant_name"
 
@@ -1480,10 +1443,12 @@ def _sort_by(self, col_key: str):
     else:
         self._sum_sort_col = col_key
         self._sum_sort_asc = True
+
     self._sum_page = 0
     for db_col, label, _, __, ___ in TABLE_COLS:
         active = (self._sum_sort_col == db_col)
-        ind = (" ▲" if active and self._sum_sort_asc else " ▼" if active else "")
+        ind = (" ▲" if active and self._sum_sort_asc else
+               " ▼" if active else "")
         self._sum_tree.heading(db_col, text=label + ind)
     _load_and_render(self)
 
@@ -1494,23 +1459,27 @@ def _sort_by(self, col_key: str):
 
 def _on_tree_double_click(self, event):
     iid = self._sum_tree.focus()
-    if not iid: return
+    if not iid:
+        return
     row = self._sum_row_data.get(iid)
-    if row: _open_detail_window(self, row)
+    if row:
+        _open_detail_window(self, row)
 
 
 def _on_tree_right_click(self, event):
     iid = self._sum_tree.identify_row(event.y)
-    if not iid: return
+    if not iid:
+        return
     self._sum_tree.selection_set(iid)
     self._sum_tree.focus(iid)
     menu = tk.Menu(self._sum_tree, tearoff=0, bg=CARD_WHITE, fg=TXT_NAVY,
-                activebackground=NAVY_MIST, font=("Segoe UI", 9))
+                   activebackground=NAVY_MIST, font=("Segoe UI", 9))
     menu.add_command(label="👁  View Details",
-        command=lambda: _open_detail_window(self, self._sum_row_data.get(iid, {})))
+                     command=lambda: _open_detail_window(
+                         self, self._sum_row_data.get(iid, {})))
     menu.add_separator()
     menu.add_command(label="✕  Delete",
-        command=lambda: _delete_row(self, int(iid)))
+                     command=lambda: _delete_row(self, int(iid)))
     try:
         menu.tk_popup(event.x_root, event.y_root)
     finally:
@@ -1530,100 +1499,108 @@ def _open_detail_window(self, row: dict):
     canvas.pack(side="left", fill="both", expand=True)
     body = tk.Frame(canvas, bg=CARD_WHITE)
     cwin = canvas.create_window((0, 0), window=body, anchor="nw")
+
     def _on_cfg(e):
         canvas.configure(scrollregion=canvas.bbox("all"))
         canvas.itemconfig(cwin, width=canvas.winfo_width())
+
     body.bind("<Configure>", _on_cfg)
     canvas.bind("<Configure>", _on_cfg)
     canvas.bind_all("<MouseWheel>",
-        lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+                    lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
     _build_detail_panel(self, row, body)
     ctk.CTkButton(body, text="Close", command=win.destroy,
-                width=100, height=32, corner_radius=7,
-                fg_color=NAVY_LIGHT, hover_color=NAVY_PALE,
-                text_color=WHITE, font=FF(9, "bold")).pack(pady=(12, 16))
+                  width=100, height=32, corner_radius=7,
+                  fg_color=NAVY_LIGHT, hover_color=NAVY_PALE,
+                  text_color=WHITE, font=FF(9, "bold")).pack(pady=(12, 16))
 
 
 def _build_detail_panel(self, row: dict, parent: tk.Frame):
     info_strip = tk.Frame(parent, bg=NAVY_MIST)
     info_strip.pack(fill="x")
+
     for label, value in [
-        ("Client ID",            row.get("client_id",        "—") or "—"),
-        ("PN",                   row.get("pn",               "—") or "—"),
-        ("Applicant",            row.get("applicant_name",   "—") or "—"),
-        ("Industry",             row.get("industry_name",    "—") or "—"),
-        ("Residence Address",    row.get("residence_address","—") or "—"),
-        ("Office Address",       row.get("office_address",   "—") or "—"),
-        ("Loan Balance",         _fmt_money(row.get("loan_balance"))      or "—"),
-        ("Total Amortized Cost", _fmt_money(row.get("amortized_cost"))    or "—"),
-        ("Principal Loan",       _fmt_money(row.get("principal_loan"))    or "—"),
-        # ── NEW: show maturity and interest rate in detail view ─────────
-        ("Maturity",             row.get("maturity",      "—") or "—"),
-        ("Interest Rate",        row.get("interest_rate", "—") or "—"),
-        # ────────────────────────────────────────────────────────────────
-        ("Source File",          row.get("source_file",      "—") or "—"),
-        ("Processed At",         (row.get("processed_at","") or "")[:16].replace("T","  ")),
-        ("Session",              (row.get("session_id",  "") or "")[:19].replace("T","  ")),
+        ("Client ID",            row.get("client_id",         "—") or "—"),
+        ("PN",                   row.get("pn",                "—") or "—"),
+        ("Applicant",            row.get("applicant_name",    "—") or "—"),
+        ("Industry",             row.get("industry_name",     "—") or "—"),
+        ("Residence Address",    row.get("residence_address", "—") or "—"),
+        ("Office Address",       row.get("office_address",    "—") or "—"),
+        ("Loan Balance",         _fmt_money(row.get("loan_balance"))   or "—"),
+        ("Total Amortized Cost", _fmt_money(row.get("amortized_cost")) or "—"),
+        ("Principal Loan",       _fmt_money(row.get("principal_loan")) or "—"),
+        ("Maturity",             row.get("maturity",          "—") or "—"),
+        ("Interest Rate",        row.get("interest_rate",     "—") or "—"),
+        ("Amort. History",       _fmt_money(row.get("amort_history_total")) or "—"),
+        ("Curr. Amort.",         _fmt_money(row.get("amort_current_total")) or "—"),
+        ("Source File",          row.get("source_file",       "—") or "—"),
+        ("Processed At",         (row.get("processed_at", "") or "")[:16].replace("T", "  ")),
+        ("Session",              (row.get("session_id",   "") or "")[:19].replace("T", "  ")),
     ]:
         col = tk.Frame(info_strip, bg=NAVY_MIST)
         col.pack(side="left", padx=12, pady=8, anchor="w")
-        tk.Label(col, text=label, font=F(7,"bold"), fg=TXT_MUTED, bg=NAVY_MIST).pack(anchor="w")
-        tk.Label(col, text=value or "—", font=F(9,"bold"), fg=NAVY_DEEP,
-                bg=NAVY_MIST, wraplength=180, justify="left").pack(anchor="w")
+        tk.Label(col, text=label, font=F(7, "bold"),
+                 fg=TXT_MUTED, bg=NAVY_MIST).pack(anchor="w")
+        tk.Label(col, text=value or "—", font=F(9, "bold"), fg=NAVY_DEEP,
+                 bg=NAVY_MIST, wraplength=180, justify="left").pack(anchor="w")
+
     flags = tk.Frame(info_strip, bg=NAVY_MIST)
     flags.pack(side="right", padx=12, pady=8)
     if row.get("petrol_risk"):
-        tk.Label(flags, text="⚠ Petrol Risk", font=F(8,"bold"),
-                fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
+        tk.Label(flags, text="⚠ Petrol Risk", font=F(8, "bold"),
+                 fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
     if row.get("transport_risk"):
-        tk.Label(flags, text="⚠ Transport Risk", font=F(8,"bold"),
-                fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
+        tk.Label(flags, text="⚠ Transport Risk", font=F(8, "bold"),
+                 fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
 
     tk.Frame(parent, bg=BORDER_MID, height=1).pack(fill="x")
 
     try:
-        results = json.loads(row.get("results_json","") or "{}")
+        results = json.loads(row.get("results_json", "") or "{}")
     except Exception:
         results = {}
 
     last_section = None
     PAD_X        = 16
+
     for idx, (key, section, field_label) in enumerate(LOOKUP_ROWS):
         field_data = results.get(key, {})
         items  = field_data.get("items", []) if isinstance(field_data, dict) else []
         total  = field_data.get("total", "") if isinstance(field_data, dict) else ""
         non_m  = key in NON_MONETARY
+
         if section != last_section:
             last_section = section
             sec_bar = tk.Frame(parent, bg=SEC_BG)
             sec_bar.pack(fill="x", padx=PAD_X, pady=(8, 0))
             tk.Label(sec_bar, text=f"  {section.upper()}",
-                    font=F(8,"bold"), fg=SEC_FG, bg=SEC_BG, pady=4).pack(side="left")
+                     font=F(8, "bold"), fg=SEC_FG, bg=SEC_BG, pady=4).pack(side="left")
+
         row_bg = ROW_BG_EVEN if idx % 2 == 0 else ROW_BG_ODD
         row_f  = tk.Frame(parent, bg=row_bg,
-                        highlightbackground="#E5EAF3", highlightthickness=1)
+                          highlightbackground="#E5EAF3", highlightthickness=1)
         row_f.pack(fill="x", padx=PAD_X)
-        tk.Label(row_f, text=field_label, font=F(8,"bold"), fg=NAVY_DEEP,
-                bg=row_bg, padx=8, pady=6, anchor="w", width=26).pack(side="left")
+        tk.Label(row_f, text=field_label, font=F(8, "bold"), fg=NAVY_DEEP,
+                 bg=row_bg, padx=8, pady=6, anchor="w", width=26).pack(side="left")
         amt_txt = total if (total and not non_m) else "—"
         tk.Label(row_f, text=amt_txt,
-                font=F(9,"bold") if amt_txt != "—" else F(8),
-                fg=NAVY_MID if amt_txt != "—" else TXT_MUTED,
-                bg=row_bg, padx=8, width=14, anchor="e").pack(side="left")
+                 font=F(9, "bold") if amt_txt != "—" else F(8),
+                 fg=NAVY_MID if amt_txt != "—" else TXT_MUTED,
+                 bg=row_bg, padx=8, width=14, anchor="e").pack(side="left")
         det_txt = ("\n".join(f"• {it}" for it in items) if items else "No data found")
         tk.Label(row_f, text=det_txt, font=F(8),
-                fg=TXT_NAVY if items else TXT_MUTED,
-                bg=row_bg, padx=8, anchor="w",
-                wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
+                 fg=TXT_NAVY if items else TXT_MUTED,
+                 bg=row_bg, padx=8, anchor="w",
+                 wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
 
-    page_map = row.get("page_map","") or ""
+    page_map = row.get("page_map", "") or ""
     if page_map:
         pm = tk.Frame(parent, bg=CARD_WHITE)
-        pm.pack(fill="x", padx=PAD_X, pady=(8,12))
-        tk.Label(pm, text="Page Map:", font=F(7,"bold"),
-                fg=TXT_MUTED, bg=CARD_WHITE).pack(anchor="w")
+        pm.pack(fill="x", padx=PAD_X, pady=(8, 12))
+        tk.Label(pm, text="Page Map:", font=F(7, "bold"),
+                 fg=TXT_MUTED, bg=CARD_WHITE).pack(anchor="w")
         tk.Label(pm, text=page_map, font=FMONO(7), fg=TXT_SOFT,
-                bg=CARD_WHITE, justify="left", anchor="w").pack(anchor="w", padx=8)
+                 bg=CARD_WHITE, justify="left", anchor="w").pack(anchor="w", padx=8)
     else:
         tk.Frame(parent, bg=CARD_WHITE, height=10).pack()
 
@@ -1646,7 +1623,8 @@ def _clear_all(self):
     if total == 0:
         messagebox.showinfo("Clear All", "There are no records to delete.")
         return
-    if not messagebox.askyesno("Clear All Records",
+    if not messagebox.askyesno(
+            "Clear All Records",
             f"This will permanently delete ALL {total} applicant record(s) "
             f"from the database.\n\nThis cannot be undone.\n\nContinue?",
             icon="warning"):
@@ -1658,11 +1636,11 @@ def _clear_all(self):
 def _run_dedup(self):
     if not messagebox.askyesno(
             "Deduplicate by Client ID",
-            "This will scan the database and merge any rows that share the same Client ID.\n\n"
+            "This will scan the database and merge any rows that share the "
+            "same Client ID.\n\n"
             "• The most complete record is kept.\n"
             "• Missing fields are filled in from duplicates.\n"
-            "• Duplicate rows are deleted.\n\n"
-            "Continue?"):
+            "• Duplicate rows are deleted.\n\nContinue?"):
         return
 
     _flash_btn(self, self._sum_dedup_btn, "⟳  Working…", 60_000)
@@ -1675,9 +1653,9 @@ def _run_dedup(self):
                 _flash_btn(self, self._sum_dedup_btn, "✓  Done!", 2500),
                 messagebox.showinfo(
                     "Deduplication Complete",
-                    f"Deduplication finished.\n\n"
-                    f"✓  Duplicate rows removed : {removed}\n\n"
-                    f"All unique Client IDs now have a single consolidated record."
+                    (f"Deduplication finished.\n\n"
+                     f"✓  Duplicate rows removed : {removed}\n\n"
+                     f"All unique Client IDs now have a single consolidated record.")
                     if removed > 0 else
                     "No duplicate Client IDs found — the database is already clean."
                 )
@@ -1699,12 +1677,10 @@ def _run_dedup(self):
 def _import_amort_file(self):
     path = filedialog.askopenfilename(
         title="Import Amortization Values",
-        filetypes=[
-            ("Excel & CSV files", "*.xlsx *.csv"),
-            ("Excel files",       "*.xlsx"),
-            ("CSV files",         "*.csv"),
-            ("All files",         "*.*"),
-        ])
+        filetypes=[("Excel & CSV files", "*.xlsx *.csv"),
+                   ("Excel files", "*.xlsx"),
+                   ("CSV files", "*.csv"),
+                   ("All files", "*.*")])
     if not path:
         return
 
@@ -1735,8 +1711,7 @@ def _import_amort_file(self):
                         continue
                     records.append({
                         all_cols[i]: (str(v).strip() if v is not None else "")
-                        for i, v in enumerate(row)
-                        if i < len(all_cols)
+                        for i, v in enumerate(row) if i < len(all_cols)
                     })
                 wb.close()
 
@@ -1754,10 +1729,9 @@ def _import_amort_file(self):
 
             col_client = _find_col(all_cols, "applicant", "client", "name")
             col_amort  = _find_col(all_cols,
-                                "monthlypaymentamount", "monthly payment amount",
-                                "monthlypayment",       "paymentamount",
-                                "currentamort",         "totalcurrentamort",
-                                "amort")
+                                   "monthlypaymentamount", "monthly payment amount",
+                                   "monthlypayment", "paymentamount",
+                                   "currentamort", "totalcurrentamort", "amort")
 
             missing = []
             if not col_client: missing.append("Applicant / Client")
@@ -1773,11 +1747,8 @@ def _import_amort_file(self):
             for file_row in records:
                 client_name = str(file_row.get(col_client) or "").strip()
                 raw_val     = str(file_row.get(col_amort)  or "").strip()
-                display     = client_name.upper()
-
                 if not client_name:
                     continue
-
                 try:
                     cleaned   = re.sub(r"[^\d.]", "", raw_val.replace(",", ""))
                     amort_val = float(cleaned) if cleaned else None
@@ -1785,13 +1756,9 @@ def _import_amort_file(self):
                     amort_val = None
 
                 if amort_val is None:
-                    bad_rows.append((display, f"bad value: '{raw_val}'"))
+                    bad_rows.append((client_name.upper(), f"bad value: '{raw_val}'"))
                     continue
-
-                if client_name in aggregated:
-                    aggregated[client_name] += amort_val
-                else:
-                    aggregated[client_name]  = amort_val
+                aggregated[client_name] = aggregated.get(client_name, 0.0) + amort_val
 
             updated_strict  = []
             updated_relaxed = []
@@ -1815,15 +1782,12 @@ def _import_amort_file(self):
             msg  = "Import complete.\n\n"
             msg += f"✓  Updated  : {total_updated} record(s)\n"
             msg += f"–  Skipped  : {len(skipped_names)} row(s)\n"
-
             if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed/first-last pass "
-                msg += "(middle name ignored) — please verify:\n"
+                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed pass — please verify:\n"
                 for file_n, db_n in updated_relaxed[:10]:
                     msg += f"  • File: {file_n}  →  DB: {db_n}\n"
                 if len(updated_relaxed) > 10:
                     msg += f"  … and {len(updated_relaxed) - 10} more\n"
-
             if skipped_names:
                 msg += "\nSkipped rows:\n"
                 for name, reason in skipped_names[:10]:
@@ -1835,7 +1799,6 @@ def _import_amort_file(self):
                 _flash_btn(self, self._sum_import_amort_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Amort. Import Result", msg)
             ))
-
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: (
@@ -1853,12 +1816,10 @@ def _import_amort_file(self):
 def _import_other_data_file(self):
     path = filedialog.askopenfilename(
         title="Import Other Data (Client ID / PN / Industry / Loan Balance)",
-        filetypes=[
-            ("Excel & CSV files", "*.xlsx *.csv"),
-            ("Excel files",       "*.xlsx"),
-            ("CSV files",         "*.csv"),
-            ("All files",         "*.*"),
-        ])
+        filetypes=[("Excel & CSV files", "*.xlsx *.csv"),
+                   ("Excel files", "*.xlsx"),
+                   ("CSV files", "*.csv"),
+                   ("All files", "*.*")])
     if not path:
         return
 
@@ -1889,8 +1850,7 @@ def _import_other_data_file(self):
                         continue
                     records.append({
                         all_cols[i]: (str(v).strip() if v is not None else "")
-                        for i, v in enumerate(row)
-                        if i < len(all_cols)
+                        for i, v in enumerate(row) if i < len(all_cols)
                     })
                 wb.close()
 
@@ -1917,28 +1877,21 @@ def _import_other_data_file(self):
             col_loanbal   = _find_col(all_cols, "loanbalance", "loan balance",
                                       "loan_balance", "loanbal", "balance")
             col_amortcost = _find_col(all_cols, "amortizedcost", "amortized cost",
-                                      "amortized_cost", "amortcost", "amortised cost",
-                                      "amortisedcost")
+                                      "amortized_cost", "amortcost",
+                                      "amortised cost", "amortisedcost")
 
             if not col_name:
                 raise ValueError(
                     f"Could not detect a client name column.\n\n"
-                    f"Expected: clientname, applicant, or similar.\n"
                     f"File has: {', '.join(all_cols)}")
 
-            has_clientid  = bool(col_clientid)
-            has_pn        = bool(col_pn)
-            has_industry  = bool(col_industry)
-            has_loanbal   = bool(col_loanbal)
-            has_amortcost = bool(col_amortcost)
-
-            if not any([has_clientid, has_pn, has_industry, has_loanbal, has_amortcost]):
+            if not any([col_clientid, col_pn, col_industry, col_loanbal, col_amortcost]):
                 raise ValueError(
-                    f"No data columns found (clientid / pnid / industryname / loanbalance / amortizedcost).\n\n"
-                    f"File has: {', '.join(all_cols)}")
+                    f"No data columns found (clientid / pnid / industryname / "
+                    f"loanbalance / amortizedcost).\n\nFile has: {', '.join(all_cols)}")
 
-            pn_collect = {}
-            if has_pn:
+            pn_collect: dict[str, list] = {}
+            if col_pn:
                 for file_row in records:
                     client_name = str(file_row.get(col_name) or "").strip()
                     if not client_name:
@@ -1972,14 +1925,17 @@ def _import_other_data_file(self):
                         agg[name_key] = (agg.get(name_key) or 0.0) + val
                 return agg
 
-            loan_bal_bad  = []
-            amortcost_bad = []
-            loan_bal_agg  = _agg_numeric(col_loanbal,   records, col_name, loan_bal_bad,  "loanbalance")  if has_loanbal   else {}
-            amortcost_agg = _agg_numeric(col_amortcost, records, col_name, amortcost_bad, "amortizedcost") if has_amortcost else {}
+            loan_bal_bad  = []; amortcost_bad = []
+            loan_bal_agg  = (_agg_numeric(col_loanbal,   records, col_name,
+                                          loan_bal_bad,  "loanbalance")
+                             if col_loanbal   else {})
+            amortcost_agg = (_agg_numeric(col_amortcost, records, col_name,
+                                          amortcost_bad, "amortizedcost")
+                             if col_amortcost else {})
 
-            seen_names = set()
-            deduped    = []
-            dup_count  = 0
+            seen_names: set[str] = set()
+            deduped: list[dict]  = []
+            dup_count = 0
 
             for file_row in records:
                 client_name = str(file_row.get(col_name) or "").strip()
@@ -1987,76 +1943,61 @@ def _import_other_data_file(self):
                     continue
                 name_key = client_name.upper()
                 if name_key in seen_names:
-                    dup_count += 1
-                    continue
+                    dup_count += 1; continue
                 seen_names.add(name_key)
-                pn_joined = "\n".join(pn_collect.get(name_key, [])) if has_pn else ""
+                pn_joined = "\n".join(pn_collect.get(name_key, [])) if col_pn else ""
                 deduped.append({
                     "name":           client_name,
-                    "client_id":      str(file_row.get(col_clientid) or "").strip() if has_clientid else "",
+                    "client_id":      str(file_row.get(col_clientid) or "").strip()
+                                      if col_clientid else "",
                     "pn_joined":      pn_joined,
-                    "industry":       str(file_row.get(col_industry) or "").strip() if has_industry else "",
-                    "loan_balance":   loan_bal_agg.get(name_key)   if has_loanbal   else None,
-                    "amortized_cost": amortcost_agg.get(name_key)  if has_amortcost else None,
+                    "industry":       str(file_row.get(col_industry) or "").strip()
+                                      if col_industry else "",
+                    "loan_balance":   loan_bal_agg.get(name_key)   if col_loanbal   else None,
+                    "amortized_cost": amortcost_agg.get(name_key)  if col_amortcost else None,
                 })
 
-            updated_strict   = []
-            updated_relaxed  = []
-            skipped_no_match = []
+            updated_strict   = []; updated_relaxed  = []; skipped_no_match = []
 
             for entry in deduped:
-                client_name    = entry["name"]
-                client_id      = entry["client_id"]
-                pn_joined      = entry["pn_joined"]
-                industry       = entry["industry"]
-                loan_balance   = entry["loan_balance"]
-                amortized_cost = entry["amortized_cost"]
-                display        = client_name.upper()
-
-                hits, sim_label = _resolve_name_similarity(client_name)
-
+                hits, sim_label = _resolve_name_similarity(entry["name"])
                 if not hits:
-                    skipped_no_match.append(display)
-                    continue
-
+                    skipped_no_match.append(entry["name"].upper()); continue
                 rows_written = _db_update_other_data_all(
-                    hits, client_id, pn_joined, industry, loan_balance, amortized_cost)
+                    hits, entry["client_id"], entry["pn_joined"],
+                    entry["industry"], entry["loan_balance"], entry["amortized_cost"])
                 if rows_written:
                     if sim_label == "exact":
-                        updated_strict.append((display, hits[0][1]))
+                        updated_strict.append((entry["name"].upper(), hits[0][1]))
                     else:
-                        updated_relaxed.append((display, hits[0][1]))
+                        updated_relaxed.append((entry["name"].upper(), hits[0][1]))
 
             _db_deduplicate_client_ids()
-
             self.after(0, lambda: _refresh_summary(self))
 
             total_updated = len(updated_strict) + len(updated_relaxed)
             cols_imported = ", ".join(filter(None, [
-                "Client ID"            if has_clientid  else "",
-                "PN (all)"             if has_pn        else "",
-                "Industry Name"        if has_industry  else "",
-                "Loan Balance"         if has_loanbal   else "",
-                "Total Amortized Cost" if has_amortcost else "",
+                "Client ID"            if col_clientid  else "",
+                "PN (all)"             if col_pn        else "",
+                "Industry Name"        if col_industry  else "",
+                "Loan Balance"         if col_loanbal   else "",
+                "Total Amortized Cost" if col_amortcost else "",
             ]))
-
             msg  = "Other Data import complete.\n\n"
             msg += f"Columns imported  : {cols_imported}\n"
             msg += f"✓  Updated        : {total_updated} record(s)\n"
-            msg += f"↩  Duplicates skipped (scalar fields): {dup_count}\n"
+            msg += f"↩  Duplicates skipped: {dup_count}\n"
             msg += f"–  No DB match    : {len(skipped_no_match)} name(s)\n"
             if loan_bal_bad:
                 msg += f"⚠  Unparseable loan balance values: {len(loan_bal_bad)}\n"
             if amortcost_bad:
                 msg += f"⚠  Unparseable amortized cost values: {len(amortcost_bad)}\n"
-
             if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via similarity (non-exact) — please verify:\n"
+                msg += f"\n⚠  {len(updated_relaxed)} matched via similarity — please verify:\n"
                 for file_n, db_n in updated_relaxed[:10]:
                     msg += f"  • File: {file_n}  →  DB: {db_n}\n"
                 if len(updated_relaxed) > 10:
                     msg += f"  … and {len(updated_relaxed) - 10} more\n"
-
             if skipped_no_match:
                 msg += "\nNames with no DB match:\n"
                 for name in skipped_no_match[:10]:
@@ -2068,7 +2009,6 @@ def _import_other_data_file(self):
                 _flash_btn(self, self._sum_import_other_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Other Data Import Result", msg)
             ))
-
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: (
@@ -2080,18 +2020,16 @@ def _import_other_data_file(self):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  PRINCIPAL LOAN IMPORT  ── now also reads Maturity and Interest Rate
+#  PRINCIPAL LOAN IMPORT
 # ═══════════════════════════════════════════════════════════════════════
 
 def _import_ploan_file(self):
     path = filedialog.askopenfilename(
         title="Import Principal Loan (Client ID + Loan Amount + Maturity + Interest Rate)",
-        filetypes=[
-            ("Excel & CSV files", "*.xlsx *.csv"),
-            ("Excel files",       "*.xlsx"),
-            ("CSV files",         "*.csv"),
-            ("All files",         "*.*"),
-        ])
+        filetypes=[("Excel & CSV files", "*.xlsx *.csv"),
+                   ("Excel files", "*.xlsx"),
+                   ("CSV files", "*.csv"),
+                   ("All files", "*.*")])
     if not path:
         return
 
@@ -2122,8 +2060,7 @@ def _import_ploan_file(self):
                         continue
                     records.append({
                         all_cols[i]: (str(v).strip() if v is not None else "")
-                        for i, v in enumerate(row)
-                        if i < len(all_cols)
+                        for i, v in enumerate(row) if i < len(all_cols)
                     })
                 wb.close()
 
@@ -2139,79 +2076,56 @@ def _import_ploan_file(self):
                             return c
                 return None
 
-            # ── required columns ──────────────────────────────────────
-            col_clientid = _find_col(
-                all_cols,
-                "clientid", "client id", "client_id", "cid",
-            )
-            col_amount = _find_col(
-                all_cols,
-                "loanamount", "loan amount", "loan_amount",
-                "principalloan", "principal loan", "principal_loan",
-                "amount", "loanamt",
-            )
+            col_clientid = _find_col(all_cols, "clientid", "client id",
+                                     "client_id", "cid")
+            col_amount   = _find_col(all_cols, "loanamount", "loan amount",
+                                     "loan_amount", "principalloan",
+                                     "principal loan", "principal_loan",
+                                     "amount", "loanamt")
+            col_maturity = _find_col(all_cols, "maturity", "maturitydate",
+                                     "maturity date", "maturity_date",
+                                     "duedate", "due date", "due_date",
+                                     "expirydate", "expiry date",
+                                     "loanterm", "loan term", "term")
+            col_interest = _find_col(all_cols, "interestrate", "interest rate",
+                                     "interest_rate", "rate", "intrate",
+                                     "int rate", "annualrate", "annual rate",
+                                     "interestpercent", "interest percent",
+                                     "interest")
 
             missing = []
             if not col_clientid: missing.append("Client ID  (clientid / cid)")
             if not col_amount:   missing.append("Loan Amount  (loanamount / principalloan / amount)")
             if missing:
                 raise ValueError(
-                    f"Could not detect required column(s):\n"
+                    "Could not detect required column(s):\n"
                     + "\n".join(f"  • {m}" for m in missing)
-                    + f"\n\nFile has: {', '.join(all_cols)}"
-                )
+                    + f"\n\nFile has: {', '.join(all_cols)}")
 
-            # ── NEW: optional columns ─────────────────────────────────
-            col_maturity = _find_col(
-                all_cols,
-                "maturity", "maturitydate", "maturity date",
-                "maturity_date", "duedate", "due date", "due_date",
-                "expirydate", "expiry date", "loanterm", "loan term",
-                "term",
-            )
-            col_interest = _find_col(
-                all_cols,
-                "interestrate", "interest rate", "interest_rate",
-                "rate", "intrate", "int rate", "annualrate",
-                "annual rate", "interestpercent", "interest percent",
-                "interest",
-            )
-            # ──────────────────────────────────────────────────────────
-
-            aggregated:  dict[str, float] = {}
-            maturity_map:  dict[str, str]  = {}   # cid_key → maturity string
-            interest_map:  dict[str, str]  = {}   # cid_key → interest_rate string
-            bad_rows:    list[tuple]       = []
+            aggregated:   dict[str, float] = {}
+            maturity_map: dict[str, str]   = {}
+            interest_map: dict[str, str]   = {}
+            bad_rows:     list[tuple]      = []
 
             for file_row in records:
                 raw_cid = str(file_row.get(col_clientid) or "").strip()
                 raw_amt = str(file_row.get(col_amount)   or "").strip()
-
                 if not raw_cid:
                     continue
-
                 cid_key = raw_cid.upper()
-
-                # ── principal loan amount (aggregated / summed) ────────
                 try:
                     cleaned = re.sub(r"[^\d.]", "", raw_amt.replace(",", ""))
                     amount  = float(cleaned) if cleaned else None
                 except Exception:
                     amount = None
-
                 if amount is None:
                     bad_rows.append((raw_cid, f"bad amount: '{raw_amt}'"))
-                    # still try to capture maturity / interest even if amount is bad
                 else:
                     aggregated[cid_key] = aggregated.get(cid_key, 0.0) + amount
-
-                # ── NEW: maturity (first non-empty value wins) ─────────
                 if col_maturity and cid_key not in maturity_map:
                     raw_mat = str(file_row.get(col_maturity) or "").strip()
                     if raw_mat:
                         maturity_map[cid_key] = raw_mat
-
-                # ── NEW: interest rate (first non-empty value wins) ────
                 if col_interest and cid_key not in interest_map:
                     raw_int = str(file_row.get(col_interest) or "").strip()
                     if raw_int:
@@ -2221,55 +2135,40 @@ def _import_ploan_file(self):
             not_found: list[str] = []
 
             with _db_connect() as conn:
-                # Build a unified set of all client IDs to process
-                all_cids = set(aggregated.keys()) | set(maturity_map.keys()) | set(interest_map.keys())
-
+                all_cids = (set(aggregated.keys())
+                            | set(maturity_map.keys())
+                            | set(interest_map.keys()))
                 for cid_key in all_cids:
                     db_row = conn.execute(
                         "SELECT id FROM applicants "
                         "WHERE UPPER(TRIM(client_id)) = ?",
-                        (cid_key,)
-                    ).fetchone()
-
+                        (cid_key,)).fetchone()
                     if db_row is None:
-                        not_found.append(cid_key)
-                        continue
-
+                        not_found.append(cid_key); continue
                     row_id = db_row["id"]
                     parts, vals = [], []
-
                     if cid_key in aggregated:
                         parts.append("principal_loan=?")
                         vals.append(aggregated[cid_key])
-
-                    # ── NEW: write maturity if present ─────────────────
                     if cid_key in maturity_map:
                         parts.append("maturity=?")
                         vals.append(maturity_map[cid_key])
-
-                    # ── NEW: write interest_rate if present ────────────
                     if cid_key in interest_map:
                         parts.append("interest_rate=?")
                         vals.append(interest_map[cid_key])
-
                     if parts:
                         conn.execute(
                             f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
-                            vals + [row_id]
-                        )
+                            vals + [row_id])
                         updated.append(cid_key)
 
             self.after(0, lambda: _refresh_summary(self))
 
-            # ── result message ─────────────────────────────────────────
             cols_found = ", ".join(filter(None, [
                 "Loan Amount",
                 f"Maturity (col: '{col_maturity}')" if col_maturity  else "",
                 f"Interest Rate (col: '{col_interest}')" if col_interest else "",
             ]))
-            not_found_maturity  = len(maturity_map)  - sum(1 for k in maturity_map  if k in {c.upper() for c in updated})
-            not_found_interest  = len(interest_map)  - sum(1 for k in interest_map  if k in {c.upper() for c in updated})
-
             msg  = "Principal Loan import complete.\n\n"
             msg += f"Columns detected  : {cols_found}\n"
             msg += f"✓  Updated  : {len(updated):,} record(s)\n"
@@ -2280,14 +2179,12 @@ def _import_ploan_file(self):
                 msg += "ℹ  Interest Rate column not detected — skipped\n"
             if bad_rows:
                 msg += f"⚠  Bad amount values: {len(bad_rows):,} row(s)\n"
-
             if not_found:
                 msg += "\nClient IDs with no DB match:\n"
                 for cid in not_found[:15]:
                     msg += f"  • {cid}\n"
                 if len(not_found) > 15:
                     msg += f"  … and {len(not_found) - 15} more\n"
-
             if bad_rows:
                 msg += "\nRows with unparseable amounts:\n"
                 for cid, reason in bad_rows[:10]:
@@ -2299,7 +2196,6 @@ def _import_ploan_file(self):
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
                 messagebox.showinfo("P.Loan Import Result", msg)
             ))
-
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: (
@@ -2323,71 +2219,68 @@ def _merge_db_files(self):
 
     src_paths = [p for p in paths if Path(p).resolve() != DB_PATH.resolve()]
     if not src_paths:
-        messagebox.showwarning("Merge DB", "All selected files are the current database — nothing to merge.")
+        messagebox.showwarning("Merge DB",
+            "All selected files are the current database — nothing to merge.")
         return
 
     _flash_btn(self, self._sum_merge_db_btn, "⟳  Merging…", 60_000)
 
+    # All real DB columns (excludes virtual display cols)
+    _COLS = [
+        "session_id", "processed_at", "source_file", "status",
+        "applicant_name", "residence_address", "office_address",
+        "income_items", "income_total",
+        "business_items", "business_total",
+        "household_items", "household_total",
+        "net_income", "petrol_risk", "transport_risk",
+        "results_json", "page_map",
+        "amort_history_total",
+        "amort_current_total",
+        "client_id", "pn", "industry_name",
+        "loan_balance", "amortized_cost",
+        "principal_loan", "maturity", "interest_rate",
+    ]
+    _INSERT = (
+        f"INSERT INTO applicants ({', '.join(_COLS)}) "
+        f"VALUES ({', '.join(['?' for _ in _COLS])})"
+    )
+
+    def _ensure_col(conn, col, col_type):
+        existing = [r[1] for r in conn.execute(
+            "PRAGMA table_info(applicants)").fetchall()]
+        if col not in existing:
+            conn.execute(f"ALTER TABLE applicants ADD COLUMN {col} {col_type}")
+
+    _MIGRATIONS = [
+        ("amort_history_total", "REAL"),
+        ("amort_current_total", "REAL"),
+        ("client_id",           "TEXT"),
+        ("pn",                  "TEXT"),
+        ("industry_name",       "TEXT"),
+        ("loan_balance",        "REAL"),
+        ("amortized_cost",      "REAL"),
+        ("principal_loan",      "REAL"),
+        ("maturity",            "TEXT"),
+        ("interest_rate",       "TEXT"),
+    ]
+
     def _worker():
-        _COLS = [
-            "session_id", "processed_at", "source_file", "status",
-            "client_id", "pn",
-            "applicant_name", "residence_address", "office_address",
-            "industry_name",
-            "income_items", "income_total", "business_items", "business_total",
-            "household_items", "household_total", "net_income",
-            "petrol_risk", "transport_risk", "results_json", "page_map",
-            "amort_current_total", "loan_balance", "amortized_cost",
-            "principal_loan",
-            # ── NEW ───────────────────────────────────────────────────
-            "maturity", "interest_rate",
-            # ──────────────────────────────────────────────────────────
-        ]
-        _INSERT = (
-            f"INSERT INTO applicants ({', '.join(_COLS)}) "
-            f"VALUES ({', '.join(['?' for _ in _COLS])})"
-        )
-
-        def _ensure_col(conn, col, col_type):
-            existing = [r[1] for r in conn.execute("PRAGMA table_info(applicants)").fetchall()]
-            if col not in existing:
-                conn.execute(f"ALTER TABLE applicants ADD COLUMN {col} {col_type}")
-
-        total_inserted  = 0
-        total_skipped   = 0
-        total_patched   = 0
-        file_results    = []
+        total_inserted = 0; total_skipped = 0; total_patched = 0
+        file_results   = []
 
         try:
             with _db_connect() as out_conn:
-                for col, ctype in [("amort_current_total", "REAL"),
-                                   ("client_id",           "TEXT"),
-                                   ("pn",                  "TEXT"),
-                                   ("industry_name",       "TEXT"),
-                                   ("loan_balance",        "REAL"),
-                                   ("amortized_cost",      "REAL"),
-                                   ("principal_loan",      "REAL"),
-                                   # ── NEW ────────────────────────────
-                                   ("maturity",            "TEXT"),
-                                   ("interest_rate",       "TEXT")]:
+                for col, ctype in _MIGRATIONS:
                     _ensure_col(out_conn, col, ctype)
 
                 for src in src_paths:
                     try:
                         s_conn = sqlite3.connect(str(src), timeout=10)
                         s_conn.row_factory = sqlite3.Row
-                        for col, ctype in [("amort_current_total", "REAL"),
-                                           ("client_id",           "TEXT"),
-                                           ("pn",                  "TEXT"),
-                                           ("industry_name",       "TEXT"),
-                                           ("loan_balance",        "REAL"),
-                                           ("amortized_cost",      "REAL"),
-                                           ("principal_loan",      "REAL"),
-                                           # ── NEW ────────────────────
-                                           ("maturity",            "TEXT"),
-                                           ("interest_rate",       "TEXT")]:
+                        for col, ctype in _MIGRATIONS:
                             _ensure_col(s_conn, col, ctype)
-                        src_rows = s_conn.execute("SELECT * FROM applicants").fetchall()
+                        src_rows = s_conn.execute(
+                            "SELECT * FROM applicants").fetchall()
                         s_conn.close()
                     except Exception as e:
                         file_results.append((Path(src).name, 0, 0, 0, str(e)))
@@ -2417,56 +2310,51 @@ def _merge_db_files(self):
                     for row in src_rows:
                         rd           = dict(row)
                         incoming_cid = str(rd.get("client_id") or "").strip().upper()
-                        pk           = (rd.get("session_id", ""), rd.get("source_file", ""))
+                        pk           = (rd.get("session_id", ""),
+                                        rd.get("source_file", ""))
                         fk           = (
                             str(rd.get("applicant_name") or "").strip().upper(),
                             str(rd.get("source_file")    or "").strip().upper(),
                         )
 
                         if incoming_cid and incoming_cid in existing_by_clientid:
-                            target_id = existing_by_clientid[incoming_cid]
-                            _patch_existing(out_conn, target_id, rd)
-                            pat += 1
-                            continue
-
+                            _patch_existing(out_conn,
+                                            existing_by_clientid[incoming_cid], rd)
+                            pat += 1; continue
                         if pk in existing_primary or fk in existing_fallback:
-                            skp += 1
-                            continue
+                            skp += 1; continue
 
                         out_conn.execute(_INSERT, [rd.get(c) for c in _COLS])
                         if incoming_cid:
                             existing_by_clientid[incoming_cid] = out_conn.execute(
-                                "SELECT last_insert_rowid()"
-                            ).fetchone()[0]
+                                "SELECT last_insert_rowid()").fetchone()[0]
                         existing_primary.add(pk)
                         existing_fallback.add(fk)
                         ins += 1
 
                     out_conn.commit()
                     file_results.append((Path(src).name, ins, pat, skp, None))
-                    total_inserted += ins
-                    total_patched  += pat
-                    total_skipped  += skp
+                    total_inserted += ins; total_patched += pat; total_skipped += skp
 
             _db_deduplicate_client_ids()
             self.after(0, lambda: _refresh_summary(self))
 
-            msg  = f"Merge complete.\n\n"
+            msg  = "Merge complete.\n\n"
             msg += f"✓  Inserted : {total_inserted:,} new record(s)\n"
-            msg += f"🔧  Patched  : {total_patched:,} existing record(s) (fields filled in)\n"
+            msg += f"🔧  Patched  : {total_patched:,} existing record(s)\n"
             msg += f"–  Skipped  : {total_skipped:,} (exact duplicates)\n\n"
             msg += "Per file:\n"
             for fname, ins, pat, skp, err in file_results:
                 if err:
                     msg += f"  ✗  {fname}  →  Error: {err}\n"
                 else:
-                    msg += f"  ✓  {fname}  →  {ins:,} inserted, {pat:,} patched, {skp:,} skipped\n"
+                    msg += (f"  ✓  {fname}  →  {ins:,} inserted, "
+                            f"{pat:,} patched, {skp:,} skipped\n")
 
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_merge_db_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Merge DB Result", msg)
             ))
-
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: (
@@ -2506,12 +2394,10 @@ def _merge_excel_files(self):
             "Source of Income", "Total Source Of Income",
             "Business Expenses", "Total Business Expenses",
             "Household / Personal Expenses", "Total Household / Personal Expenses",
-            "Total Net Income", "Total Amortization History",
-            "Total Current Amortization", "Loan Balance",
-            "Total Amortized Cost", "Principal Loan",
-            # ── NEW ───────────────────────────────────────────────────
+            "Total Net Income",
+            "Total Amortization History", "Total Current Amortization",
+            "Loan Balance", "Total Amortized Cost", "Principal Loan",
             "Maturity", "Interest Rate",
-            # ──────────────────────────────────────────────────────────
         ]
         _MONETARY = {
             "Total Source Of Income", "Total Business Expenses",
@@ -2519,7 +2405,8 @@ def _merge_excel_files(self):
             "Total Amortization History", "Total Current Amortization",
             "Loan Balance", "Total Amortized Cost", "Principal Loan",
         }
-        _NET_COL = "Total Net Income"
+        _NET_COL    = "Total Net Income"
+        _SUM_COLS   = _MONETARY | {_NET_COL}
         _COL_WIDTHS = {
             "Client ID": 14, "PN": 12,
             "Applicant": 22, "Residence Address": 30, "Office Address": 26,
@@ -2530,19 +2417,18 @@ def _merge_excel_files(self):
             "Business Expenses": 32, "Total Business Expenses": 22,
             "Household / Personal Expenses": 36,
             "Total Household / Personal Expenses": 24,
-            "Total Net Income": 20, "Total Amortization History": 26,
-            "Total Current Amortization": 26,
+            "Total Net Income": 20,
+            "Total Amortization History": 26, "Total Current Amortization": 26,
             "Loan Balance": 22, "Total Amortized Cost": 24,
-            "Principal Loan": 22,
-            # ── NEW ───────────────────────────────────────────────────
-            "Maturity": 20, "Interest Rate": 18,
-            # ──────────────────────────────────────────────────────────
+            "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
         }
 
         def _to_float(val):
-            if val is None or val == "": return None
+            if val is None or val == "":
+                return None
             try:
-                return float(str(val).replace(",", "").replace("(", "-").replace(")", ""))
+                return float(str(val).replace(",", "")
+                             .replace("(", "-").replace(")", ""))
             except Exception:
                 return None
 
@@ -2561,7 +2447,8 @@ def _merge_excel_files(self):
                 first = str(row[0]).strip().upper() if row[0] is not None else ""
                 if first in ("TOTAL", "AVERAGE") or all(v is None for v in row):
                     continue
-                rec = {h: (row[col_map[h]] if h in col_map else None) for h in _HEADERS}
+                rec = {h: (row[col_map[h]] if h in col_map else None)
+                       for h in _HEADERS}
                 records.append(rec)
             wb.close()
             return records, [h for h in _HEADERS if h not in col_map]
@@ -2572,8 +2459,8 @@ def _merge_excel_files(self):
             from openpyxl.utils import get_column_letter
 
             all_rows       = []
-            seen_clientids = set()
-            seen_names     = set()
+            seen_clientids: set[str] = set()
+            seen_names:     set[str] = set()
             dup_rows       = []
             file_results   = []
 
@@ -2583,20 +2470,15 @@ def _merge_excel_files(self):
                 for row in rows:
                     cid  = str(row.get("Client ID") or "").strip().upper()
                     name = str(row.get("Applicant")  or "").strip().upper()
-
                     if cid and cid in seen_clientids:
                         dup_rows.append((name, Path(path).name, "dup client_id"))
                         continue
                     if not cid and name in seen_names:
                         dup_rows.append((name, Path(path).name, "dup name"))
                         continue
-
-                    if cid:
-                        seen_clientids.add(cid)
-                    if name:
-                        seen_names.add(name)
-                    all_rows.append(row)
-                    ins += 1
+                    if cid: seen_clientids.add(cid)
+                    if name: seen_names.add(name)
+                    all_rows.append(row); ins += 1
                 file_results.append((Path(path).name, ins, missing))
 
             if not all_rows:
@@ -2623,7 +2505,6 @@ def _merge_excel_files(self):
             right_c   = Alignment(horizontal="right", vertical="center")
             left_c    = Alignment(horizontal="left",  vertical="center")
             CURRENCY  = '#,##0.00;(#,##0.00);"-"'
-            SUM_COLS  = _MONETARY | {_NET_COL}
 
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -2633,7 +2514,8 @@ def _merge_excel_files(self):
                 cell = ws.cell(row=1, column=ci, value=h)
                 cell.font = hdr_font; cell.fill = hdr_fill
                 cell.alignment = wrap_al; cell.border = cell_bdr
-                ws.column_dimensions[get_column_letter(ci)].width = _COL_WIDTHS.get(h, 20)
+                ws.column_dimensions[get_column_letter(ci)].width = \
+                    _COL_WIDTHS.get(h, 20)
             ws.row_dimensions[1].height = 28
 
             for ri, row_dict in enumerate(all_rows, 2):
@@ -2641,9 +2523,10 @@ def _merge_excel_files(self):
                 text_lines = []
                 for ci, h in enumerate(_HEADERS, 1):
                     val  = row_dict.get(h)
-                    fval = _to_float(val) if h in SUM_COLS else None
+                    fval = _to_float(val) if h in _SUM_COLS else None
                     cell = ws.cell(row=ri, column=ci,
-                                   value=fval if fval is not None else (val if val is not None else None))
+                                   value=fval if fval is not None
+                                   else (val if val is not None else None))
                     cell.fill = bg_fill; cell.border = cell_bdr
                     if h == _NET_COL:
                         cell.number_format = CURRENCY
@@ -2655,18 +2538,17 @@ def _merge_excel_files(self):
                         cell.font = bold_font; cell.alignment = wrap_al
                     else:
                         cell.font = body_font; cell.alignment = wrap_al
-                        if val: text_lines.append(len(str(val).split("\n")))
-                ws.row_dimensions[ri].height = max(18, min((max(text_lines) if text_lines else 1) * 15, 150))
+                        if val:
+                            text_lines.append(len(str(val).split("\n")))
+                ws.row_dimensions[ri].height = max(
+                    18, min((max(text_lines) if text_lines else 1) * 15, 150))
 
-            first_data = 2
-            last_data  = len(all_rows) + 1
-            tot_row    = last_data + 1
-            avg_row    = last_data + 2
+            first_data = 2; last_data = len(all_rows) + 1
+            tot_row    = last_data + 1; avg_row = last_data + 2
 
             for ci, h in enumerate(_HEADERS, 1):
                 col_l = get_column_letter(ci)
-
-                cell = ws.cell(row=tot_row, column=ci)
+                cell  = ws.cell(row=tot_row, column=ci)
                 cell.fill = tot_fill; cell.border = tot_bdr
                 if h == "Applicant":
                     cell.value = "TOTAL"; cell.font = tot_font; cell.alignment = left_c
@@ -2674,7 +2556,7 @@ def _merge_excel_files(self):
                     cell.value = f"=SUM({col_l}{first_data}:{col_l}{last_data})"
                     cell.number_format = CURRENCY
                     cell.font = tot_font_j; cell.alignment = right_c
-                elif h in SUM_COLS:
+                elif h in _SUM_COLS:
                     cell.value = f"=SUM({col_l}{first_data}:{col_l}{last_data})"
                     cell.number_format = CURRENCY
                     cell.font = tot_font; cell.alignment = right_c
@@ -2684,12 +2566,13 @@ def _merge_excel_files(self):
                 cell_avg = ws.cell(row=avg_row, column=ci)
                 cell_avg.fill = avg_fill; cell_avg.border = tot_bdr
                 if h == "Applicant":
-                    cell_avg.value = "AVERAGE"; cell_avg.font = avg_font; cell_avg.alignment = left_c
+                    cell_avg.value = "AVERAGE"
+                    cell_avg.font = avg_font; cell_avg.alignment = left_c
                 elif h == _NET_COL:
                     cell_avg.value = f"=AVERAGE({col_l}{first_data}:{col_l}{last_data})"
                     cell_avg.number_format = CURRENCY
                     cell_avg.font = avg_font; cell_avg.alignment = right_c
-                elif h in SUM_COLS:
+                elif h in _SUM_COLS:
                     cell_avg.value = f"=AVERAGE({col_l}{first_data}:{col_l}{last_data})"
                     cell_avg.number_format = CURRENCY
                     cell_avg.font = avg_font; cell_avg.alignment = right_c
@@ -2699,7 +2582,6 @@ def _merge_excel_files(self):
             ws.row_dimensions[tot_row].height = 22
             ws.row_dimensions[avg_row].height = 22
             ws.freeze_panes = "A2"
-
             wb.save(out_path)
 
             msg  = f"Merge complete.\n\n"
@@ -2721,11 +2603,11 @@ def _merge_excel_files(self):
                 _flash_btn(self, self._sum_merge_xl_btn, "✓  Saved!", 2500),
                 messagebox.showinfo("Merge Excel Result", msg)
             ))
-
         except ImportError:
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_merge_xl_btn, "openpyxl not installed", 3000),
-                messagebox.showerror("Merge Excel Error", "openpyxl is required.\nRun: pip install openpyxl")
+                messagebox.showerror("Merge Excel Error",
+                    "openpyxl is required.\nRun: pip install openpyxl")
             ))
         except Exception as exc:
             err = str(exc)
@@ -2753,55 +2635,52 @@ def _get_all_filtered_rows(self) -> list:
 
 def _row_to_export_dict(row: dict) -> dict:
     def _fmt(val):
-        try:    return float(val) if val not in (None, "") else None
-        except: return None
+        try:
+            return float(val) if val not in (None, "") else None
+        except Exception:
+            return None
 
-    # amort history from results_json
-    amort_total = None
+    # Derive virtual fields from results_json
     try:
-        results    = json.loads(row.get("results_json", "") or "{}")
-        amort_data = results.get("credit_history_amort", {})
-        raw_total  = amort_data.get("total", "") if isinstance(amort_data, dict) else ""
-        if raw_total:
-            cleaned     = re.sub(r"[^\d.]", "", str(raw_total).replace(",", ""))
-            amort_total = float(cleaned) if cleaned else None
+        results = json.loads(row.get("results_json", "") or "{}")
     except Exception:
-        results     = {}
-        amort_total = None
+        results = {}
 
-    # CIBI display fields for export
     spouse_info        = _extract_spouse_info(results)
     personal_assets    = _extract_asset_items(results, "cibi_personal_assets")
     business_assets    = _extract_asset_items(results, "cibi_business_assets")
     business_inventory = _extract_asset_items(results, "cibi_business_inventory")
 
+    # amort_history_total: prefer real DB column, fall back to JSON parse
+    amort_hist = row.get("amort_history_total")
+    if amort_hist is None:
+        amort_hist = _parse_amort_history_total(row.get("results_json", ""))
+
     return {
-        "Client ID":                           row.get("client_id",     "") or "",
-        "PN":                                  row.get("pn",            "") or "",
-        "Applicant":                           row.get("applicant_name","") or "",
-        "Residence Address":                   row.get("residence_address","") or "",
-        "Office Address":                      row.get("office_address",   "") or "",
-        "Industry Name":                       row.get("industry_name",    "") or "",
+        "Client ID":                           row.get("client_id",          "") or "",
+        "PN":                                  row.get("pn",                 "") or "",
+        "Applicant":                           row.get("applicant_name",     "") or "",
+        "Residence Address":                   row.get("residence_address",  "") or "",
+        "Office Address":                      row.get("office_address",     "") or "",
+        "Industry Name":                       row.get("industry_name",      "") or "",
         "Spouse Info":                         spouse_info,
         "Personal Assets":                     personal_assets,
         "Business Assets":                     business_assets,
         "Business Inventory":                  business_inventory,
-        "Source of Income":                    row.get("income_items",  "") or "",
+        "Source of Income":                    row.get("income_items",       "") or "",
         "Total Source Of Income":              _fmt(row.get("income_total")),
-        "Business Expenses":                   row.get("business_items","") or "",
+        "Business Expenses":                   row.get("business_items",     "") or "",
         "Total Business Expenses":             _fmt(row.get("business_total")),
-        "Household / Personal Expenses":       row.get("household_items","") or "",
+        "Household / Personal Expenses":       row.get("household_items",    "") or "",
         "Total Household / Personal Expenses": _fmt(row.get("household_total")),
         "Total Net Income":                    _fmt(row.get("net_income")),
-        "Total Amortization History":          amort_total,
+        "Total Amortization History":          _fmt(amort_hist),
         "Total Current Amortization":          _fmt(row.get("amort_current_total")),
         "Loan Balance":                        _fmt(row.get("loan_balance")),
         "Total Amortized Cost":                _fmt(row.get("amortized_cost")),
         "Principal Loan":                      _fmt(row.get("principal_loan")),
-        # ── NEW: P.Loan details ───────────────────────────────────────
-        "Maturity":                            row.get("maturity",      "") or "",
-        "Interest Rate":                       row.get("interest_rate", "") or "",
-        # ─────────────────────────────────────────────────────────────
+        "Maturity":                            row.get("maturity",           "") or "",
+        "Interest Rate":                       row.get("interest_rate",      "") or "",
     }
 
 
@@ -2811,7 +2690,7 @@ def _export_csv(self):
         return
     path = filedialog.asksaveasfilename(
         title="Export to CSV", defaultextension=".csv",
-        filetypes=[("CSV files","*.csv"),("All files","*.*")],
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         initialfile=f"LookUp_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     if not path:
         return
@@ -2850,7 +2729,7 @@ def _export_excel(self):
 
     path = filedialog.asksaveasfilename(
         title="Export to Excel", defaultextension=".xlsx",
-        filetypes=[("Excel files","*.xlsx"),("All files","*.*")],
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         initialfile=f"LookUp_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
     if not path:
         return
@@ -2863,8 +2742,8 @@ def _export_excel(self):
 
             all_possible_headers = [c[0] for c in _ALL_EXPORT_COLS]
             selected_set         = set(selected_col_keys)
-            headers              = [h for h in all_possible_headers if h in selected_set]
-
+            headers              = [h for h in all_possible_headers
+                                    if h in selected_set]
             if not headers:
                 return
 
@@ -2895,52 +2774,37 @@ def _export_excel(self):
             CURRENCY  = '#,##0.00;(#,##0.00);"-"'
 
             TOTAL_COLS = {
-                "Total Source Of Income",
-                "Total Business Expenses",
+                "Total Source Of Income", "Total Business Expenses",
                 "Total Household / Personal Expenses",
-                "Total Amortization History",
-                "Total Current Amortization",
-                "Loan Balance",
-                "Total Amortized Cost",
-                "Principal Loan",
+                "Total Amortization History", "Total Current Amortization",
+                "Loan Balance", "Total Amortized Cost", "Principal Loan",
             }
             NET_COL  = "Total Net Income"
             SUM_COLS = TOTAL_COLS | {NET_COL}
 
             col_widths = {
-                "Client ID":                           14,
-                "PN":                                  12,
-                "Applicant":                           22,
-                "Residence Address":                   30,
-                "Office Address":                      26,
-                "Industry Name":                       20,
-                "Spouse Info":                         28,
-                "Personal Assets":                     28,
-                "Business Assets":                     28,
-                "Business Inventory":                  24,
-                "Source of Income":                    32,
-                "Total Source Of Income":              22,
-                "Business Expenses":                   32,
-                "Total Business Expenses":             22,
-                "Household / Personal Expenses":       36,
+                "Client ID": 14, "PN": 12,
+                "Applicant": 22, "Residence Address": 30, "Office Address": 26,
+                "Industry Name": 20,
+                "Spouse Info": 28, "Personal Assets": 28,
+                "Business Assets": 28, "Business Inventory": 24,
+                "Source of Income": 32, "Total Source Of Income": 22,
+                "Business Expenses": 32, "Total Business Expenses": 22,
+                "Household / Personal Expenses": 36,
                 "Total Household / Personal Expenses": 24,
-                "Total Net Income":                    20,
-                "Total Amortization History":          26,
-                "Total Current Amortization":          26,
-                "Loan Balance":                        22,
-                "Total Amortized Cost":                24,
-                "Principal Loan":                      22,
-                # ── NEW ─────────────────────────────────────────────
-                "Maturity":                            20,
-                "Interest Rate":                       18,
-                # ────────────────────────────────────────────────────
+                "Total Net Income": 20,
+                "Total Amortization History": 26,
+                "Total Current Amortization": 26,
+                "Loan Balance": 22, "Total Amortized Cost": 24,
+                "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
             }
 
             for ci, h in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=ci, value=h)
                 cell.font = hdr_font; cell.fill = hdr_fill
                 cell.alignment = wrap_al; cell.border = cell_bdr
-                ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(h, 20)
+                ws.column_dimensions[get_column_letter(ci)].width = \
+                    col_widths.get(h, 20)
             ws.row_dimensions[1].height = 28
 
             for ri, row_dict in enumerate(flat, 2):
@@ -2949,7 +2813,7 @@ def _export_excel(self):
                 for ci, h in enumerate(headers, 1):
                     val  = row_dict.get(h)
                     cell = ws.cell(row=ri, column=ci,
-                                value=val if val is not None else None)
+                                   value=val if val is not None else None)
                     cell.fill = bg_fill; cell.border = cell_bdr
                     if h == NET_COL:
                         cell.number_format = CURRENCY
@@ -2966,15 +2830,12 @@ def _export_excel(self):
                 max_lines = max(text_lines) if text_lines else 1
                 ws.row_dimensions[ri].height = max(18, min(max_lines * 15, 150))
 
-            first_data = 2
-            last_data  = len(flat) + 1
-            total_row  = last_data + 1
-            avg_row    = last_data + 2
+            first_data = 2; last_data = len(flat) + 1
+            total_row  = last_data + 1; avg_row = last_data + 2
 
             for ci, h in enumerate(headers, 1):
                 col_l = get_column_letter(ci)
-
-                cell = ws.cell(row=total_row, column=ci)
+                cell  = ws.cell(row=total_row, column=ci)
                 cell.fill = tot_fill; cell.border = tot_bdr
                 if h == "Applicant":
                     cell.value = "TOTAL"; cell.font = tot_font; cell.alignment = left_c
@@ -2992,7 +2853,8 @@ def _export_excel(self):
                 cell_avg = ws.cell(row=avg_row, column=ci)
                 cell_avg.fill = avg_fill; cell_avg.border = tot_bdr
                 if h == "Applicant":
-                    cell_avg.value = "AVERAGE"; cell_avg.font = avg_font; cell_avg.alignment = left_c
+                    cell_avg.value = "AVERAGE"
+                    cell_avg.font = avg_font; cell_avg.alignment = left_c
                 elif h == NET_COL:
                     cell_avg.value = f"=AVERAGE({col_l}{first_data}:{col_l}{last_data})"
                     cell_avg.number_format = CURRENCY
@@ -3007,8 +2869,8 @@ def _export_excel(self):
             ws.row_dimensions[total_row].height = 22
             ws.row_dimensions[avg_row].height   = 22
             ws.freeze_panes = "A2"
-
             wb.save(path)
+
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_export_xl_btn, "✓  Saved!", 2000),
                 messagebox.showinfo("Export Excel",
@@ -3029,6 +2891,7 @@ def _export_excel(self):
 
     threading.Thread(target=_worker, daemon=True).start()
 
+
 # ═══════════════════════════════════════════════════════════════════════
 #  VALIDATE CLIENT ID ↔ APPLICANT NAME
 # ═══════════════════════════════════════════════════════════════════════
@@ -3036,12 +2899,10 @@ def _export_excel(self):
 def _validate_clients(self):
     path = filedialog.askopenfilename(
         title="Select Reference File (Client ID + Client Name)",
-        filetypes=[
-            ("Excel & CSV files", "*.xlsx *.csv"),
-            ("Excel files",       "*.xlsx"),
-            ("CSV files",         "*.csv"),
-            ("All files",         "*.*"),
-        ])
+        filetypes=[("Excel & CSV files", "*.xlsx *.csv"),
+                   ("Excel files", "*.xlsx"),
+                   ("CSV files", "*.csv"),
+                   ("All files", "*.*")])
     if not path:
         return
 
@@ -3057,7 +2918,6 @@ def _validate_clients(self):
 
     def _worker():
         try:
-            # ── Step 1: Read reference file ────────────────────────────
             def _find_col(cols, *keywords):
                 for kw in keywords:
                     kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
@@ -3090,8 +2950,7 @@ def _validate_clients(self):
                         continue
                     ref_records.append({
                         all_cols[i]: (str(v).strip() if v is not None else "")
-                        for i, v in enumerate(row)
-                        if i < len(all_cols)
+                        for i, v in enumerate(row) if i < len(all_cols)
                     })
                 wb.close()
 
@@ -3101,7 +2960,6 @@ def _validate_clients(self):
             col_cid  = _find_col(all_cols, "clientid", "client id", "client_id", "cid")
             col_name = _find_col(all_cols, "clientname", "client name", "applicant",
                                  "applicantname", "name")
-
             if not col_cid:
                 raise ValueError(
                     f"Could not detect a Client ID column.\n\nFile has: {', '.join(all_cols)}")
@@ -3109,12 +2967,9 @@ def _validate_clients(self):
                 raise ValueError(
                     f"Could not detect a Client Name column.\n\nFile has: {', '.join(all_cols)}")
 
-            # ── Build reference lookup (deduplicated) ──────────────────
-            # ref_map:      cid_upper → name (display case)
-            # ref_all_cids: ordered unique list for "not in DB" check
-            ref_map:      dict[str, str]  = {}
-            ref_order:    list[tuple]     = []   # (cid_display, name_display)
-            seen_ref_cids: set[str]       = set()
+            ref_map:       dict[str, str]  = {}
+            ref_order:     list[tuple]     = []
+            seen_ref_cids: set[str]        = set()
 
             for rec in ref_records:
                 cid  = str(rec.get(col_cid,  "") or "").strip()
@@ -3125,63 +2980,46 @@ def _validate_clients(self):
                     ref_order.append((cid, name))
                     seen_ref_cids.add(cid_up)
 
-            # ── Step 2: Pull all DB rows ───────────────────────────────
             with _db_connect() as conn:
                 db_rows = conn.execute(
                     "SELECT id, client_id, applicant_name, pn, industry_name, "
                     "residence_address, office_address, "
                     "income_total, business_total, household_total, net_income, "
-                    "amort_current_total, loan_balance, amortized_cost, "
+                    "amort_history_total, amort_current_total, "
+                    "loan_balance, amortized_cost, "
                     "principal_loan, maturity, interest_rate "
                     "FROM applicants"
                 ).fetchall()
             db_rows = [dict(r) for r in db_rows]
 
-            # ── Step 3: Match DB rows against reference ────────────────
             matched:   list[tuple] = []
             unmatched: list[tuple] = []
             no_cid:    list[str]   = []
-
-            db_cid_set: set[str] = set()   # upper cids present in DB
+            db_cid_set: set[str]   = set()
 
             for r in db_rows:
-                db_cid  = str(r.get("client_id",     "") or "").strip()
-                db_name = str(r.get("applicant_name","") or "").strip()
-
+                db_cid  = str(r.get("client_id",      "") or "").strip()
+                db_name = str(r.get("applicant_name", "") or "").strip()
                 if not db_cid:
-                    no_cid.append(db_name or "(no name)")
-                    continue
-
-                db_cid_up  = db_cid.upper()
-                db_name_up = db_name.upper()
+                    no_cid.append(db_name or "(no name)"); continue
+                db_cid_up = db_cid.upper()
                 db_cid_set.add(db_cid_up)
-
                 if db_cid_up not in ref_map:
                     unmatched.append((db_cid, db_name, "Client ID not in reference"))
                     continue
-
-                ref_name     = ref_map[db_cid_up]
-                norm_db      = _normalise_for_sim(db_name_up)
-                norm_ref     = _normalise_for_sim(ref_name.upper())
-                score        = _similarity(norm_db, norm_ref)
-
+                ref_name = ref_map[db_cid_up]
+                score    = _similarity(
+                    _normalise_for_sim(db_name.upper()),
+                    _normalise_for_sim(ref_name.upper()))
                 if score >= SIMILARITY_THRESHOLD:
                     matched.append((db_cid, db_name, ref_name))
                 else:
-                    unmatched.append((
-                        db_cid, db_name,
-                        f"Name mismatch — reference: {ref_name}"
-                    ))
+                    unmatched.append((db_cid, db_name,
+                                      f"Name mismatch — reference: {ref_name}"))
 
-            # ── Step 4: Reference entries NOT in DB ────────────────────
-            ref_not_in_db: list[tuple] = [
-                (cid, name)
-                for cid, name in ref_order
-                if cid.upper() not in db_cid_set
-            ]
+            ref_not_in_db = [(cid, name) for cid, name in ref_order
+                             if cid.upper() not in db_cid_set]
 
-            # ── Step 5: Missing column info per DB row ─────────────────
-            # Define which columns to check and their friendly display names
             CHECKED_COLS = [
                 ("client_id",           "Client ID"),
                 ("pn",                  "PN"),
@@ -3193,6 +3031,7 @@ def _validate_clients(self):
                 ("business_total",      "Total Business Expenses"),
                 ("household_total",     "Total Household Expenses"),
                 ("net_income",          "Total Net Income"),
+                ("amort_history_total", "Total Amortization History"),
                 ("amort_current_total", "Total Current Amortization"),
                 ("loan_balance",        "Loan Balance"),
                 ("amortized_cost",      "Total Amortized Cost"),
@@ -3206,27 +3045,20 @@ def _validate_clients(self):
                 missing_cols = []
                 for col_key, col_label in CHECKED_COLS:
                     val = r.get(col_key)
-                    is_empty = (
-                        val is None or
-                        (isinstance(val, str) and val.strip() == "")
-                    )
-                    if is_empty:
+                    if val is None or (isinstance(val, str) and val.strip() == ""):
                         missing_cols.append(col_label)
                 if missing_cols:
                     missing_info_rows.append({
-                        "client_id":     r.get("client_id",     "") or "",
-                        "applicant_name":r.get("applicant_name","") or "(no name)",
-                        "missing":       missing_cols,
+                        "client_id":      r.get("client_id",      "") or "",
+                        "applicant_name": r.get("applicant_name", "") or "(no name)",
+                        "missing":        missing_cols,
                     })
 
-            # ── Step 6: Write Excel report ─────────────────────────────
             import openpyxl
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
             from openpyxl.utils import get_column_letter
 
             wb_out = openpyxl.Workbook()
-
-            # shared styles
             thin     = Side(style="thin",   color="CCCCCC")
             med      = Side(style="medium", color="555555")
             cell_bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -3241,15 +3073,12 @@ def _validate_clients(self):
             fill_hdr_green  = PatternFill("solid", fgColor="2D6A4F")
             fill_hdr_red    = PatternFill("solid", fgColor="9B2226")
             fill_hdr_gray   = PatternFill("solid", fgColor="4A4E69")
-            fill_hdr_blue   = PatternFill("solid", fgColor="1A3A5C")
-            fill_hdr_orange = PatternFill("solid", fgColor="7D4A00")
             fill_match      = PatternFill("solid", fgColor="D8F3DC")
             fill_unmatch    = PatternFill("solid", fgColor="FFE8E8")
             fill_nocid      = PatternFill("solid", fgColor="FFF3CD")
             fill_notindb    = PatternFill("solid", fgColor="E8F0FF")
             fill_section    = PatternFill("solid", fgColor="F0F4FA")
             fill_missing    = PatternFill("solid", fgColor="FFF8E8")
-            fill_miss_hdr   = PatternFill("solid", fgColor="F0E0B0")
 
             def _hc(ws, row, col, value, fill):
                 c = ws.cell(row=row, column=col, value=value)
@@ -3259,39 +3088,30 @@ def _validate_clients(self):
 
             def _bc(ws, row, col, value, fill, fnt=None, al=None):
                 c = ws.cell(row=row, column=col, value=value)
-                c.font  = fnt  or body_f
-                c.fill  = fill
-                c.alignment = al or wrap_al
-                c.border = cell_bdr
+                c.font = fnt or body_f; c.fill = fill
+                c.alignment = al or wrap_al; c.border = cell_bdr
                 return c
 
             def _section_label(ws, row, text, fill_bg, txt_color, ncols):
                 c = ws.cell(row=row, column=1, value=text)
                 c.font = Font(name="Segoe UI", bold=True, size=9, color=txt_color)
-                c.fill = fill_bg
-                c.alignment = wrap_al
-                c.border = cell_bdr
+                c.fill = fill_bg; c.alignment = wrap_al; c.border = cell_bdr
                 if ncols > 1:
-                    ws.merge_cells(
-                        start_row=row, start_column=1,
-                        end_row=row,   end_column=ncols)
+                    ws.merge_cells(start_row=row, start_column=1,
+                                   end_row=row,   end_column=ncols)
                 ws.row_dimensions[row].height = 18
 
-            # ══════════════════════════════════════════════════════════
-            # SHEET 1 — SUMMARY
-            # ══════════════════════════════════════════════════════════
+            # ── Sheet 1: Summary ───────────────────────────────────────
             ws1 = wb_out.active
             ws1.title = "Summary"
             ws1.column_dimensions["A"].width = 38
             ws1.column_dimensions["B"].width = 18
-
             ws1.cell(row=1, column=1,
                      value="Validation Report — Summary").font = \
                 Font(name="Segoe UI", bold=True, size=13, color="1A3A5C")
             ws1.cell(row=1, column=1).alignment = ctr_al
             ws1.merge_cells("A1:B1")
             ws1.row_dimensions[1].height = 28
-
             ws1.cell(row=2, column=1,
                      value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}").font = \
                 Font(name="Segoe UI", size=8, color="888888")
@@ -3306,11 +3126,11 @@ def _validate_clients(self):
             n_miss_rows = len(missing_info_rows)
             rate        = f"{n_matched / total_db * 100:.1f}%" if total_db else "N/A"
 
-            _hc(ws1, 3, 1, "Category",  fill_hdr_gray)
-            _hc(ws1, 3, 2, "Count",     fill_hdr_gray)
+            _hc(ws1, 3, 1, "Category", fill_hdr_gray)
+            _hc(ws1, 3, 2, "Count",    fill_hdr_gray)
             ws1.row_dimensions[3].height = 22
 
-            summary_rows = [
+            for ri, (label, count, fill) in enumerate([
                 ("Total Records in DB",                  total_db,    fill_section),
                 ("✓  Matched (ID + Name correct)",        n_matched,   fill_match),
                 ("✗  Unmatched (ID or Name mismatch)",    n_unmatched, fill_unmatch),
@@ -3318,14 +3138,12 @@ def _validate_clients(self):
                 ("—  In Reference but not in DB",         n_notindb,   fill_notindb),
                 ("⚠  Records with missing column data",   n_miss_rows, fill_missing),
                 ("Total Unique Entries in Reference",     len(ref_map), fill_section),
-            ]
-
-            for ri, (label, count, fill) in enumerate(summary_rows, 4):
+            ], 4):
                 _bc(ws1, ri, 1, label, fill, bold_f, left_c)
                 _bc(ws1, ri, 2, count, fill, bold_f, ctr_al)
                 ws1.row_dimensions[ri].height = 20
 
-            rate_row = 4 + len(summary_rows)
+            rate_row = 4 + 7
             c1 = ws1.cell(row=rate_row, column=1, value="Match Rate")
             c1.font = Font(name="Segoe UI", bold=True, size=10, color="1F6B28")
             c1.alignment = left_c
@@ -3335,108 +3153,83 @@ def _validate_clients(self):
             ws1.row_dimensions[rate_row].height = 22
             ws1.freeze_panes = "A4"
 
-            # ══════════════════════════════════════════════════════════
-            # SHEET 2 — UNMATCHED + NOT IN DB
-            # ══════════════════════════════════════════════════════════
+            # ── Sheet 2: Unmatched & Not in DB ─────────────────────────
             ws2 = wb_out.create_sheet("Unmatched & Not In DB")
             ws2.column_dimensions["A"].width = 18
             ws2.column_dimensions["B"].width = 30
             ws2.column_dimensions["C"].width = 38
             ws2.column_dimensions["D"].width = 16
-
-            _hc(ws2, 1, 1, "Client ID",      fill_hdr_red)
-            _hc(ws2, 1, 2, "Applicant",      fill_hdr_red)
-            _hc(ws2, 1, 3, "Reason / Note",  fill_hdr_red)
-            _hc(ws2, 1, 4, "Issue Type",     fill_hdr_red)
+            _hc(ws2, 1, 1, "Client ID",     fill_hdr_red)
+            _hc(ws2, 1, 2, "Applicant",     fill_hdr_red)
+            _hc(ws2, 1, 3, "Reason / Note", fill_hdr_red)
+            _hc(ws2, 1, 4, "Issue Type",    fill_hdr_red)
             ws2.row_dimensions[1].height = 24
 
             ri = 2
-
-            # ── Section A: DB rows that are unmatched ──────────────────
             if unmatched or no_cid:
                 _section_label(ws2, ri,
                     "SECTION A — DB Records: Unmatched or Missing Client ID",
                     PatternFill("solid", fgColor="FFE8E8"), "9B2226", 4)
                 ri += 1
-
                 for db_cid, db_name, reason in unmatched:
                     issue = "Name Mismatch" if "mismatch" in reason.lower() else "ID Not in Ref"
                     _bc(ws2, ri, 1, db_cid,  fill_unmatch, bold_f)
                     _bc(ws2, ri, 2, db_name, fill_unmatch)
                     _bc(ws2, ri, 3, reason,  fill_unmatch)
                     _bc(ws2, ri, 4, issue,   fill_unmatch, bold_f, ctr_al)
-                    ws2.row_dimensions[ri].height = 18
-                    ri += 1
-
+                    ws2.row_dimensions[ri].height = 18; ri += 1
                 for name in no_cid:
-                    _bc(ws2, ri, 1, "(no ID)",              fill_nocid, bold_f)
-                    _bc(ws2, ri, 2, name,                   fill_nocid)
+                    _bc(ws2, ri, 1, "(no ID)",               fill_nocid, bold_f)
+                    _bc(ws2, ri, 2, name,                    fill_nocid)
                     _bc(ws2, ri, 3, "Missing Client ID in DB", fill_nocid)
-                    _bc(ws2, ri, 4, "No ID",                fill_nocid, bold_f, ctr_al)
-                    ws2.row_dimensions[ri].height = 18
-                    ri += 1
+                    _bc(ws2, ri, 4, "No ID",                 fill_nocid, bold_f, ctr_al)
+                    ws2.row_dimensions[ri].height = 18; ri += 1
 
-            # ── Section B: Reference entries not in DB ─────────────────
-            ri += 1   # spacer
+            ri += 1
             _section_label(ws2, ri,
                 "SECTION B — In Reference File but NOT found in DB",
                 PatternFill("solid", fgColor="E8F0FF"), "1A3A5C", 4)
             ri += 1
-
             if ref_not_in_db:
                 for ref_cid, ref_name in ref_not_in_db:
-                    _bc(ws2, ri, 1, ref_cid,              fill_notindb, bold_f)
-                    _bc(ws2, ri, 2, ref_name,             fill_notindb)
-                    _bc(ws2, ri, 3, "Not found in DB",    fill_notindb)
-                    _bc(ws2, ri, 4, "Not in DB",          fill_notindb, bold_f, ctr_al)
-                    ws2.row_dimensions[ri].height = 18
-                    ri += 1
+                    _bc(ws2, ri, 1, ref_cid,           fill_notindb, bold_f)
+                    _bc(ws2, ri, 2, ref_name,           fill_notindb)
+                    _bc(ws2, ri, 3, "Not found in DB",  fill_notindb)
+                    _bc(ws2, ri, 4, "Not in DB",        fill_notindb, bold_f, ctr_al)
+                    ws2.row_dimensions[ri].height = 18; ri += 1
             else:
                 c = ws2.cell(row=ri, column=1,
                              value="✓  All reference entries exist in the DB.")
                 c.font = Font(name="Segoe UI", bold=True, size=9, color="1F6B28")
-                c.fill = fill_notindb
-                c.alignment = wrap_al
-                ws2.merge_cells(
-                    start_row=ri, start_column=1, end_row=ri, end_column=4)
+                c.fill = fill_notindb; c.alignment = wrap_al
+                ws2.merge_cells(start_row=ri, start_column=1,
+                                end_row=ri, end_column=4)
                 ws2.row_dimensions[ri].height = 18
-                ri += 1
-
             ws2.freeze_panes = "A2"
 
-            # ══════════════════════════════════════════════════════════
-            # SHEET 3 — MISSING COLUMN INFO PER CLIENT
-            # ══════════════════════════════════════════════════════════
+            # ── Sheet 3: Missing Info ───────────────────────────────────
             ws3 = wb_out.create_sheet("Missing Info")
             ws3.column_dimensions["A"].width = 18
             ws3.column_dimensions["B"].width = 30
             ws3.column_dimensions["C"].width = 16
             ws3.column_dimensions["D"].width = 55
-
-            _hc(ws3, 1, 1, "Client ID",       fill_hdr_orange)
-            _hc(ws3, 1, 2, "Applicant",        fill_hdr_orange)
-            _hc(ws3, 1, 3, "Missing Count",    fill_hdr_orange)
-            _hc(ws3, 1, 4, "Missing Columns",  fill_hdr_orange)
+            _hc(ws3, 1, 1, "Client ID",      fill_hdr_red)
+            _hc(ws3, 1, 2, "Applicant",       fill_hdr_red)
+            _hc(ws3, 1, 3, "Missing Count",   fill_hdr_red)
+            _hc(ws3, 1, 4, "Missing Columns", fill_hdr_red)
             ws3.row_dimensions[1].height = 24
 
             if missing_info_rows:
-                # Sort by most missing fields first
                 missing_info_rows.sort(key=lambda x: len(x["missing"]), reverse=True)
-
                 for ri3, entry in enumerate(missing_info_rows, 2):
-                    n_miss  = len(entry["missing"])
-                    # Color intensity: more missing = more red
-                    if n_miss >= 8:
-                        fill_row = PatternFill("solid", fgColor="FFD0D0")
-                    elif n_miss >= 4:
-                        fill_row = PatternFill("solid", fgColor="FFE8CC")
-                    else:
-                        fill_row = fill_missing
-
-                    _bc(ws3, ri3, 1, entry["client_id"],          fill_row, bold_f)
-                    _bc(ws3, ri3, 2, entry["applicant_name"],      fill_row)
-                    _bc(ws3, ri3, 3, n_miss,                       fill_row, bold_f, ctr_al)
-                    _bc(ws3, ri3, 4, ", ".join(entry["missing"]),  fill_row)
+                    n_miss = len(entry["missing"])
+                    fill_row = (PatternFill("solid", fgColor="FFD0D0") if n_miss >= 8
+                                else PatternFill("solid", fgColor="FFE8CC") if n_miss >= 4
+                                else fill_missing)
+                    _bc(ws3, ri3, 1, entry["client_id"],         fill_row, bold_f)
+                    _bc(ws3, ri3, 2, entry["applicant_name"],     fill_row)
+                    _bc(ws3, ri3, 3, n_miss,                      fill_row, bold_f, ctr_al)
+                    _bc(ws3, ri3, 4, ", ".join(entry["missing"]), fill_row)
                     ws3.row_dimensions[ri3].height = 20
             else:
                 c = ws3.cell(row=2, column=1,
@@ -3445,7 +3238,6 @@ def _validate_clients(self):
                 c.alignment = wrap_al
                 ws3.merge_cells("A2:D2")
                 ws3.row_dimensions[2].height = 22
-
             ws3.freeze_panes = "A2"
 
             wb_out.save(out_path)
@@ -3464,7 +3256,6 @@ def _validate_clients(self):
                 _flash_btn(self, self._sum_validate_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Validation Result", msg)
             ))
-
         except ImportError:
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_validate_btn, "openpyxl missing", 3000),
@@ -3489,7 +3280,8 @@ def _flash_btn(self, btn, msg: str, ms: int):
     try:
         orig = btn.cget("text")
         btn.configure(text=msg)
-        self.after(ms, lambda: btn.configure(text=orig) if btn.winfo_exists() else None)
+        self.after(ms, lambda: btn.configure(text=orig)
+                   if btn.winfo_exists() else None)
     except Exception:
         pass
 

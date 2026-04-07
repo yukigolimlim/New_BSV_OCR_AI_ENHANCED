@@ -29,9 +29,14 @@ from summary_tab import db_save_applicant, lookup_summary_notify
 LOOKUP_ROWS = [
     ("cibi_place_of_work",      "CI/BI Report",      "Office Address",                      "cibi"),
     ("cibi_temp_residence",     "CI/BI Report",      "Residence Address",                    "cibi"),
+    ("cibi_spouse",             "CI/BI Report",      "Spouse / Employment",                  "cibi"),
+    ("cibi_spouse_office",      "CI/BI Report",      "Spouse Office Address",                "cibi"),
+    ("cibi_personal_assets",    "CI/BI Report",      "Personal Assets",                      "cibi"),
+    ("cibi_business_assets",    "CI/BI Report",      "Business Assets",                      "cibi"),
+    ("cibi_business_inventory", "CI/BI Report",      "Business Inventory",                   "cibi"),
     ("cibi_petrol_products",    "CI/BI Report",      "Petrol / Plastics / PVC Risk",         "cibi"),
     ("cibi_transport_services", "CI/BI Report",      "Transport Services Risk",              "cibi"),
-    # ── NEW: Credit History amortization rows ────────────────────────
+    # ── Credit History amortization rows ────────────────────────
     ("credit_history_amort",    "CI/BI Report",      "Credit History Amort.",                "cibi"),
     ("income_remittance",       "Cashflow Analysis", "Source of Income",                     "cfa"),
     ("cfa_business_expenses",   "Cashflow Analysis", "Business Expenses",                    "cfa"),
@@ -60,10 +65,15 @@ DOC_TYPE_KEYWORDS = {
         "place of work", "temporary residence", "employer",
         "trade references", "bank ci", "bank credit information",
         "character investigation",
-        # ── NEW: credit history keywords ─────────────────────────────
         "credit history", "credit history & references",
         "bank/lending institution", "principal loan", "amort.",
         "amortization", "balance",
+        "name of spouse", "spouse", "employed", "self-employed",
+        "personal assets", "business assets", "personal and business assets",
+        "serialized", "household assets", "personal vehicles",
+        "business vehicles", "vehicle",
+        "balance sheet", "business inventory", "inventory",
+        "stocks on hand", "merchandise",
     ],
     "cfa": [
         "cash flow", "cashflow", "cash-flow",
@@ -88,21 +98,19 @@ QUEUE_COLORS = {
 }
 
 # ── Concurrency / rate-limit settings ────────────────────────────────
-MAX_CONCURRENT_FILES = 1
-MAX_PARALLEL_CALLS   = 1
-INTER_CALL_DELAY_S   = 10
-INTER_FILE_DELAY_S   = 35
+MAX_CONCURRENT_FILES = 20
+MAX_PARALLEL_CALLS   = 2
+INTER_CALL_DELAY_S   = 0
+INTER_FILE_DELAY_S   = 0
 
 # Retry settings
 GEMINI_MAX_RETRIES   = 3
 GEMINI_RETRY_DELAYS  = [60, 90, 120]
 
 # ── Global Gemini rate-limit gate ─────────────────────────────────────
-# Shared across ALL threads — ensures no two Gemini calls fire within
-# _GEMINI_MIN_GAP_S seconds of each other, regardless of file count.
 _GEMINI_CALL_LOCK = threading.Lock()
 _GEMINI_LAST_CALL = 0.0
-_GEMINI_MIN_GAP_S = 10.0   # 10s gap → max 6 RPM, safely under free-tier 10 RPM
+_GEMINI_MIN_GAP_S = 0.5
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -110,48 +118,22 @@ _GEMINI_MIN_GAP_S = 10.0   # 10s gap → max 6 RPM, safely under free-tier 10 RP
 # ═══════════════════════════════════════════════════════════════════════
 
 def _auto_rotate_pdf(pdf_bytes: bytes) -> bytes:
-    """
-    Detect and correct page rotation in a PDF so that Gemini receives
-    right-side-up pages regardless of how the document was scanned.
-
-    Strategy
-    --------
-    1. If fitz reports a non-zero rotation angle in the page metadata,
-       reset it to 0 (handles PDFs whose viewer-rotation flag is set).
-    2. For pages that report 0° rotation but whose content may still be
-       physically upside-down (common with flatbed scanner output), render
-       each page to a small grayscale image and run a lightweight OSD
-       (orientation & script detection) using pytesseract if available.
-       If pytesseract is not installed the step is silently skipped —
-       metadata-only correction still applies.
-
-    KEY BEHAVIOUR: if no rotation correction is needed, the original
-    bytes are returned as-is (no fitz save = no decompression inflation).
-    If rotation IS applied, incremental save is used so only the metadata
-    delta is written, leaving all compressed image streams untouched.
-
-    Falls back to the original bytes on any error so the rest of the
-    pipeline is never blocked.
-    """
     try:
-        import fitz  # PyMuPDF
+        import fitz
 
         doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
         modified = False
 
         for page in doc:
-            # ── Step 1: metadata rotation ─────────────────────────────
             if page.rotation != 0:
                 page.set_rotation(0)
                 modified = True
 
-            # ── Step 2: content-based OSD via tesseract (optional) ────
             try:
                 import pytesseract
                 from PIL import Image
 
-                # Render at low DPI — just enough for OSD
-                mat  = fitz.Matrix(72 / 72, 72 / 72)   # 72 DPI
+                mat  = fitz.Matrix(72 / 72, 72 / 72)
                 pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
                 img  = Image.frombytes("L", (pix.width, pix.height), pix.samples)
                 osd  = pytesseract.image_to_osd(
@@ -159,49 +141,31 @@ def _auto_rotate_pdf(pdf_bytes: bytes) -> bytes:
                     config="--psm 0")
                 angle = int(osd.get("rotate", 0))
                 if angle != 0:
-                    # tesseract returns the angle needed to make text upright
-                    # fitz set_rotation uses clockwise degrees
                     page.set_rotation((360 - angle) % 360)
                     modified = True
             except Exception:
-                # pytesseract not installed or OSD failed — skip silently
                 pass
 
-        # ── KEY FIX: skip save entirely if nothing changed ─────────────
-        # Saving even with minimal flags causes fitz to decompress all
-        # image streams, inflating a 3 MB scanned PDF to ~69 MB.
         if not modified:
             return pdf_bytes
 
-        # ── Incremental save: only writes the rotation metadata delta ──
-        # Image streams are never decompressed, so file size is preserved.
-        buf = io.BytesIO(pdf_bytes)   # seed with original bytes
+        buf = io.BytesIO(pdf_bytes)
         doc.save(buf,
                  incremental=True,
                  encryption=fitz.PDF_ENCRYPT_KEEP)
         return buf.getvalue()
 
     except Exception:
-        return pdf_bytes  # safe fallback — never block the pipeline
+        return pdf_bytes
 
 
 def _extract_page_subset(pdf_bytes: bytes, page_numbers: list) -> bytes:
-    """
-    Return a new PDF containing only the given 1-indexed page numbers.
-    Falls back to the full PDF if splitting fails or list is empty.
-
-    KEY FIX: if the requested pages cover the entire document, the
-    original bytes are returned untouched (no fitz save, no inflation).
-    When a subset IS needed, tobytes() with deflate=True keeps image
-    streams compressed so the output stays close to the original size.
-    """
     if not page_numbers:
         return pdf_bytes
     try:
         import fitz
         src = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
 
-        # ── Skip splitting if all pages are already included ───────────
         if sorted(page_numbers) == list(range(1, src.page_count + 1)):
             return pdf_bytes
 
@@ -213,20 +177,14 @@ def _extract_page_subset(pdf_bytes: bytes, page_numbers: list) -> bytes:
         if dst.page_count == 0:
             return pdf_bytes
 
-        # tobytes() with deflate=True keeps compressed image streams small
         return dst.tobytes(garbage=0, deflate=True, clean=False)
 
     except Exception:
-        return pdf_bytes  # safe fallback
+        return pdf_bytes
 
 
 def _pages_for_type(page_map: dict, doc_type: str,
                     total_pages: int, padding: int = 1) -> list:
-    """
-    Return sorted 1-indexed page numbers classified as doc_type,
-    expanded by ±padding pages for context.
-    Returns all pages if nothing was classified as that type.
-    """
     matched = sorted(pg for pg, t in page_map.items() if t == doc_type)
     if not matched:
         return list(range(1, total_pages + 1))
@@ -414,15 +372,11 @@ def _populate_lookup(self, parent):
     self._lookup_filepaths    = []
     self._lookup_cancel       = threading.Event()
     self._lookup_file_data    = {}
-    # Shared raw log — all file threads append here under a lock
     self._lookup_raw_log      = []
     self._lookup_raw_lock     = threading.Lock()
-    # Atomic progress counter
     self._lookup_done_count   = 0
     self._lookup_done_lock    = threading.Lock()
-    # Gemini client — built once on Run, shared across all threads
     self._lookup_gemini_cache = {}
-    # (Excel writing removed — export is handled by the Summary tab)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -473,7 +427,6 @@ def _build_queue_row(self, path: str, index: int):
                         padx=10, anchor="w")
     name_lbl.pack(fill="x")
 
-    # Placeholders — kept for widget dict compatibility
     xlsx_lbl   = tk.Label(row_outer)
     folder_btn = tk.Label(row_outer)
 
@@ -583,7 +536,10 @@ def _build_detail_panel(self, path: str, parent: tk.Frame):
         data  = results.get(key, {})
         items = data.get("items", [])
         total = data.get("total")
-        non_m = key in ("cibi_place_of_work", "cibi_temp_residence")
+        non_m = key in ("cibi_place_of_work", "cibi_temp_residence",
+                        "cibi_spouse", "cibi_spouse_office",
+                        "cibi_personal_assets", "cibi_business_assets",
+                        "cibi_business_inventory")
 
         amt_txt = total if (total and not non_m) else "—"
         tk.Label(row_f, text=amt_txt, font=F(8),
@@ -669,7 +625,6 @@ def _lookup_run(self):
     self._lookup_raw_log    = []
     self._lookup_done_count = 0
 
-    # Session ID for summary tab SQLite grouping
     self._lookup_session_id = datetime.now().isoformat(timespec="seconds")
 
     self._lookup_run_btn.configure(state="disabled", text="Running…")
@@ -677,7 +632,6 @@ def _lookup_run(self):
     self._lookup_prog_bar.pack(fill="x", padx=PAD_VALUE, pady=(8, 0))
     self._lookup_overall_lbl.config(text="Processing…", fg=ACCENT_GOLD)
 
-    # Build the Gemini client ONCE here — shared safely across all threads
     try:
         client, gt = _get_gemini_client(self)
         self._lookup_gemini_cache = {"client": client, "gt": gt}
@@ -710,10 +664,6 @@ def _lookup_worker(self):
         for i, path in enumerate(paths):
             if cancelled():
                 break
-            if i > 0 and INTER_FILE_DELAY_S > 0:
-                self._lookup_cancel.wait(timeout=INTER_FILE_DELAY_S)
-                if cancelled():
-                    break
             futures[pool.submit(
                 _process_single_file_safe, self, path, cancelled)] = path
 
@@ -728,7 +678,7 @@ def _lookup_worker(self):
                 with self._lookup_done_lock:
                     self._lookup_done_count += 1
             except Exception:
-                pass  # already handled inside _process_single_file_safe
+                pass
 
             with self._lookup_done_lock:
                 done = self._lookup_done_count
@@ -740,8 +690,6 @@ def _lookup_worker(self):
         with self._lookup_done_lock:
             done = self._lookup_done_count
         errors = total - done
-
-        # (No Excel totals row — export handled by Summary tab)
 
         s = f"✓  {done}/{total} applicant(s) processed"
         if errors:
@@ -757,7 +705,6 @@ def _lookup_worker(self):
 
 
 def _process_single_file_safe(self, path: str, cancelled) -> None:
-    """Wrapper that captures exceptions and shows them in the queue row."""
     try:
         _process_single_file(self, path, cancelled)
         self._lookup_file_data[path]["status"] = "done"
@@ -795,11 +742,9 @@ def _process_single_file(self, path: str, cancelled) -> None:
         _log(self, f"[{fname}] Read failed: {e}")
         raise
 
-    # ── Save original bytes BEFORE rotation so _gemini_call_with_fallback
-    #    can retry with unmodified PDF if fitz re-encoding causes 400 ───
     original_pdf_bytes = pdf_bytes
 
-    # ── Auto-rotate upside-down / sideways pages ──────────────────────
+    # ── Auto-rotate ───────────────────────────────────────────────────
     step("Correcting page orientation…")
     pdf_bytes = _auto_rotate_pdf(pdf_bytes)
     _log(self, f"[{fname}] {len(pdf_bytes):,} bytes (after rotation fix)")
@@ -819,7 +764,7 @@ def _process_single_file(self, path: str, cancelled) -> None:
         raise
     if cancelled(): return
 
-    # ── Build PDF slices (once, reused by both calls) ────────────────
+    # ── Build PDF slices ──────────────────────────────────────────────
     cibi_pages   = _pages_for_type(page_map, "cibi",      total_pages)
     cfa_pages    = _pages_for_type(page_map, "cfa",       total_pages)
     ws_pages     = _pages_for_type(page_map, "worksheet", total_pages)
@@ -827,8 +772,6 @@ def _process_single_file(self, path: str, cancelled) -> None:
     cfa_ws_pages = sorted(set(cfa_pages) | set(ws_pages))
     pdf_cfa_ws   = _extract_page_subset(pdf_bytes, cfa_ws_pages)
 
-    # ── Keep original slices as fallback in case Gemini rejects
-    #    the fitz-re-encoded bytes with INVALID_ARGUMENT (400) ─────────
     original_pdf_cibi   = _extract_page_subset(original_pdf_bytes, cibi_pages)
     original_pdf_cfa_ws = _extract_page_subset(original_pdf_bytes, cfa_ws_pages)
 
@@ -841,7 +784,7 @@ def _process_single_file(self, path: str, cancelled) -> None:
                   else map_summary)
     if cancelled(): return
 
-    # ── Steps 2+3: Gemini calls (2 calls instead of 4) ───────────────
+    # ── Steps 2+3: Gemini calls ───────────────────────────────────────
     step("Steps 2-3/3 — Gemini calls running…")
     call_results      = {}
     call_results_lock = threading.Lock()
@@ -923,7 +866,6 @@ def _process_single_file(self, path: str, cancelled) -> None:
     results["_gate_data"]      = gate_result
     results["_page_map"]       = map_summary
     results["_source_file"]    = fname
-    # Preserve the raw cfa_net_income string Gemini returned (if any)
     results["_cfa_net_income"] = data_cfaws.get("cfa_net_income", "")
 
     self._lookup_file_data[path]["name"]      = applicant_name
@@ -936,7 +878,7 @@ def _process_single_file(self, path: str, cancelled) -> None:
             text=f"  {n}"))
     if cancelled(): return
 
-    # ── Persist to SQLite (summary tab) ──────────────────────────────
+    # ── Persist to SQLite ─────────────────────────────────────────────
     step("Saving to Summary…")
     try:
         session_id = getattr(self, "_lookup_session_id",
@@ -1089,7 +1031,6 @@ def _gemini_call(self, client, gt, contents, config,
         if cancel_event and cancel_event.is_set():
             raise RuntimeError("Cancelled")
 
-        # ── Global rate-limit gate ─────────────────────────────────────
         with _GEMINI_CALL_LOCK:
             now     = time.time()
             elapsed = now - _GEMINI_LAST_CALL
@@ -1097,7 +1038,6 @@ def _gemini_call(self, client, gt, contents, config,
                 wait = _GEMINI_MIN_GAP_S - elapsed
                 time.sleep(wait)
             _GEMINI_LAST_CALL = time.time()
-        # ──────────────────────────────────────────────────────────────
 
         try:
             resp = client.models.generate_content(
@@ -1115,7 +1055,6 @@ def _gemini_call(self, client, gt, contents, config,
             if is_transient and attempt < max_retries - 1:
                 base  = GEMINI_RETRY_DELAYS[min(attempt, len(GEMINI_RETRY_DELAYS)-1)]
                 delay = base + random.uniform(-base * 0.2, base * 0.2)
-                # ── Extract the specific HTTP error code for display ───
                 _code = "ERR"
                 for _candidate in ("429", "502", "503", "500"):
                     if _candidate in msg:
@@ -1128,7 +1067,6 @@ def _gemini_call(self, client, gt, contents, config,
                         _code = "TIMEOUT"
                     elif "unavailable" in msg.lower():
                         _code = "UNAVAILABLE"
-                # ──────────────────────────────────────────────────────
                 _ui(self, lambda w=int(delay), a=attempt, r=max_retries, c=_code:
                     self._lookup_overall_lbl.config(
                         text=f"Gemini {c} — retry {a+1}/{r} in {w}s…",
@@ -1145,13 +1083,6 @@ def _gemini_call_with_fallback(self, client, gt,
                                 pdf_bytes, original_pdf_bytes,
                                 prompt, config,
                                 cancel_event=None):
-    """
-    Attempt the Gemini call with processed pdf_bytes first.
-    If Gemini returns INVALID_ARGUMENT (400), retry ONCE using the
-    original unmodified pdf_bytes as a fallback before giving up.
-    This handles cases where fitz re-encoding produces a PDF that
-    Gemini's parser rejects even with minimal save options.
-    """
     for attempt_bytes, label in [
             (pdf_bytes,          "processed"),
             (original_pdf_bytes, "original (fallback)"),
@@ -1170,8 +1101,8 @@ def _gemini_call_with_fallback(self, client, gt,
             if is_invalid and label == "processed":
                 _log(self, f"  400 INVALID_ARGUMENT on {label} PDF — "
                            f"retrying with original bytes…")
-                continue   # try again with original_pdf_bytes
-            raise          # re-raise for all other errors or if fallback also fails
+                continue
+            raise
 
 
 def _pdf_part(gt, pdf_bytes: bytes):
@@ -1207,7 +1138,9 @@ def _parse_json_safe(text: str) -> dict:
     return {}
 
 
-# ── Combined call 1: CI/BI + name/addresses + Credit History ─────────
+# ═══════════════════════════════════════════════════════════════════════
+#  GEMINI CALL 1 — CI/BI + ASSETS  (rewritten to match exact doc layout)
+# ═══════════════════════════════════════════════════════════════════════
 
 def _gemini_extract_cibi_combined(self, client, gt,
                                   pdf_bytes: bytes,
@@ -1215,110 +1148,258 @@ def _gemini_extract_cibi_combined(self, client, gt,
                                   original_pdf_bytes: bytes = None) -> tuple:
     if pg_summary:
         scope = (f"The page classifier identified these sections:\n{pg_summary}\n\n"
-                 f"Focus on the CI/BI Report pages identified above.")
+                 f"Focus on the CI/BI Report and Assets pages identified above.")
     else:
         scope = ("The document is a fully scanned PDF. Search ALL pages for "
-                 "CI/BI Report content — typically the first 1-2 pages.")
+                 "CI/BI Report content and the Assets page.")
 
-    hint_block = (f"\n\nPartial text from CI/BI pages:\n{hint[:3000]}"
+    hint_block = (f"\n\nPartial text extracted from CI/BI pages (use only as hint):\n{hint[:3000]}"
                   if hint else "")
 
-    prompt = f"""You are a credit analyst reviewing a Philippine rural bank loan application.
-This is a SCANNED document — printed labels with handwritten values.
-Read it visually as an image.
+    prompt = f"""You are a credit analyst extracting data from a Philippine rural bank loan application.
+This is a SCANNED document — it has printed form labels and handwritten/typed values.
+Read the document VISUALLY as an image. Values are written AFTER the colon of their label
+or on the blank line immediately BELOW the label.
 
 {scope}
 
-Extract ALL of the following fields from the CI/BI Report section.
+══════════════════════════════════════════════════════
+RULE 1 — NEVER confuse a label with a value.
+  The printed label (e.g. "Residence Address:") is NOT the value.
+  The value is ONLY what was handwritten or typed by the applicant
+  on the blank space/line that follows the label.
+
+RULE 2 — NEVER borrow a value from a neighbouring field/row.
+  Each field stands alone. If a field's own value cell is a dash ( - ),
+  blank, or zero, that field has NO value. Do not fill it from nearby.
+
+RULE 3 — Extract ONLY from the section/category specified.
+  Do not pull data from the wrong section even if it seems related.
+══════════════════════════════════════════════════════
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IDENTITY FIELDS (plain strings, not arrays)
+PAGE 1 (or first CI/BI page): CI/BI REPORT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-applicant_name
-  Full legal name of the loan applicant.
-  Look for: "Name of Applicant", "Borrower", "Client", "Name".
+The CI/BI REPORT page contains the following fields in order:
 
-residence_address
-  Applicant's home address.
-  Look for: "Residence Address", "Home Address", "Permanent Address".
-  IMPORTANT — Philippine address notation:
-    "P1", "P2" etc. means "Purok 1", "Purok 2" — write it in full.
-    Never output Unicode box characters or Roman numerals for digits.
+① applicant_name  (plain string)
+   Label: "Name of Applicant", "Borrower", "Client", or "Name".
+   Return the handwritten full name only.
 
-office_address
-  Read ONLY from a field explicitly labelled "Office Address".
-  If blank, N/A, or absent — return empty string.
+② residence_address  (plain string)
+   Label: "Residence Address", "Home Address", or "Permanent Address".
+   Philippine notation: expand "P1"→"Purok 1", "P2"→"Purok 2", etc.
+   Return the handwritten address only.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RISK / ADDRESS FIELDS (arrays of objects)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+③ office_address  (plain string)
+   Label: "Office Address" — for the APPLICANT only (not the spouse).
+   Return "" if blank or absent.
 
-cibi_place_of_work
-  Employer name and address, or own business name/address if self-employed.
-  Look for: "Office Address", "Employer", "Name of Employer / Business",
-  "Business Address", "Nature of Business", "Position / Occupation".
-  Also check TRADE REFERENCES and BANK REFERENCES sections.
-  Set amount = "N/A".
+④ cibi_spouse  (array)
+   Labels: "Name of Spouse" / "Spouse" / "Husband" / "Wife"
+           AND "Employed" / "Self-Employed" / "Occupation" / "Nature of Work".
+   Combine into ONE item:
+     description = "<Spouse Name> — <Employment/Occupation>"
+   If only name → use name. If only occupation → use occupation.
+   If both blank → return []. NEVER create two separate items.
 
-cibi_temp_residence
-  Applicant's residence address as written on the CI/BI form.
-  Look for: "Residence Address", "Home Address", "Address", "Permanent Address".
-  Write "Purok 1", "Purok 2" etc. — never "P1", "P2", or any symbol.
-  Set amount = "N/A". Return [] only if completely blank.
+⑤ cibi_spouse_office  (array)
+   The spouse's Office Address — the "Office Address" field that appears
+   in the SPOUSE section (below or next to the spouse name fields).
+   description = the address or employer name + address written there.
+   amount = "N/A". Return [] if blank or absent.
 
-cibi_petrol_products
-  Flag any employer, own business, or trade/bank reference involving:
-  petroleum, oil depot, gasoline station, LPG, fuel, lubricants,
-  plastic packaging, PVC, polypropylene, rubber, chemicals,
-  fertilizer manufacturing.
-  Return [] if none found.
+⑥ cibi_place_of_work  (array)
+   The applicant's employer or own business name and address.
+   Labels: "Office Address" (applicant section), "Employer",
+   "Name of Employer / Business", "Business Address",
+   "Nature of Business", "Position / Occupation".
+   Also check TRADE REFERENCES and BANK REFERENCES for employer details.
+   amount = "N/A".
 
-cibi_transport_services
-  Flag any employer, own business, or trade/bank reference involving:
-  bus, jeepney, tricycle, forwarding, trucking, hauling, heavy equipment,
-  crane, bulldozer, backhoe, freight, logistics, cargo, courier, shipping.
-  Return [] if none found.
+⑦ cibi_temp_residence  (array)
+   The applicant's residence address from the CI/BI form.
+   Same source as residence_address but stored as an array item.
+   description = the full address. amount = "N/A".
+   Write "Purok 1" etc. — never "P1".
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CREDIT HISTORY & REFERENCES TABLE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⑧ cibi_petrol_products  (array)
+   Flag if the applicant's employer, own business, or any trade/bank
+   reference involves: petroleum, oil depot, gasoline station, LPG,
+   fuel, lubricants, plastics, PVC, polypropylene, rubber, chemicals,
+   fertilizer manufacturing.
+   Return [] if none found.
 
-credit_history_amort
-  Find the table labelled "CREDIT HISTORY & REFERENCES" (or similar).
-  The table has these columns:
-    Bank/Lending Institution | Principal Loan | Due Date | Amort. | Balance
-
-  Extract EVERY filled-in data row (skip blank rows and the TOTAL row).
-  For each row:
-    description = Bank/Lending Institution name
-    amount      = the value in the "Amort." column exactly as written
-                  (e.g. "1,093.63" or "P2,500.00")
-    date        = the Due Date value (e.g. "8/11/2026"), or "" if blank
-
-  If the table is completely blank or absent, return [].
-  Do NOT include the TOTAL row — only individual loan rows.
+⑨ cibi_transport_services  (array)
+   Flag if the applicant's employer, own business, or any trade/bank
+   reference involves: bus, jeepney, tricycle, forwarding, trucking,
+   hauling, heavy equipment, crane, bulldozer, backhoe, freight,
+   logistics, cargo, courier, shipping.
+   Return [] if none found.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- OUTPUT — return ONLY this JSON, nothing else:
+STILL ON CI/BI PAGE: CREDIT HISTORY & REFERENCES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⑩ credit_history_amort  (array)
+   Find the section/table labelled "CREDIT HISTORY & REFERENCES"
+   (or similar) on the CI/BI page.
+
+   The table has columns (order may vary):
+     Bank/Lending Institution | Principal Loan | Due Date | Amort. | Balance
+
+   WHAT TO EXTRACT — only the TOTAL row:
+   • Find the row labelled "TOTAL" or the summary/totals row at the
+     bottom of this table.
+   • Extract the value from the "Amort." column on that TOTAL row.
+   • If the "Amort." column header is not clearly visible, take the
+     FIRST numeric amount on the TOTAL row (skip blank cells).
+   • description = the name of the bank/institution on each data row
+     (include individual rows too if filled in, for reference).
+   • amount = the Amort. value for that row.
+   • date = Due Date value for that row, or "" if blank.
+
+   COLUMN RULE: The columns typically appear left-to-right as:
+     Institution | Principal | Due Date | Amort. | Balance
+   Amort. is the 4th column. Do NOT use the Principal or Balance column.
+   If column order is unclear, use the column header to identify Amort.
+
+   Return [] only if the entire table is blank or absent.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STILL ON CI/BI PAGE: BALANCE SHEET (Assets column only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⑪ cibi_business_inventory  (array)
+   Find the section labelled "BALANCE SHEET:" on the CI/BI page.
+   The Balance Sheet is a two-column table:
+     Left side  → ASSETS (Cash on Hand, Bank Deposits, …, Business Inventory, …)
+     Right side → LIABILITIES & NETWORTH
+
+   Extract ONLY the "Business Inventory" row from the ASSETS column.
+
+   THE ASSETS COLUMN ROWS (in typical order):
+     Cash on Hand
+     Bank Deposits
+     Accounts Receivable
+     Real Properties
+     Personal Assets
+     Business Assets          ← value here belongs ONLY to Business Assets
+     Business Inventory       ← extract ONLY this row's value
+     TOTAL ASSETS
+
+   ▶ Read the value that is on the EXACT SAME ROW as "Business Inventory".
+   ▶ The value for "Business Assets" is on a DIFFERENT row — NEVER use it
+     for Business Inventory, even if it is the closest number.
+   ▶ If the Business Inventory cell contains a dash ( - or — ), is blank,
+     or is zero → return []. Do NOT substitute from any other row.
+   ▶ Do NOT extract "Estimated Merchandise Inventory" or any sub-note
+     that appears elsewhere on the page — only the Balance Sheet row.
+
+   For a real filled-in value:
+     description = "Business Inventory"
+     amount      = the peso amount exactly as written (e.g. "50,000.00")
+
+   Return [] if:
+     • Balance Sheet section is absent, OR
+     • Business Inventory row value is a dash, blank, or zero.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NEXT PAGE: ASSETS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Assets page is typically the page AFTER the CI/BI page.
+It appears in ONE of two formats — detect which one is present:
+
+──────────────────────────────────────────────────────
+FORMAT A — Two separate categories on the Assets page:
+  • "PERSONAL ASSETS (Non-Productive Assets)"
+  • "BUSINESS ASSETS (Productive Assets)"
+  Each category has a sub-section: "SERIALIZED HOUSEHOLD ASSETS"
+  with columns: Item | Description | Serial No. | Acquisition Cost
+──────────────────────────────────────────────────────
+
+  cibi_personal_assets  (array)
+    Extract from the "PERSONAL ASSETS (Non-Productive Assets)" category.
+    Look inside its "SERIALIZED HOUSEHOLD ASSETS" sub-section ONLY.
+    For each item row that is filled in:
+      description = Item name + brand/model + serial number
+                    (e.g. "Refrigerator — Samsung, S/N: ABC123")
+      amount      = Acquisition Cost column value exactly as written
+                    (e.g. "P15,000.00"), or "" if blank.
+    Return [] if the sub-section is entirely blank.
+
+  cibi_business_assets  (array)
+    Extract from the "BUSINESS ASSETS (Productive Assets)" category.
+    Look inside its "SERIALIZED HOUSEHOLD ASSETS" sub-section ONLY.
+    For each item row that is filled in:
+      description = Item name + brand/model + serial number
+      amount      = Acquisition Cost column value, or "" if blank.
+    Return [] if the sub-section is entirely blank.
+
+──────────────────────────────────────────────────────
+FORMAT B — One combined category on the Assets page:
+  • "PERSONAL & BUSINESS ASSETS" (or "PERSONAL AND BUSINESS ASSETS")
+  with sub-sections:
+    - "SERIALIZED ASSETS" — appliances, equipment, electronics
+    - "VEHICLES" — motorcycles, motor vehicles, boats, tractors
+  Columns: Item | Description | Serial/Plate No. | Acquisition Cost
+──────────────────────────────────────────────────────
+
+  cibi_personal_assets  (array)
+    Extract ALL rows from BOTH sub-sections (Serialized Assets AND
+    Vehicles) under the combined "PERSONAL & BUSINESS ASSETS" heading.
+    For each filled-in row:
+      description = Item type + brand/model + serial or plate number
+                    (e.g. "Motorcycle — Honda XRM 125, Plate: ABC 123")
+      amount      = Acquisition Cost column value exactly as written,
+                    or "" if blank.
+    All items go here regardless of whether they are personal or business.
+    Return [] only if both sub-sections are entirely blank.
+
+  cibi_business_assets  (array)
+    Return [] — everything is already in cibi_personal_assets above.
+    Do NOT duplicate items here for Format B.
+
+FORMAT DETECTION:
+  → If you see separate headings "PERSONAL ASSETS" AND "BUSINESS ASSETS"
+    as two distinct labelled categories → Format A.
+  → If you see a single heading "PERSONAL & BUSINESS ASSETS" or
+    "PERSONAL AND BUSINESS ASSETS" → Format B.
+  → If uncertain → default to Format B (all items in cibi_personal_assets).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT — return ONLY valid JSON, nothing else:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {{
-  "applicant_name": "",
-  "residence_address": "",
-  "office_address": "",
+  "applicant_name":          "",
+  "residence_address":       "",
+  "office_address":          "",
+  "cibi_spouse":             [{{"description":"...","amount":"N/A","date":""}}],
+  "cibi_spouse_office":      [{{"description":"...","amount":"N/A","date":""}}],
   "cibi_place_of_work":      [{{"description":"...","amount":"N/A","date":""}}],
   "cibi_temp_residence":     [{{"description":"...","amount":"N/A","date":""}}],
-  "cibi_petrol_products":    [{{"description":"...","amount":"...","date":""}}],
-  "cibi_transport_services": [{{"description":"...","amount":"...","date":""}}],
-  "credit_history_amort":    [{{"description":"...","amount":"...","date":""}}]
+  "cibi_petrol_products":    [{{"description":"...","amount":"N/A","date":""}}],
+  "cibi_transport_services": [{{"description":"...","amount":"N/A","date":""}}],
+  "credit_history_amort":    [{{"description":"...","amount":"...","date":""}}],
+  "cibi_business_inventory": [{{"description":"Business Inventory","amount":"...","date":""}}],
+  "cibi_personal_assets":    [{{"description":"...","amount":"...","date":""}}],
+  "cibi_business_assets":    [{{"description":"...","amount":"...","date":""}}]
 }}
 
-RULES:
-- Return data even at 80% confidence — only return [] if genuinely absent.
-- Never fabricate data not visible in the document.
-- Use empty string "" for identity fields not found or marked N/A.
-- For credit_history_amort: extract ONLY individual rows, never the TOTAL row.{hint_block}"""
+FINAL CHECKS BEFORE RESPONDING:
+  1. cibi_business_inventory — did I read the Business Inventory row
+     of the Balance Sheet? Is the value actually on THAT row (not
+     Business Assets or any other row)? If that row has a dash or is
+     blank → [].
+  2. cibi_personal_assets / cibi_business_assets — did I use the
+     correct format (A or B)? For Format B did I put everything in
+     cibi_personal_assets and return [] for cibi_business_assets?
+  3. Did I return [] (not a value from a neighbouring row) for any
+     field whose own cell is blank or contains only a dash?
+  4. Did I avoid returning any printed label text as a value?{hint_block}"""
 
-    # ── Use fallback to original bytes if fitz re-encoding causes 400 ──
     fallback = original_pdf_bytes if original_pdf_bytes is not None else pdf_bytes
     resp = _gemini_call_with_fallback(
         self, client, gt,
@@ -1335,7 +1416,9 @@ RULES:
     return raw, data
 
 
-# ── Combined call 2: Cashflow Analysis + Worksheet ────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+#  GEMINI CALL 2 — CFA + WORKSHEET  (rewritten to match exact doc layout)
+# ═══════════════════════════════════════════════════════════════════════
 
 def _gemini_extract_cfa_ws_combined(self, client, gt,
                                     pdf_bytes: bytes,
@@ -1352,89 +1435,126 @@ def _gemini_extract_cfa_ws_combined(self, client, gt,
 
     hint_block = ""
     if cfa_hint:
-        hint_block += f"\n\nPartial text from CFA pages:\n{cfa_hint[:2000]}"
+        hint_block += f"\n\nPartial text from CFA pages (use as hint only):\n{cfa_hint[:2000]}"
     if ws_hint:
-        hint_block += f"\n\nPartial text from Worksheet pages:\n{ws_hint[:2000]}"
+        hint_block += f"\n\nPartial text from Worksheet pages (use as hint only):\n{ws_hint[:2000]}"
 
-    prompt = f"""You are a credit analyst reviewing a Philippine rural bank loan application.
-This is a SCANNED document — printed labels with handwritten values.
-Read it visually as an image.
+    prompt = f"""You are a credit analyst extracting data from a Philippine rural bank loan application.
+This is a SCANNED document — printed form labels with handwritten/typed values.
+Read the document VISUALLY as an image.
 
 {scope}
 
-Extract ALL of the following fields. The document has two sections:
-the Cashflow Analysis (CFA) and the Business Expense Worksheet.
+══════════════════════════════════════════════════════
+RULE 1 — NEVER read a printed label as the value.
+  Values are what was handwritten/typed AFTER the colon or on the
+  blank line BELOW the label. The label text itself is not the value.
+
+RULE 2 — Stay within the named section.
+  Each field below specifies which section/category to read from.
+  Do not pull data from a different section even if it looks similar.
+
+RULE 3 — Do not borrow values from neighbouring rows/cells.
+  If a cell is blank or contains only a dash, use amount="" for that row.
+══════════════════════════════════════════════════════
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FROM THE CASHFLOW ANALYSIS (CFA):
+CASHFLOW ANALYSIS (CFA) PAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-income_remittance
-  Every filled-in row in the SOURCE OF INCOME section (table with
-  DAILY / WEEKLY / SEMI-MONTHLY / MONTHLY / MONTHLY TOTALS columns).
-  Includes: salary, sari-sari store, farming, remittance/padala,
-  tricycle, school service, pension — any income source written.
-  amount = MONTHLY TOTALS column value.
-  Return [] only if the entire section is blank.
+The CFA page is organized into labelled sections/categories.
+Extract every filled-in row from each category listed below.
 
-cfa_business_expenses
-  Every row in the BUSINESS EXPENSES section.
-  Do NOT include food, electricity, or household rows.
-  Use amount="" if the amount cell is empty.
+① income_remittance — from "SOURCE OF INCOME" section
+   This section is a table with columns:
+     Income Source | Daily | Weekly | Semi-Monthly | Monthly | Monthly Totals
+   Extract every row that has any content written.
+   description = the income source label (leftmost column)
+   amount      = the "Monthly Totals" column value (rightmost filled column)
+   Do NOT use the Daily, Weekly, or Semi-Monthly columns as the amount.
+   Include: salary, farming/palay, sari-sari store, remittance/padala,
+   tricycle operation, school service, pension, any other income source.
+   Return [] only if the entire section is blank.
 
-cfa_household_expenses
-  Every row in the HOUSEHOLD / PERSONAL / FAMILY EXPENSES section.
-  Includes food, electricity, water, clothing, school, medical,
-  transportation, loan payments, anything else listed.
-  Use amount="" if the amount cell is empty.
+② cfa_business_expenses — from "BUSINESS EXPENSES" section
+   Extract every row inside the section labelled "BUSINESS EXPENSES".
+   description = the expense label. amount = the amount written.
+   Use amount="" for rows with a label but no amount filled in.
+   Do NOT include rows from the Household/Personal Expenses section.
 
-cfa_net_income
-  The TOTAL NET INCOME (or NET CASH FLOW / NET SURPLUS) value printed
-  or handwritten at the bottom of the Cashflow Analysis summary.
-  This is a single peso amount, e.g. "P 8,500.00" or "12,000".
-  Look for labels: "Total Net Income", "Net Income", "Net Cash Flow",
-  "Net Surplus", "NET INCOME", "TOTAL NET INCOME".
-  Return the value exactly as written, including the peso sign if present.
-  Return "" if the field is blank or absent.
+③ cfa_household_expenses — from "HOUSEHOLD / PERSONAL EXPENSES" section
+   Extract every row inside the section labelled "HOUSEHOLD EXPENSES",
+   "PERSONAL EXPENSES", "FAMILY EXPENSES", or similar.
+   Includes: food, electricity, water, clothing, school fees, medical,
+   personal transportation, loan payments, and everything else listed.
+   description = the expense label. amount = the amount written.
+   Use amount="" for rows with a label but no amount filled in.
+   Do NOT include rows from the Business Expenses section.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FROM THE BUSINESS EXPENSE WORKSHEET:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-ws_food_grocery
-  Row labelled "Food / Grocery", "Food and Grocery", or "Food".
-  Extract the handwritten monthly amount.
-
-ws_fuel_transport
-  Row labelled "Fuel and Transportation", "Transportation",
-  or "Gasoline / Fare" in the HOUSEHOLD section.
-  This is personal transport — NOT business fuel.
-
-ws_electricity
-  Row labelled "Electricity", "Electric Bill", or local co-op name
-  (e.g. ANTECO, MORESCO, MERALCO, CASURECO, FICELCO, BUSECO).
-  Extract the utility name and monthly amount.
-
-ws_fertilizer
-  Row labelled "Fertilizer", "Fertilizer / Pesticide", "Farm Inputs".
-  Include type (Urea, Complete, Organic), quantity, unit cost, total.
-
-ws_forwarding
-  Row labelled "Forwarding", "Trucking / Hauling", "Hauling", "Freight"
-  in the BUSINESS EXPENSE section.
-
-ws_fuel_diesel
-  Row labelled "Fuel / Gas / Diesel", "Diesel", "Gasoline", "Fuel Cost"
-  in the BUSINESS EXPENSE section (not personal transport).
-  Include fuel type, liters, unit price, total if shown.
-
-ws_equipment
-  Row labelled "Cost of Rent of Equipment", "Equipment Rental",
-  "Tractor Rental", "Backhoe Rental", "Thresher Rental".
-  Include equipment type, rate, period, total.
+④ cfa_net_income — the single bottom-line summary figure
+   Labels: "Total Net Income", "Net Income", "Net Cash Flow",
+   "Net Surplus", "NET INCOME", "TOTAL NET INCOME".
+   This is ONE peso amount at the very bottom of the CFA summary,
+   not a section subtotal.
+   Return the value exactly as written (e.g. "P 8,500.00" or "12,000").
+   Return "" if absent or blank.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- OUTPUT — return ONLY this JSON, nothing else:
+BUSINESS EXPENSE WORKSHEET PAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Worksheet is a SEPARATE page from the CFA. It provides a detailed
+breakdown of individual business and household costs. Each field below
+maps to a specific labelled row on that worksheet.
+
+Worksheet rows typically have columns:
+  Item/Description | Qty | Unit | Unit Cost | Monthly Total
+
+For each field, read the row whose printed label matches and extract
+the handwritten values from the correct columns. Do not read the
+label of one row as the value of another.
+
+⑤ ws_food_grocery
+   Row labelled "Food / Grocery", "Food and Grocery", or "Food".
+   amount = the monthly total written for that row.
+
+⑥ ws_fuel_transport
+   Row labelled "Fuel and Transportation", "Transportation",
+   or "Gasoline / Fare" in the HOUSEHOLD section of the worksheet.
+   This is PERSONAL transportation cost — NOT business fuel or diesel.
+
+⑦ ws_electricity
+   Row labelled "Electricity", "Electric Bill", or a Philippine
+   electric cooperative name (ANTECO, MORESCO, MERALCO, CASURECO,
+   FICELCO, BUSECO, or similar).
+   description = include the utility/co-op name if written.
+   amount = the monthly bill amount.
+
+⑧ ws_fertilizer
+   Row labelled "Fertilizer", "Fertilizer / Pesticide", "Farm Inputs"
+   in the BUSINESS section of the worksheet.
+   Include type (Urea, Complete, Organic), quantity, unit cost, and
+   total if written. Combine into the description field.
+
+⑨ ws_forwarding
+   Row labelled "Forwarding", "Trucking / Hauling", "Hauling",
+   or "Freight" in the BUSINESS EXPENSE section of the worksheet
+   (not the household section).
+
+⑩ ws_fuel_diesel
+   Row labelled "Fuel / Gas / Diesel", "Diesel", "Gasoline",
+   or "Fuel Cost" in the BUSINESS EXPENSE section (not personal
+   transportation). Include fuel type, liters, unit price, total
+   if written. Combine into the description field.
+
+⑪ ws_equipment
+   Row labelled "Cost of Rent of Equipment", "Equipment Rental",
+   "Tractor Rental", "Backhoe Rental", "Thresher Rental".
+   Include equipment type, rate, period, total if written.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT — return ONLY valid JSON, nothing else:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {{
   "income_remittance":      [{{"description":"...","amount":"...","date":""}}],
   "cfa_business_expenses":  [{{"description":"...","amount":"...","date":""}}],
@@ -1449,15 +1569,16 @@ ws_equipment
   "ws_equipment":           [{{"description":"...","amount":"...","date":""}}]
 }}
 
-RULES:
-- Extract ALL rows with any content — do not skip rows.
-- Write amounts exactly as written (e.g. "5,000" or "P3,500.00").
-- Include rows with printed labels but blank amounts: use amount="".
-- Return [] ONLY if the entire section is absent from the document.
-- cfa_net_income is a plain string, not an array.
-- Never fabricate data not visible in the document.{hint_block}"""
+FINAL CHECKS BEFORE RESPONDING:
+  1. income_remittance — did I use the Monthly Totals column only?
+  2. cfa_business_expenses / cfa_household_expenses — are rows correctly
+     separated between their respective sections? No mixing?
+  3. cfa_net_income — is it the single bottom-line figure, not a subtotal?
+  4. Worksheet fields — did I read from the Worksheet page, not the CFA?
+  5. ws_fuel_transport vs ws_fuel_diesel — personal transport (household)
+     goes in ws_fuel_transport; business fuel goes in ws_fuel_diesel.
+  6. Did I use amount="" (not a value from another row) for blank cells?{hint_block}"""
 
-    # ── Use fallback to original bytes if fitz re-encoding causes 400 ──
     fallback = original_pdf_bytes if original_pdf_bytes is not None else pdf_bytes
     resp = _gemini_call_with_fallback(
         self, client, gt,
@@ -1519,6 +1640,13 @@ def _parse_extraction_response_from_dict(data: dict) -> dict:
 
     WS_DEDUP_KEYS = {"ws_fuel_diesel", "ws_forwarding", "ws_fertilizer"}
 
+    NO_TOTAL_KEYS = {
+        "cibi_place_of_work", "cibi_temp_residence",
+        "cibi_spouse", "cibi_spouse_office",
+        "cibi_personal_assets", "cibi_business_assets",
+        "cibi_business_inventory",
+    }
+
     for key in all_keys:
         entries    = raw_entries[key]
         items_text = []
@@ -1558,7 +1686,7 @@ def _parse_extraction_response_from_dict(data: dict) -> dict:
             if label:
                 items_text.append(label)
 
-            if amt and amt.upper() != "N/A":
+            if key not in NO_TOTAL_KEYS and amt and amt.upper() != "N/A":
                 nums = re.findall(r"[\d,]+\.?\d*",
                                   re.sub(r"[^\d.,]", " ", amt))
                 if nums:
@@ -1569,8 +1697,7 @@ def _parse_extraction_response_from_dict(data: dict) -> dict:
                         pass
 
         results[key]["items"] = items_text
-        non_m = key in ("cibi_place_of_work", "cibi_temp_residence")
-        if has_total and not non_m:
+        if has_total and key not in NO_TOTAL_KEYS:
             results[key]["total"] = f"P{total_sum:,.2f}"
 
     return results
