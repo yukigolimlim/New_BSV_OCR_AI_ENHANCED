@@ -1157,218 +1157,221 @@ def _gemini_extract_cibi_combined(self, client, gt,
                   if hint else "")
 
     prompt = f"""You are a credit analyst extracting data from a Philippine rural bank loan application.
-This is a SCANNED document — it has printed form labels and handwritten/typed values.
-Read the document VISUALLY as an image. Values are written AFTER the colon of their label
-or on the blank line immediately BELOW the label.
-
+This is a SCANNED document — printed form labels with handwritten/typed values.
+Read the document VISUALLY as an image.
+ 
 {scope}
-
+ 
 ══════════════════════════════════════════════════════
-RULE 1 — NEVER confuse a label with a value.
-  The printed label (e.g. "Residence Address:") is NOT the value.
-  The value is ONLY what was handwritten or typed by the applicant
-  on the blank space/line that follows the label.
-
-RULE 2 — NEVER borrow a value from a neighbouring field/row.
-  Each field stands alone. If a field's own value cell is a dash ( - ),
-  blank, or zero, that field has NO value. Do not fill it from nearby.
-
-RULE 3 — Extract ONLY from the section/category specified.
-  Do not pull data from the wrong section even if it seems related.
+CORE READING RULES  (apply to every field below)
 ══════════════════════════════════════════════════════
-
+ 
+RULE 1 — VALUE BELONGS TO THE LABEL IT SITS BESIDE, NOT ABOVE OR BELOW.
+  Forms use a two-column layout: label on the left, value blank on the right.
+  A value written on a line belongs ONLY to the label printed on THAT SAME LINE.
+  Never "look up" to the label above or "look down" to the label below to
+  explain a value. The row boundary is sacred.
+ 
+RULE 2 — STACKED RADIO-STYLE LABELS ("Employed / Self-employed").
+  Some forms show two or three sub-labels stacked vertically, each with its
+  own value blank to the right:
+      Occupation/Business: _______________
+            Employed:      _______________   ← value on THIS line → Employed
+            Self-employed: ___[T...]______   ← value on THIS line → Self-employed
+  Rule: whichever line has the handwritten entry is the one that is ticked/filled.
+  The OTHER lines stay blank (their blanks are empty). Never move a value from
+  one sub-label line to another. If "Self-employed:" has "T..." written beside it,
+  the value is Self-employed = "T...", and Employed = blank.
+ 
+RULE 3 — NEVER USE A PRINTED LABEL AS A VALUE.
+  "Occupation/Business", "Employed", "Self-employed", "Office Address" etc. are
+  labels — they are pre-printed on the form. Only handwritten/typed text in the
+  blank area to the right of (or below) the label is the value.
+ 
+RULE 4 — SECTION BOUNDARY: APPLICANT vs SPOUSE.
+  The CI/BI form has two mirrored blocks: one for the APPLICANT and one for the
+  SPOUSE. Each block has its own "Occupation/Business", "Employed",
+  "Self-employed", and "Office Address" rows.
+  • Applicant's "Office Address" → cibi_place_of_work
+  • Spouse's "Office Address"    → cibi_spouse_office
+  Never mix values across the section boundary.
+ 
+RULE 5 — DASH OR BLANK = NO DATA.
+  If a cell contains only a dash ( - or — ), is empty, or is zero → return []
+  or "" for that field. Do not substitute with a neighbouring row's value.
+ 
+══════════════════════════════════════════════════════
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PAGE 1 (or first CI/BI page): CI/BI REPORT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The CI/BI REPORT page contains the following fields in order:
-
+ 
 ① applicant_name  (plain string)
    Label: "Name of Applicant", "Borrower", "Client", or "Name".
-   Return the handwritten full name only.
-
+   Return the handwritten full name only. Never return the label itself.
+ 
 ② residence_address  (plain string)
    Label: "Residence Address", "Home Address", or "Permanent Address".
    Philippine notation: expand "P1"→"Purok 1", "P2"→"Purok 2", etc.
-   Return the handwritten address only.
-
+   Return only the handwritten address.
+ 
 ③ office_address  (plain string)
-   Label: "Office Address" — for the APPLICANT only (not the spouse).
-   Return "" if blank or absent.
-
+   The APPLICANT'S Office Address — the "Office Address" row that appears
+   in the APPLICANT's block (NOT the spouse block). Return "" if blank.
+ 
 ④ cibi_spouse  (array)
-   Labels: "Name of Spouse" / "Spouse" / "Husband" / "Wife"
-           AND "Employed" / "Self-Employed" / "Occupation" / "Nature of Work".
-   Combine into ONE item:
-     description = "<Spouse Name> — <Employment/Occupation>"
-   If only name → use name. If only occupation → use occupation.
-   If both blank → return []. NEVER create two separate items.
-
+   Location: the SPOUSE block of the CI/BI page.
+   Sub-labels in the spouse block (stacked vertically, each with its own blank):
+       Name of Spouse:   _______________
+       Occupation/Business: ____________
+             Employed:   _______________
+             Self-employed: ____________
+ 
+   Step A — Spouse name: read the value on the "Name of Spouse" line.
+   Step B — Employment: look at the Employed and Self-employed lines
+             (apply RULE 2 above). Whichever line has a handwritten entry is the
+             active employment type and its value is the employer/business name.
+             If both are blank, use the Occupation/Business line value if present.
+   Step C — Combine into ONE item:
+             description = "<Spouse Name> — <Employment Type>: <Value>"
+             e.g. "Maria Santos — Self-employed: Tindahan"
+             If only name is present → use name alone.
+             If only employment is present → use that alone.
+   Return [] if both spouse name and employment are entirely blank.
+   NEVER create separate items for name and employment — always ONE combined item.
+ 
 ⑤ cibi_spouse_office  (array)
-   The spouse's Office Address — the "Office Address" field that appears
-   in the SPOUSE section (below or next to the spouse name fields).
-   description = the address or employer name + address written there.
+   The "Office Address" row that is inside the SPOUSE block (below the spouse
+   employment lines). description = the address or employer name written there.
    amount = "N/A". Return [] if blank or absent.
-
+ 
 ⑥ cibi_place_of_work  (array)
-   The applicant's employer or own business name and address.
-   Labels: "Office Address" (applicant section), "Employer",
-   "Name of Employer / Business", "Business Address",
-   "Nature of Business", "Position / Occupation".
+   The APPLICANT's employer or own business name and address.
+   Source rows in the APPLICANT block:
+     • "Occupation/Business" line (and its Employed / Self-employed sub-rows,
+       applying RULE 2 — only the filled sub-row counts)
+     • "Office Address" in the applicant block
+     • Any "Name of Employer / Business", "Nature of Business", "Position" rows
    Also check TRADE REFERENCES and BANK REFERENCES for employer details.
    amount = "N/A".
-
+   Do NOT pull anything from the SPOUSE block.
+ 
 ⑦ cibi_temp_residence  (array)
-   The applicant's residence address from the CI/BI form.
-   Same source as residence_address but stored as an array item.
-   description = the full address. amount = "N/A".
-   Write "Purok 1" etc. — never "P1".
-
+   The applicant's residence address stored as an array item.
+   Same value as residence_address. description = full address. amount = "N/A".
+   Write "Purok 1" etc. — never abbreviate as "P1".
+ 
 ⑧ cibi_petrol_products  (array)
-   Flag if the applicant's employer, own business, or any trade/bank
-   reference involves: petroleum, oil depot, gasoline station, LPG,
-   fuel, lubricants, plastics, PVC, polypropylene, rubber, chemicals,
-   fertilizer manufacturing.
+   Flag if the applicant's employer, own business, or any trade/bank reference
+   involves: petroleum, oil depot, gasoline station, LPG, fuel, lubricants,
+   plastics, PVC, polypropylene, rubber, chemicals, fertilizer manufacturing.
    Return [] if none found.
-
+ 
 ⑨ cibi_transport_services  (array)
-   Flag if the applicant's employer, own business, or any trade/bank
-   reference involves: bus, jeepney, tricycle, forwarding, trucking,
-   hauling, heavy equipment, crane, bulldozer, backhoe, freight,
-   logistics, cargo, courier, shipping.
+   Flag if the applicant's employer, own business, or any trade/bank reference
+   involves: bus, jeepney, tricycle, forwarding, trucking, hauling, heavy
+   equipment, crane, bulldozer, backhoe, freight, logistics, cargo, courier.
    Return [] if none found.
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STILL ON CI/BI PAGE: CREDIT HISTORY & REFERENCES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+ 
 ⑩ credit_history_amort  (array)
-   Find the section/table labelled "CREDIT HISTORY & REFERENCES"
-   (or similar) on the CI/BI page.
-
-   The table has columns (order may vary):
+   Find the section/table labelled "CREDIT HISTORY & REFERENCES".
+ 
+   Columns (left to right):
      Bank/Lending Institution | Principal Loan | Due Date | Amort. | Balance
-
-   WHAT TO EXTRACT — only the TOTAL row:
-   • Find the row labelled "TOTAL" or the summary/totals row at the
-     bottom of this table.
-   • Extract the value from the "Amort." column on that TOTAL row.
-   • If the "Amort." column header is not clearly visible, take the
-     FIRST numeric amount on the TOTAL row (skip blank cells).
-   • description = the name of the bank/institution on each data row
-     (include individual rows too if filled in, for reference).
-   • amount = the Amort. value for that row.
-   • date = Due Date value for that row, or "" if blank.
-
-   COLUMN RULE: The columns typically appear left-to-right as:
-     Institution | Principal | Due Date | Amort. | Balance
-   Amort. is the 4th column. Do NOT use the Principal or Balance column.
-   If column order is unclear, use the column header to identify Amort.
-
-   Return [] only if the entire table is blank or absent.
-
+ 
+   COLUMN IDENTIFICATION (important for rotated or skewed scans):
+   • Identify each column by its printed header text, not by position alone.
+   • "Amort." is the 4th column — it is NEITHER Principal (2nd) NOR Balance (5th).
+   • If headers are hard to read, the Amort. column is always narrower than
+     Principal and Balance, and contains monthly payment amounts.
+ 
+   WHAT TO EXTRACT:
+   • Extract individual data rows (one per lending institution).
+     description = institution name, amount = Amort. value, date = Due Date.
+   • Also extract the TOTAL row at the bottom:
+     description = "TOTAL", amount = total Amort., date = "".
+   • Use amount="" for rows where Amort. cell is blank or a dash.
+   • Return [] only if the entire table is blank.
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STILL ON CI/BI PAGE: BALANCE SHEET (Assets column only)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+ 
 ⑪ cibi_business_inventory  (array)
-   Find the section labelled "BALANCE SHEET:" on the CI/BI page.
-   The Balance Sheet is a two-column table:
-     Left side  → ASSETS (Cash on Hand, Bank Deposits, …, Business Inventory, …)
-     Right side → LIABILITIES & NETWORTH
-
-   Extract ONLY the "Business Inventory" row from the ASSETS column.
-
-   THE ASSETS COLUMN ROWS (in typical order):
-     Cash on Hand
-     Bank Deposits
-     Accounts Receivable
-     Real Properties
-     Personal Assets
-     Business Assets          ← value here belongs ONLY to Business Assets
-     Business Inventory       ← extract ONLY this row's value
-     TOTAL ASSETS
-
-   ▶ Read the value that is on the EXACT SAME ROW as "Business Inventory".
-   ▶ The value for "Business Assets" is on a DIFFERENT row — NEVER use it
-     for Business Inventory, even if it is the closest number.
-   ▶ If the Business Inventory cell contains a dash ( - or — ), is blank,
-     or is zero → return []. Do NOT substitute from any other row.
-   ▶ Do NOT extract "Estimated Merchandise Inventory" or any sub-note
-     that appears elsewhere on the page — only the Balance Sheet row.
-
-   For a real filled-in value:
+   Source: "BALANCE SHEET" section → ASSETS column → "Business Inventory" row.
+ 
+   The ASSETS column rows in ORDER (top to bottom):
+     1. Cash on Hand
+     2. Bank Deposits
+     3. Accounts Receivable
+     4. Real Properties
+     5. Personal Assets
+     6. Business Assets          ← row 6
+     7. Business Inventory       ← row 7  ← THIS is the target row
+     8. TOTAL ASSETS
+ 
+   ANCHORING RULE: The value for "Business Inventory" is the amount written on
+   row 7 — the row IMMEDIATELY below "Business Assets". These two rows are
+   adjacent and their value cells sit directly beside their respective labels.
+   Do NOT use the row 6 (Business Assets) value for row 7, even if row 7 appears
+   blank at first glance. Re-examine the scan carefully before concluding blank.
+ 
+   Return [] if: Business Inventory row value is a dash, blank, or zero.
+   For a real value:
      description = "Business Inventory"
-     amount      = the peso amount exactly as written (e.g. "50,000.00")
-
-   Return [] if:
-     • Balance Sheet section is absent, OR
-     • Business Inventory row value is a dash, blank, or zero.
-
+     amount      = peso amount exactly as written (e.g. "50,000.00")
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NEXT PAGE: ASSETS
+NEXT PAGE: ASSETS PAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The Assets page is typically the page AFTER the CI/BI page.
-It appears in ONE of two formats — detect which one is present:
-
-──────────────────────────────────────────────────────
-FORMAT A — Two separate categories on the Assets page:
-  • "PERSONAL ASSETS (Non-Productive Assets)"
-  • "BUSINESS ASSETS (Productive Assets)"
-  Each category has a sub-section: "SERIALIZED HOUSEHOLD ASSETS"
-  with columns: Item | Description | Serial No. | Acquisition Cost
-──────────────────────────────────────────────────────
-
-  cibi_personal_assets  (array)
-    Extract from the "PERSONAL ASSETS (Non-Productive Assets)" category.
-    Look inside its "SERIALIZED HOUSEHOLD ASSETS" sub-section ONLY.
-    For each item row that is filled in:
-      description = Item name + brand/model + serial number
-                    (e.g. "Refrigerator — Samsung, S/N: ABC123")
-      amount      = Acquisition Cost column value exactly as written
-                    (e.g. "P15,000.00"), or "" if blank.
-    Return [] if the sub-section is entirely blank.
-
-  cibi_business_assets  (array)
-    Extract from the "BUSINESS ASSETS (Productive Assets)" category.
-    Look inside its "SERIALIZED HOUSEHOLD ASSETS" sub-section ONLY.
-    For each item row that is filled in:
-      description = Item name + brand/model + serial number
-      amount      = Acquisition Cost column value, or "" if blank.
-    Return [] if the sub-section is entirely blank.
-
-──────────────────────────────────────────────────────
-FORMAT B — One combined category on the Assets page:
-  • "PERSONAL & BUSINESS ASSETS" (or "PERSONAL AND BUSINESS ASSETS")
-  with sub-sections:
-    - "SERIALIZED ASSETS" — appliances, equipment, electronics
-    - "VEHICLES" — motorcycles, motor vehicles, boats, tractors
+ 
+FORMAT DETECTION — look at the heading on the Assets page:
+  → Separate "PERSONAL ASSETS" AND "BUSINESS ASSETS" headings → Format A
+  → Single "PERSONAL & BUSINESS ASSETS" heading → Format B
+  → Uncertain → default to Format B
+ 
+FORMAT A — Two separate categories:
+  "PERSONAL ASSETS (Non-Productive Assets)" and "BUSINESS ASSETS (Productive Assets)"
+  Each has a "SERIALIZED HOUSEHOLD ASSETS" sub-section with columns:
+    Item | Description | Serial No. | Acquisition Cost
+ 
+  cibi_personal_assets:
+    Extract filled rows from PERSONAL ASSETS → SERIALIZED HOUSEHOLD ASSETS only.
+    description = item name + brand/model + serial number
+    amount = Acquisition Cost column value, or "" if blank.
+    Return [] if entirely blank.
+ 
+  cibi_business_assets:
+    Extract filled rows from BUSINESS ASSETS → SERIALIZED HOUSEHOLD ASSETS only.
+    description = item name + brand/model + serial number
+    amount = Acquisition Cost column value, or "" if blank.
+    Return [] if entirely blank.
+ 
+FORMAT B — Single combined category:
+  "PERSONAL & BUSINESS ASSETS" with sub-sections:
+    - "SERIALIZED ASSETS" (appliances, equipment, electronics)
+    - "VEHICLES" (motorcycles, motor vehicles, boats, tractors)
   Columns: Item | Description | Serial/Plate No. | Acquisition Cost
-──────────────────────────────────────────────────────
-
-  cibi_personal_assets  (array)
-    Extract ALL rows from BOTH sub-sections (Serialized Assets AND
-    Vehicles) under the combined "PERSONAL & BUSINESS ASSETS" heading.
-    For each filled-in row:
-      description = Item type + brand/model + serial or plate number
-                    (e.g. "Motorcycle — Honda XRM 125, Plate: ABC 123")
-      amount      = Acquisition Cost column value exactly as written,
-                    or "" if blank.
-    All items go here regardless of whether they are personal or business.
+ 
+  cibi_personal_assets:
+    Extract ALL rows from BOTH sub-sections (Serialized + Vehicles).
+    description = item type + brand/model + serial or plate number
+    amount = Acquisition Cost as written, or "" if blank.
     Return [] only if both sub-sections are entirely blank.
-
-  cibi_business_assets  (array)
-    Return [] — everything is already in cibi_personal_assets above.
-    Do NOT duplicate items here for Format B.
-
-FORMAT DETECTION:
-  → If you see separate headings "PERSONAL ASSETS" AND "BUSINESS ASSETS"
-    as two distinct labelled categories → Format A.
-  → If you see a single heading "PERSONAL & BUSINESS ASSETS" or
-    "PERSONAL AND BUSINESS ASSETS" → Format B.
-  → If uncertain → default to Format B (all items in cibi_personal_assets).
-
+ 
+  cibi_business_assets:
+    Return [] — everything goes in cibi_personal_assets for Format B.
+    DO NOT duplicate.
+ 
+ROW-LEVEL ANCHORING FOR ASSETS:
+  Each item row has its own serial number and cost cell. The cost on row N
+  belongs ONLY to the item on row N. If two items are listed consecutively
+  and only one has a cost filled in, the other item has amount="".
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT — return ONLY valid JSON, nothing else:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1387,18 +1390,17 @@ OUTPUT — return ONLY valid JSON, nothing else:
   "cibi_personal_assets":    [{{"description":"...","amount":"...","date":""}}],
   "cibi_business_assets":    [{{"description":"...","amount":"...","date":""}}]
 }}
-
+ 
 FINAL CHECKS BEFORE RESPONDING:
-  1. cibi_business_inventory — did I read the Business Inventory row
-     of the Balance Sheet? Is the value actually on THAT row (not
-     Business Assets or any other row)? If that row has a dash or is
-     blank → [].
-  2. cibi_personal_assets / cibi_business_assets — did I use the
-     correct format (A or B)? For Format B did I put everything in
-     cibi_personal_assets and return [] for cibi_business_assets?
-  3. Did I return [] (not a value from a neighbouring row) for any
-     field whose own cell is blank or contains only a dash?
-  4. Did I avoid returning any printed label text as a value?{hint_block}"""
+  1. cibi_spouse — is it exactly ONE combined item (name + employment)?
+     Did I apply RULE 2 to determine which employment sub-label is filled?
+  2. cibi_place_of_work vs cibi_spouse_office — did I respect the
+     APPLICANT / SPOUSE section boundary (RULE 4)?
+  3. cibi_business_inventory — did I read row 7 (Business Inventory),
+     not row 6 (Business Assets)?
+  4. For every stacked sub-label group — did I assign the value only to
+     the line it sits beside (RULE 2)?
+  5. Did any printed label text accidentally end up as a value? If so, remove it.{hint_block}"""
 
     fallback = original_pdf_bytes if original_pdf_bytes is not None else pdf_bytes
     resp = _gemini_call_with_fallback(
@@ -1442,116 +1444,134 @@ def _gemini_extract_cfa_ws_combined(self, client, gt,
     prompt = f"""You are a credit analyst extracting data from a Philippine rural bank loan application.
 This is a SCANNED document — printed form labels with handwritten/typed values.
 Read the document VISUALLY as an image.
-
+ 
 {scope}
-
+ 
 ══════════════════════════════════════════════════════
-RULE 1 — NEVER read a printed label as the value.
-  Values are what was handwritten/typed AFTER the colon or on the
-  blank line BELOW the label. The label text itself is not the value.
-
-RULE 2 — Stay within the named section.
-  Each field below specifies which section/category to read from.
-  Do not pull data from a different section even if it looks similar.
-
-RULE 3 — Do not borrow values from neighbouring rows/cells.
-  If a cell is blank or contains only a dash, use amount="" for that row.
+CORE READING RULES  (apply to every field below)
 ══════════════════════════════════════════════════════
-
+ 
+RULE 1 — VALUE BELONGS TO THE LABEL ON THE SAME LINE/ROW.
+  These forms use a table layout: label in the left column, value(s) in the
+  right column(s). A value written in row N belongs ONLY to the label in row N.
+  Never attribute a value to the row above or below it.
+ 
+RULE 2 — COLUMN IDENTITY: USE HEADER TEXT, NOT COLUMN POSITION ALONE.
+  Tables have multiple numeric columns (Daily, Weekly, Monthly, etc.).
+  Always identify which column you are reading by its printed header text.
+  For income rows: use the "Monthly Totals" (rightmost summary) column only —
+  not the Daily or Weekly columns, even if they are larger numbers.
+ 
+RULE 3 — SECTION BOUNDARY.
+  CFA page has distinct labelled sections: "SOURCE OF INCOME",
+  "BUSINESS EXPENSES", "HOUSEHOLD / PERSONAL EXPENSES".
+  A row belongs to the section whose heading it falls under.
+  Never move a row from one section to another.
+ 
+RULE 4 — WORKSHEET vs CFA.
+  The Worksheet page is SEPARATE from the CFA page. Worksheet rows give
+  per-unit breakdowns (Qty × Unit Cost = Total). CFA rows give monthly totals.
+  ws_* fields must come from the Worksheet page, not the CFA page.
+  cfa_* fields must come from the CFA page, not the Worksheet page.
+ 
+RULE 5 — BLANK OR DASH = NO DATA.
+  Use amount="" for any row whose value cell is blank or contains only a dash.
+ 
+══════════════════════════════════════════════════════
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CASHFLOW ANALYSIS (CFA) PAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The CFA page is organized into labelled sections/categories.
-Extract every filled-in row from each category listed below.
-
-① income_remittance — from "SOURCE OF INCOME" section
-   This section is a table with columns:
-     Income Source | Daily | Weekly | Semi-Monthly | Monthly | Monthly Totals
+ 
+① income_remittance — SOURCE OF INCOME section
+   Table columns: Income Source | Daily | Weekly | Semi-Monthly | Monthly | Monthly Totals
    Extract every row that has any content written.
-   description = the income source label (leftmost column)
-   amount      = the "Monthly Totals" column value (rightmost filled column)
-   Do NOT use the Daily, Weekly, or Semi-Monthly columns as the amount.
-   Include: salary, farming/palay, sari-sari store, remittance/padala,
-   tricycle operation, school service, pension, any other income source.
+   description = income source label (leftmost column)
+   amount      = "Monthly Totals" column value (rightmost filled column)
+                 ← this is the column with the aggregated monthly figure.
+                 DO NOT use Daily or Weekly column values as the amount.
+   Include all income types: salary, farming, sari-sari, remittance/padala,
+   tricycle operation, school service, pension, any other.
    Return [] only if the entire section is blank.
-
-② cfa_business_expenses — from "BUSINESS EXPENSES" section
-   Extract every row inside the section labelled "BUSINESS EXPENSES".
-   description = the expense label. amount = the amount written.
+ 
+② cfa_business_expenses — BUSINESS EXPENSES section
+   Extract every row under the "BUSINESS EXPENSES" heading.
+   description = expense label. amount = amount written on that same row.
    Use amount="" for rows with a label but no amount filled in.
-   Do NOT include rows from the Household/Personal Expenses section.
-
-③ cfa_household_expenses — from "HOUSEHOLD / PERSONAL EXPENSES" section
-   Extract every row inside the section labelled "HOUSEHOLD EXPENSES",
-   "PERSONAL EXPENSES", "FAMILY EXPENSES", or similar.
+   STOP at the section boundary — do NOT read rows from the
+   Household/Personal Expenses section below.
+ 
+③ cfa_household_expenses — HOUSEHOLD / PERSONAL EXPENSES section
+   Extract every row under the "HOUSEHOLD EXPENSES", "PERSONAL EXPENSES",
+   or "FAMILY EXPENSES" heading.
    Includes: food, electricity, water, clothing, school fees, medical,
-   personal transportation, loan payments, and everything else listed.
-   description = the expense label. amount = the amount written.
+   personal transportation, loan payments, and all other listed items.
+   description = expense label. amount = amount on that same row.
    Use amount="" for rows with a label but no amount filled in.
-   Do NOT include rows from the Business Expenses section.
-
-④ cfa_net_income — the single bottom-line summary figure
+   STOP at the section boundary — do NOT read rows from Business Expenses.
+ 
+④ cfa_net_income — single bottom-line summary
    Labels: "Total Net Income", "Net Income", "Net Cash Flow",
    "Net Surplus", "NET INCOME", "TOTAL NET INCOME".
-   This is ONE peso amount at the very bottom of the CFA summary,
-   not a section subtotal.
+   This is ONE amount at the very bottom of the CFA — the final surplus figure.
    Return the value exactly as written (e.g. "P 8,500.00" or "12,000").
    Return "" if absent or blank.
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BUSINESS EXPENSE WORKSHEET PAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The Worksheet is a SEPARATE page from the CFA. It provides a detailed
-breakdown of individual business and household costs. Each field below
-maps to a specific labelled row on that worksheet.
-
-Worksheet rows typically have columns:
-  Item/Description | Qty | Unit | Unit Cost | Monthly Total
-
-For each field, read the row whose printed label matches and extract
-the handwritten values from the correct columns. Do not read the
-label of one row as the value of another.
-
+ 
+This is a SEPARATE page from the CFA. It lists individual expense line items
+with columns: Item/Description | Qty | Unit | Unit Cost | Monthly Total
+ 
+ROW ANCHORING RULE FOR WORKSHEET:
+  Each expense row has its own label and its own Qty/Unit/Cost/Total cells.
+  The monthly total on row N belongs ONLY to the item labelled on row N.
+  Adjacent rows (e.g. "Fuel/Diesel" directly below "Forwarding") each have
+  their own separate total — never assign one row's total to the other.
+ 
 ⑤ ws_food_grocery
-   Row labelled "Food / Grocery", "Food and Grocery", or "Food".
-   amount = the monthly total written for that row.
-
+   Row label: "Food / Grocery", "Food and Grocery", or "Food".
+   amount = monthly total on THAT row only.
+ 
 ⑥ ws_fuel_transport
-   Row labelled "Fuel and Transportation", "Transportation",
-   or "Gasoline / Fare" in the HOUSEHOLD section of the worksheet.
-   This is PERSONAL transportation cost — NOT business fuel or diesel.
-
+   Row label: "Fuel and Transportation", "Transportation", or "Gasoline / Fare"
+   in the HOUSEHOLD section of the worksheet.
+   This is PERSONAL transport cost (fare, commute) — not business fuel/diesel.
+   amount = monthly total on THAT row only.
+ 
 ⑦ ws_electricity
-   Row labelled "Electricity", "Electric Bill", or a Philippine
-   electric cooperative name (ANTECO, MORESCO, MERALCO, CASURECO,
-   FICELCO, BUSECO, or similar).
-   description = include the utility/co-op name if written.
-   amount = the monthly bill amount.
-
+   Row label: "Electricity", "Electric Bill", or a Philippine cooperative name
+   (ANTECO, MORESCO, MERALCO, CASURECO, FICELCO, BUSECO, or similar).
+   description = include the utility/co-op name if written on that row.
+   amount = monthly bill amount on THAT row only.
+ 
 ⑧ ws_fertilizer
-   Row labelled "Fertilizer", "Fertilizer / Pesticide", "Farm Inputs"
+   Row label: "Fertilizer", "Fertilizer / Pesticide", or "Farm Inputs"
    in the BUSINESS section of the worksheet.
-   Include type (Urea, Complete, Organic), quantity, unit cost, and
-   total if written. Combine into the description field.
-
+   Include type (Urea, Complete, Organic), quantity, unit cost, total if written.
+   Combine into the description. amount = monthly total on THAT row.
+ 
 ⑨ ws_forwarding
-   Row labelled "Forwarding", "Trucking / Hauling", "Hauling",
-   or "Freight" in the BUSINESS EXPENSE section of the worksheet
-   (not the household section).
-
+   Row label: "Forwarding", "Trucking / Hauling", "Hauling", or "Freight"
+   in the BUSINESS EXPENSE section (not the household section).
+   amount = monthly total on THAT row only.
+   ANCHORING: This row's total is SEPARATE from the Fuel/Diesel row immediately
+   adjacent to it. Do not swap their totals.
+ 
 ⑩ ws_fuel_diesel
-   Row labelled "Fuel / Gas / Diesel", "Diesel", "Gasoline",
-   or "Fuel Cost" in the BUSINESS EXPENSE section (not personal
-   transportation). Include fuel type, liters, unit price, total
-   if written. Combine into the description field.
-
+   Row label: "Fuel / Gas / Diesel", "Diesel", "Gasoline", or "Fuel Cost"
+   in the BUSINESS EXPENSE section (not personal transportation).
+   Include fuel type, liters, unit price, total if written.
+   Combine into description. amount = monthly total on THAT row.
+   ANCHORING: This row's total is SEPARATE from the Forwarding row adjacent to it.
+ 
 ⑪ ws_equipment
-   Row labelled "Cost of Rent of Equipment", "Equipment Rental",
+   Row label: "Cost of Rent of Equipment", "Equipment Rental",
    "Tractor Rental", "Backhoe Rental", "Thresher Rental".
    Include equipment type, rate, period, total if written.
-
+   amount = monthly total on THAT row only.
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT — return ONLY valid JSON, nothing else:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1568,16 +1588,18 @@ OUTPUT — return ONLY valid JSON, nothing else:
   "ws_fuel_diesel":         [{{"description":"...","amount":"...","date":""}}],
   "ws_equipment":           [{{"description":"...","amount":"...","date":""}}]
 }}
-
+ 
 FINAL CHECKS BEFORE RESPONDING:
-  1. income_remittance — did I use the Monthly Totals column only?
-  2. cfa_business_expenses / cfa_household_expenses — are rows correctly
-     separated between their respective sections? No mixing?
-  3. cfa_net_income — is it the single bottom-line figure, not a subtotal?
-  4. Worksheet fields — did I read from the Worksheet page, not the CFA?
-  5. ws_fuel_transport vs ws_fuel_diesel — personal transport (household)
-     goes in ws_fuel_transport; business fuel goes in ws_fuel_diesel.
-  6. Did I use amount="" (not a value from another row) for blank cells?{hint_block}"""
+  1. income_remittance — did I use ONLY the Monthly Totals column (not Daily/Weekly)?
+  2. cfa_business_expenses / cfa_household_expenses — are all rows in the correct
+     section with no cross-contamination?
+  3. cfa_net_income — is it the single final surplus figure, not a section subtotal?
+  4. ws_* fields — did they all come from the WORKSHEET page, not the CFA page?
+  5. ws_fuel_transport vs ws_fuel_diesel — personal transport → ws_fuel_transport;
+     business fuel → ws_fuel_diesel. Check which section each row belongs to.
+  6. ws_forwarding vs ws_fuel_diesel — are their monthly totals correctly assigned
+     to their own rows (not swapped due to adjacency)?
+  7. Did any printed label text end up as a value? If so, remove it.{hint_block}"""
 
     fallback = original_pdf_bytes if original_pdf_bytes is not None else pdf_bytes
     resp = _gemini_call_with_fallback(
