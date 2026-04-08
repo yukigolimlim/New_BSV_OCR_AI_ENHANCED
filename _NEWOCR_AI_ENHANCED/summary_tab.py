@@ -909,12 +909,147 @@ def _db_update_other_data_all(matches: list, client_id: str, pn_joined: str,
     return count
 
 
+# ───────────────────────────────────────────────────────────────────────
+#  CHANGE 2 (added constants + _db_update_cell)
+# ───────────────────────────────────────────────────────────────────────
+
+# Columns the user may edit directly in the table.
+# Virtual columns (derived from results_json) and read-only audit
+# fields (session_id, processed_at, source_file, status, page_map,
+# results_json, petrol_risk, transport_risk) are intentionally excluded.
+_EDITABLE_COLS = {
+    "client_id", "pn", "applicant_name",
+    # virtual columns — written back into results_json
+    "spouse_info", "personal_assets", "business_assets", "business_inventory",
+    # item-text columns — real DB columns
+    "income_items", "business_items", "household_items",
+    "residence_address", "office_address", "industry_name",
+    "income_total", "business_total", "household_total", "net_income",
+    "amort_history_total", "amort_current_total",
+    "loan_balance", "amortized_cost",
+    "principal_loan", "maturity", "interest_rate",
+}
+
+# Subset of _EDITABLE_COLS that must be stored as REAL in SQLite.
+_MONETARY_COLS = {
+    "income_total", "business_total", "household_total", "net_income",
+    "amort_history_total", "amort_current_total",
+    "loan_balance", "amortized_cost", "principal_loan",
+}
+
+
+def _db_update_cell(row_id: int, col_name: str, raw_value: str) -> str:
+    """
+    Write a single edited cell back to the DB.
+
+    Returns the normalised display string (formatted if monetary),
+    or raises ValueError if the value cannot be parsed for monetary cols.
+    """
+    if col_name not in _EDITABLE_COLS:
+        raise ValueError(f"Column '{col_name}' is not editable.")
+
+    if col_name in _MONETARY_COLS:
+        cleaned = re.sub(r"[^\d.]", "", raw_value.replace(",", "").strip())
+        if cleaned == "":
+            db_val      = None
+            display_val = "—"
+        else:
+            try:
+                db_val      = float(cleaned)
+                display_val = f"P{db_val:,.2f}"
+            except ValueError:
+                raise ValueError(
+                    f"'{raw_value}' is not a valid number for '{col_name}'.")
+    else:
+        db_val      = raw_value.strip() or None
+        display_val = raw_value.strip() if raw_value.strip() else "—"
+
+    with _db_connect() as conn:
+        conn.execute(
+            f"UPDATE applicants SET {col_name}=? WHERE id=?",
+            (db_val, row_id))
+
+    return display_val
+
+
+# Map from virtual column name → (results_json top-level key, sub-key)
+# For spouse_info two keys are involved; handled specially in the function.
+_VIRTUAL_TO_JSON: dict[str, tuple] = {
+    "spouse_info":        ("cibi_spouse",             "items"),   # special
+    "personal_assets":    ("cibi_personal_assets",    "items"),
+    "business_assets":    ("cibi_business_assets",    "items"),
+    "business_inventory": ("cibi_business_inventory", "items"),
+}
+
+
+def _db_update_virtual_cell(row_id: int, col_name: str, raw_value: str) -> str:
+    """
+    Write an edited virtual-column value back into results_json.
+
+    The display format uses '  ·  ' as an item separator (set by _render_tree).
+    We split on that, strip, and store back as a JSON items list.
+
+    For spouse_info the plain items go into cibi_spouse["items"]; the
+    'Office: …' prefixed items go into cibi_spouse_office["items"].
+
+    Returns the normalised display string (items joined with '  ·  ').
+    """
+    if col_name not in _VIRTUAL_TO_JSON:
+        raise ValueError(f"'{col_name}' is not a known virtual column.")
+
+    raw_stripped = raw_value.strip()
+    if raw_stripped in ("", "—"):
+        items = []
+    else:
+        items = [p.strip() for p in raw_stripped.split("  ·  ") if p.strip()]
+
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT results_json FROM applicants WHERE id=?", (row_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Row id={row_id} not found.")
+
+        try:
+            blob = json.loads(row["results_json"] or "{}")
+        except Exception:
+            blob = {}
+
+        if col_name == "spouse_info":
+            plain_items  = [it for it in items if not it.startswith("Office: ")]
+            office_items = [it[len("Office: "):] for it in items
+                            if it.startswith("Office: ")]
+
+            if "cibi_spouse" not in blob or not isinstance(blob["cibi_spouse"], dict):
+                blob["cibi_spouse"] = {}
+            blob["cibi_spouse"]["items"] = plain_items
+
+            if "cibi_spouse_office" not in blob or \
+               not isinstance(blob["cibi_spouse_office"], dict):
+                blob["cibi_spouse_office"] = {}
+            blob["cibi_spouse_office"]["items"] = office_items
+        else:
+            json_key, sub_key = _VIRTUAL_TO_JSON[col_name]
+            if json_key not in blob or not isinstance(blob[json_key], dict):
+                blob[json_key] = {}
+            blob[json_key][sub_key] = items
+
+        conn.execute(
+            "UPDATE applicants SET results_json=? WHERE id=?",
+            (json.dumps(blob, ensure_ascii=False), row_id)
+        )
+
+    return "  ·  ".join(items) if items else "—"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  NAME-MATCHING FUNCTIONS  (similarity-based)
 # ═══════════════════════════════════════════════════════════════════════
 
 SUFFIXES = {"JR", "SR", "II", "III", "IV", "V", "ESQ", "PHD", "MD", "CPA"}
-SIMILARITY_THRESHOLD = 0.72
+
+# PATCH: lowered similarity threshold from 0.72 to 0.68
+SIMILARITY_THRESHOLD = 0.68
 
 try:
     from rapidfuzz import fuzz as _rfuzz
@@ -929,14 +1064,90 @@ except ImportError:
 
 
 def _normalise_for_sim(name: str) -> str:
+    """
+    Normalise a name for similarity comparison.
+    - Flips 'LAST, FIRST' format to 'FIRST LAST'
+    - Uppercases, removes punctuation
+    - Strips suffixes (JR, SR, etc.)
+    - Strips single-letter initials (e.g. 'I.' -> removed)
+    """
     if "," in name:
         parts = name.split(",", 1)
         name  = parts[1].strip() + " " + parts[0].strip()
     tokens = re.split(r"[\s.]+", name.strip().upper())
     tokens = [re.sub(r"[^A-Z]", "", t) for t in tokens]
     tokens = [t for t in tokens if t and t not in SUFFIXES]
-    tokens = [t for t in tokens if len(t) > 1]
+    tokens = [t for t in tokens if len(t) > 1]  # strip bare initials
     return " ".join(tokens)
+
+
+def _extract_first_last(norm_name: str) -> tuple:
+    """
+    From a normalised name string, extract:
+      - first token  (first name)
+      - last_key     (last name, compound-aware)
+      - middle_tokens (everything in between)
+
+    Handles compound Filipino/Spanish surnames that begin with a
+    particle: DELA, DE, DEL, LOS, LAS, SAN, SANTA, VAN, VON, etc.
+    When the second-to-last token is a known particle the last TWO
+    tokens are joined as the surname key, e.g.:
+        ['JUAN', 'DELA', 'CRUZ']  ->  first='JUAN', last='DELA CRUZ'
+        ['MARIA', 'DE', 'LOS', 'SANTOS'] ->  first='MARIA', last='DE LOS SANTOS'  (*)
+
+    (*) 3-token particles: the loop walks backwards collecting
+        consecutive particle tokens so DE LOS SANTOS is fully captured.
+
+    Returns: (first, last_key, middle_tokens)
+    """
+    PARTICLES = {
+        "DE", "DEL", "DELA", "LOS", "LAS", "SAN", "SANTA",
+        "VAN", "VON", "DER", "DEN", "TEN", "TER", "LE", "LA",
+    }
+
+    tokens = norm_name.split()
+    if not tokens:
+        return ("", "", [])
+    if len(tokens) == 1:
+        return (tokens[0], tokens[0], [])
+
+    first = tokens[0]
+
+    # Walk backwards from the end collecting consecutive particle tokens
+    # so that multi-word surnames like DE LOS SANTOS are fully captured.
+    surname_start = len(tokens) - 1          # index of last token
+    while surname_start > 1 and tokens[surname_start - 1] in PARTICLES:
+        surname_start -= 1
+
+    last_key = " ".join(tokens[surname_start:])  # e.g. "DELA CRUZ"
+    middle   = tokens[1:surname_start]           # tokens between first and surname
+
+    return (first, last_key, middle)
+
+
+def _first_last_match(norm_a: str, norm_b: str) -> bool:
+    """
+    Returns True if two normalised names refer to the same person,
+    defined as: same first name AND same compound-aware last name,
+    regardless of middle name / initial presence.
+
+    Examples that return True:
+      JUAN DELA CRUZ          <-> JUAN ISIDRO DELA CRUZ
+      JUAN DELA CRUZ          <-> JUAN I DELA CRUZ          (initial stripped by normalise)
+      DELA CRUZ JUAN ISIDRO   <-> JUAN DELA CRUZ            (post comma-flip)
+      MARIA DE LOS SANTOS     <-> MARIA CLARA DE LOS SANTOS
+
+    Examples that return False:
+      JUAN DELA CRUZ          <-> PEDRO DELA CRUZ           (different first)
+      JUAN DELA CRUZ          <-> JUAN DELA SANTOS          (different last)
+    """
+    first_a, last_a, _ = _extract_first_last(norm_a)
+    first_b, last_b, _ = _extract_first_last(norm_b)
+
+    if not first_a or not last_a or not first_b or not last_b:
+        return False
+
+    return first_a == first_b and last_a == last_b
 
 
 def _db_candidates_all():
@@ -947,6 +1158,8 @@ def _db_candidates_all():
         ).fetchall()
 
 
+# ── UPDATED FUNCTION ──────────────────────────────────────────────────
+# The change: first+last match now takes priority over fuzzy scoring.
 def _resolve_name_similarity(client_name: str,
                               threshold: float = SIMILARITY_THRESHOLD) -> tuple:
     candidates = _db_candidates_all()
@@ -956,6 +1169,19 @@ def _resolve_name_similarity(client_name: str,
     for c in candidates:
         hay   = _normalise_for_sim(c["applicant_name"])
         score = _similarity(needle, hay)
+
+        # ── Primary: first + last name match regardless of middle ──────
+        # Handles: "JUAN DELA CRUZ"        <-> "JUAN ISIDRO DELA CRUZ"
+        #          "JUAN IBIS DELA CRUZ"   <-> "JUAN DELA CRUZ"
+        #          "DELA CRUZ, JUAN"       <-> "JUAN DELA CRUZ"    (post-flip)
+        #          "DELA CRUZ, JUAN ISIDRO" <-> "JUAN DELA CRUZ"
+        #          "DELA CRUZ, JUAN I."    <-> "JUAN DELA CRUZ"
+        if _first_last_match(needle, hay):
+            floored = max(score, threshold)
+            scored.append((floored, c["id"], c["applicant_name"]))
+            continue  # already matched — skip fuzzy check to avoid double-add
+
+        # ── Secondary: fuzzy score meets threshold ────────────────────
         if score >= threshold:
             scored.append((score, c["id"], c["applicant_name"]))
 
@@ -1291,7 +1517,11 @@ def _build_lookup_summary_panel(self, parent):
 
     self._sum_tree.tag_configure("even", background=ROW_BG_EVEN)
     self._sum_tree.tag_configure("odd",  background=ROW_BG_ODD)
+
+    # ── CHANGE 4 (replace the single <Double-1> bind with two lines) ──
     self._sum_tree.bind("<Double-1>", lambda e: _on_tree_double_click(self, e))
+    self._sum_tree.bind("<Return>",   lambda e: _on_tree_return_key(self, e))
+
     self._sum_tree.bind("<Button-3>", lambda e: _on_tree_right_click(self, e))
     self._sum_tree.bind("<Enter>",
         lambda e: self._sum_tree.bind_all("<MouseWheel>",
@@ -1454,16 +1684,212 @@ def _sort_by(self, col_key: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  ROW INTERACTION
+#  ROW INTERACTION (including CHANGE 3 + CHANGE 5)
 # ═══════════════════════════════════════════════════════════════════════
 
+# ── CHANGE 3 (add _start_cell_edit) ───────────────────────────────────
+def _start_cell_edit(self, iid: str, col_id: str):
+    """
+    Pop a lightweight Entry widget directly over the clicked Treeview
+    cell so the user can type a new value.
+
+    Behaviour:
+      <Return> or <KP_Enter>  — commit and close
+      <Tab>                   — commit and move to next editable column
+      <Escape>                — cancel, restore original value
+      FocusOut                — commit and close
+    """
+    if col_id not in _EDITABLE_COLS:
+        return
+
+    tree   = self._sum_tree
+    row_id = int(iid)
+
+    # ── Get the cell's pixel bounding box ─────────────────────────────
+    bbox = tree.bbox(iid, col_id)
+    if not bbox:
+        # Row is off-screen — scroll it into view first, then retry once
+        tree.see(iid)
+        tree.update_idletasks()
+        bbox = tree.bbox(iid, col_id)
+        if not bbox:
+            return
+    x, y, width, height = bbox
+
+    # ── Current raw value ─────────────────────────────────────────────
+    col_index   = TREE_COLS.index(col_id)
+    cur_display = tree.item(iid, "values")[col_index]
+
+    if col_id in _MONETARY_COLS:
+        # Strip "P" prefix, commas, and "—" placeholder
+        cur_edit = re.sub(r"[P,]", "", cur_display).strip()
+        if cur_edit == "—":
+            cur_edit = ""
+    elif col_id in _VIRTUAL_TO_JSON or col_id in {
+            "income_items", "business_items", "household_items"}:
+        # Tree renders newlines as '  ·  '; restore for editing
+        cur_edit = cur_display.replace("  ·  ", "\n") \
+            if cur_display not in ("—", "") else ""
+    else:
+        cur_edit = "" if cur_display in ("—", "") else cur_display
+
+    # ── Build the overlay Entry ────────────────────────────────────────
+    var   = tk.StringVar(value=cur_edit)
+    entry = tk.Entry(
+        tree,
+        textvariable=var,
+        font=("Segoe UI", 9),
+        fg=TXT_NAVY,
+        bg="#FFFDE7",                   # soft yellow — "edit mode" signal
+        insertbackground=NAVY_MID,
+        relief="solid",
+        bd=1,
+        highlightthickness=1,
+        highlightbackground=LIME_MID,   # green border, matches app theme
+        highlightcolor=LIME_BRIGHT,
+    )
+    entry.place(x=x, y=y, width=max(width, 120), height=height)
+    entry.focus_set()
+    entry.select_range(0, "end")
+
+    # Pause mousewheel on the treeview while the Entry is open so the
+    # row cannot scroll out from under the widget.
+    tree.unbind_all("<MouseWheel>")
+
+    committed = [False]   # guard against double-commit on FocusOut + Return
+
+    def _commit(event=None):
+        if committed[0]:
+            return
+        committed[0] = True
+        new_raw = var.get()
+        try:
+            if col_id in _VIRTUAL_TO_JSON:
+                display_val = _db_update_virtual_cell(row_id, col_id, new_raw)
+            elif col_id in {"income_items", "business_items", "household_items"}:
+                display_val = _db_update_cell(row_id, col_id, new_raw)
+            else:
+                display_val = _db_update_cell(row_id, col_id, new_raw)
+        except ValueError as exc:
+            committed[0] = False   # allow re-edit after validation error
+            entry.config(bg="#FFE0E0", highlightbackground=ACCENT_RED)
+            messagebox.showerror("Invalid Value", str(exc))
+            entry.focus_set()
+            return
+
+        # Patch the in-memory row cache so the detail window stays current
+        if iid in self._sum_row_data:
+            if col_id in _MONETARY_COLS:
+                cleaned = re.sub(r"[^\d.]", "",
+                                 new_raw.replace(",", "")).strip()
+                self._sum_row_data[iid][col_id] = \
+                    float(cleaned) if cleaned else None
+            elif col_id in _VIRTUAL_TO_JSON:
+                # Virtual cols live in results_json; update the cache directly
+                # so the detail window reflects the edit without a full reload.
+                self._sum_row_data[iid][col_id] = new_raw.strip() or None
+                # Also keep results_json in sync so _extract_* helpers work
+                # if the detail window re-reads from the row dict.
+                try:
+                    blob = json.loads(
+                        self._sum_row_data[iid].get("results_json") or "{}")
+                    items = [p.strip()
+                             for p in new_raw.strip().split("  ·  ")
+                             if p.strip()]
+                    if col_id == "spouse_info":
+                        plain  = [it for it in items
+                                  if not it.startswith("Office: ")]
+                        office = [it[len("Office: "):] for it in items
+                                  if it.startswith("Office: ")]
+                        blob.setdefault("cibi_spouse", {})["items"]        = plain
+                        blob.setdefault("cibi_spouse_office", {})["items"] = office
+                    else:
+                        json_key, sub_key = _VIRTUAL_TO_JSON[col_id]
+                        blob.setdefault(json_key, {})[sub_key] = items
+                    self._sum_row_data[iid]["results_json"] = \
+                        json.dumps(blob, ensure_ascii=False)
+                except Exception:
+                    pass
+            else:
+                self._sum_row_data[iid][col_id] = new_raw.strip() or None
+
+        # Update just this one cell in the treeview — no full reload
+        vals = list(tree.item(iid, "values"))
+        vals[col_index] = display_val
+        tree.item(iid, values=vals)
+
+        entry.destroy()
+        _update_stats(self)   # keep the aggregate stat pills in sync
+
+    def _cancel(event=None):
+        committed[0] = True
+        entry.destroy()
+
+    def _tab_next(event=None):
+        """Commit and jump to the next editable column on the same row."""
+        _commit()
+        if not committed[0]:
+            return   # commit was blocked by a validation error
+        # Find the next editable column to the right
+        start = col_index + 1
+        for next_idx in range(start, len(TREE_COLS)):
+            next_col = TREE_COLS[next_idx]
+            if next_col in _EDITABLE_COLS:
+                self.after(50, lambda c=next_col: _start_cell_edit(self, iid, c))
+                break
+        return "break"   # suppress default Tab focus behaviour
+
+    entry.bind("<Return>",   _commit)
+    entry.bind("<KP_Enter>", _commit)
+    entry.bind("<Escape>",   _cancel)
+    entry.bind("<Tab>",      _tab_next)
+    entry.bind("<FocusOut>", _commit)
+
+    # Restore mousewheel when the entry is destroyed
+    entry.bind("<Destroy>", lambda e: tree.bind_all(
+        "<MouseWheel>",
+        lambda ev: tree.yview_scroll(int(-1 * (ev.delta / 120)), "units")))
+
+
+# ── CHANGE 5 (replace _on_tree_double_click and add _on_tree_return_key) ──
 def _on_tree_double_click(self, event):
-    iid = self._sum_tree.focus()
+    """
+    Double-click routing:
+      • Editable column   → open inline cell editor
+      • Non-editable col  → open the detail window (original behaviour)
+    """
+    tree   = self._sum_tree
+    iid    = tree.identify_row(event.y)
+    col_id = tree.identify_column(event.x)   # e.g. "#3"
+
     if not iid:
         return
-    row = self._sum_row_data.get(iid)
-    if row:
-        _open_detail_window(self, row)
+
+    # Convert Treeview "#N" index to db_col name
+    try:
+        col_index = int(col_id.lstrip("#")) - 1
+        db_col    = TREE_COLS[col_index]
+    except (ValueError, IndexError):
+        db_col = ""
+
+    if db_col in _EDITABLE_COLS:
+        _start_cell_edit(self, iid, db_col)
+    else:
+        # Non-editable or virtual column — show detail window
+        row = self._sum_row_data.get(iid)
+        if row:
+            _open_detail_window(self, row)
+
+
+def _on_tree_return_key(self, event):
+    """
+    Pressing <Return> on a focused row opens the inline editor on the
+    first editable column (applicant_name), letting power users navigate
+    and edit without the mouse.
+    """
+    iid = self._sum_tree.focus()
+    if iid:
+        _start_cell_edit(self, iid, "applicant_name")
 
 
 def _on_tree_right_click(self, event):
@@ -1671,7 +2097,7 @@ def _run_dedup(self):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  AMORTIZATION IMPORT
+#  AMORTIZATION IMPORT  (CHANGE 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _import_amort_file(self):
@@ -1727,11 +2153,15 @@ def _import_amort_file(self):
                             return c
                 return None
 
-            col_client = _find_col(all_cols, "applicant", "client", "name")
-            col_amort  = _find_col(all_cols,
-                                   "monthlypaymentamount", "monthly payment amount",
-                                   "monthlypayment", "paymentamount",
-                                   "currentamort", "totalcurrentamort", "amort")
+            # ── Detect required columns ────────────────────────────────
+            col_client   = _find_col(all_cols, "applicant", "client", "name")
+            col_amort    = _find_col(all_cols,
+                                     "monthlypaymentamount", "monthly payment amount",
+                                     "monthlypayment", "paymentamount",
+                                     "currentamort", "totalcurrentamort", "amort")
+            # ── client_id column (optional but preferred) ──────────────
+            col_clientid = _find_col(all_cols, "clientid", "client id",
+                                     "client_id", "cid")
 
             missing = []
             if not col_client: missing.append("Applicant / Client")
@@ -1741,53 +2171,102 @@ def _import_amort_file(self):
                     f"Could not detect column(s): {', '.join(missing)}\n\n"
                     f"File has: {', '.join(all_cols)}")
 
-            aggregated = {}
-            bad_rows   = []
+            # ── Aggregate amort values per client ──────────────────────
+            aggregated: dict[str, dict] = {}
+            bad_rows:   list[tuple]     = []
 
             for file_row in records:
-                client_name = str(file_row.get(col_client) or "").strip()
-                raw_val     = str(file_row.get(col_amort)  or "").strip()
+                client_name = str(file_row.get(col_client)   or "").strip()
+                raw_val     = str(file_row.get(col_amort)    or "").strip()
+                raw_cid     = str(file_row.get(col_clientid) or "").strip() \
+                              if col_clientid else ""
+
                 if not client_name:
                     continue
+
                 try:
                     cleaned   = re.sub(r"[^\d.]", "", raw_val.replace(",", ""))
                     amort_val = float(cleaned) if cleaned else None
                 except Exception:
                     amort_val = None
 
-                if amort_val is None:
-                    bad_rows.append((client_name.upper(), f"bad value: '{raw_val}'"))
-                    continue
-                aggregated[client_name] = aggregated.get(client_name, 0.0) + amort_val
+                name_key = client_name.upper()
 
-            updated_strict  = []
+                if amort_val is None:
+                    bad_rows.append((name_key, f"bad value: '{raw_val}'"))
+                    continue
+
+                if name_key not in aggregated:
+                    aggregated[name_key] = {
+                        "name":      client_name,
+                        "client_id": raw_cid.upper(),
+                        "total":     0.0,
+                    }
+                if not aggregated[name_key]["client_id"] and raw_cid:
+                    aggregated[name_key]["client_id"] = raw_cid.upper()
+
+                aggregated[name_key]["total"] += amort_val
+
+            # ── Build client_id → db row id lookup ─────────────────────
+            with _db_connect() as _conn:
+                cid_to_dbid: dict[str, int] = {
+                    str(r[0]).strip().upper(): r[1]
+                    for r in _conn.execute(
+                        "SELECT client_id, id FROM applicants "
+                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''"
+                    ).fetchall()
+                }
+
+            # ── Match & update ─────────────────────────────────────────
+            updated_by_id   = []
+            updated_by_name = []
             updated_relaxed = []
             skipped_names   = list(bad_rows)
 
-            for client_name, amort_val in aggregated.items():
-                display = client_name.upper()
+            for name_key, entry in aggregated.items():
+                amort_val   = entry["total"]
+                client_name = entry["name"]
+                file_cid    = entry["client_id"]
+
+                # PRIMARY: match by client_id
+                if file_cid and file_cid in cid_to_dbid:
+                    db_id = cid_to_dbid[file_cid]
+                    _db_update_amort_current(db_id, amort_val)
+                    updated_by_id.append((name_key, db_id))
+                    continue
+
+                # FALLBACK: name similarity
                 hits, sim_label = _resolve_name_similarity(client_name)
                 if hits:
                     _db_update_amort_all(hits, amort_val)
-                    if sim_label == "exact":
-                        updated_strict.append((display, hits[0][1]))
+                    if sim_label in ("exact", "high"):
+                        updated_by_name.append((name_key, hits[0][1]))
                     else:
-                        updated_relaxed.append((display, hits[0][1]))
+                        updated_relaxed.append((name_key, hits[0][1]))
                 else:
-                    skipped_names.append((display, "no DB match"))
+                    reason = ("client_id not in DB, no name match"
+                              if file_cid else "no client_id, no name match")
+                    skipped_names.append((name_key, reason))
 
             self.after(0, lambda: _refresh_summary(self))
 
-            total_updated = len(updated_strict) + len(updated_relaxed)
-            msg  = "Import complete.\n\n"
-            msg += f"✓  Updated  : {total_updated} record(s)\n"
-            msg += f"–  Skipped  : {len(skipped_names)} row(s)\n"
+            cid_detected = f"'{col_clientid}'" if col_clientid else "not detected"
+            msg  = "Amort. import complete.\n\n"
+            msg += f"Client ID column      : {cid_detected}\n"
+            msg += f"✓  Matched by ID      : {len(updated_by_id)} record(s)\n"
+            msg += f"✓  Matched by name    : {len(updated_by_name)} record(s)\n"
+            msg += f"–  Skipped            : {len(skipped_names)} row(s)\n"
+
+            if not col_clientid:
+                msg += "\nℹ  No Client ID column found in file — used name matching only.\n"
+
             if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed pass — please verify:\n"
-                for file_n, db_n in updated_relaxed[:10]:
-                    msg += f"  • File: {file_n}  →  DB: {db_n}\n"
+                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed similarity — please verify:\n"
+                for file_n, db_id in updated_relaxed[:10]:
+                    msg += f"  • File: {file_n}  →  DB id: {db_id}\n"
                 if len(updated_relaxed) > 10:
                     msg += f"  … and {len(updated_relaxed) - 10} more\n"
+
             if skipped_names:
                 msg += "\nSkipped rows:\n"
                 for name, reason in skipped_names[:10]:
@@ -1810,7 +2289,7 @@ def _import_amort_file(self):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  OTHER DATA IMPORT
+#  OTHER DATA IMPORT  (PATCHED)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _import_other_data_file(self):
@@ -1885,11 +2364,16 @@ def _import_other_data_file(self):
                     f"Could not detect a client name column.\n\n"
                     f"File has: {', '.join(all_cols)}")
 
-            if not any([col_clientid, col_pn, col_industry, col_loanbal, col_amortcost]):
+            if not any([col_clientid, col_pn, col_industry,
+                        col_loanbal, col_amortcost]):
                 raise ValueError(
                     f"No data columns found (clientid / pnid / industryname / "
-                    f"loanbalance / amortizedcost).\n\nFile has: {', '.join(all_cols)}")
+                    f"loanbalance / amortizedcost).\n\n"
+                    f"File has: {', '.join(all_cols)}")
 
+            # ── B-1: pn_collect keyed on normalised name ───────────────
+            # Using _normalise_for_sim ensures "DELA CRUZ, JUAN" and
+            # "JUAN DELA CRUZ" accumulate into the same PN bucket.
             pn_collect: dict[str, list] = {}
             if col_pn:
                 for file_row in records:
@@ -1897,85 +2381,154 @@ def _import_other_data_file(self):
                     if not client_name:
                         continue
                     pn_val   = str(file_row.get(col_pn) or "").strip()
-                    name_key = client_name.upper()
-                    if name_key not in pn_collect:
-                        pn_collect[name_key] = []
-                    if pn_val and pn_val not in pn_collect[name_key]:
-                        pn_collect[name_key].append(pn_val)
+                    norm_key = _normalise_for_sim(client_name)   # ← normalised
+                    if norm_key not in pn_collect:
+                        pn_collect[norm_key] = []
+                    if pn_val and pn_val not in pn_collect[norm_key]:
+                        pn_collect[norm_key].append(pn_val)
 
             def _agg_numeric(col_key, records, col_name_field, bad_list, label):
                 agg = {}
                 for file_row in records:
-                    client_name = str(file_row.get(col_name_field) or "").strip()
+                    client_name = str(
+                        file_row.get(col_name_field) or "").strip()
                     if not client_name:
                         continue
                     raw_val  = str(file_row.get(col_key) or "").strip()
-                    name_key = client_name.upper()
+                    # ← also normalise numeric-agg keys
+                    norm_key = _normalise_for_sim(client_name)
                     try:
-                        cleaned = re.sub(r"[^\d.]", "", raw_val.replace(",", ""))
+                        cleaned = re.sub(r"[^\d.]", "",
+                                         raw_val.replace(",", ""))
                         val     = float(cleaned) if cleaned else None
                     except Exception:
                         val = None
                     if val is None:
                         if raw_val:
-                            bad_list.append((name_key, f"bad {label}: '{raw_val}'"))
-                        if name_key not in agg:
-                            agg[name_key] = None
+                            bad_list.append(
+                                (norm_key, f"bad {label}: '{raw_val}'"))
+                        if norm_key not in agg:
+                            agg[norm_key] = None
                     else:
-                        agg[name_key] = (agg.get(name_key) or 0.0) + val
+                        agg[norm_key] = (agg.get(norm_key) or 0.0) + val
                 return agg
 
-            loan_bal_bad  = []; amortcost_bad = []
-            loan_bal_agg  = (_agg_numeric(col_loanbal,   records, col_name,
-                                          loan_bal_bad,  "loanbalance")
-                             if col_loanbal   else {})
-            amortcost_agg = (_agg_numeric(col_amortcost, records, col_name,
-                                          amortcost_bad, "amortizedcost")
-                             if col_amortcost else {})
+            loan_bal_bad  = []
+            amortcost_bad = []
+            loan_bal_agg  = (
+                _agg_numeric(col_loanbal,   records, col_name,
+                             loan_bal_bad,  "loanbalance")
+                if col_loanbal   else {})
+            amortcost_agg = (
+                _agg_numeric(col_amortcost, records, col_name,
+                             amortcost_bad, "amortizedcost")
+                if col_amortcost else {})
 
-            seen_names: set[str] = set()
-            deduped: list[dict]  = []
+            # ── B-2: dedup keyed on normalised name ────────────────────
+            # "DELA CRUZ, JUAN" normalises to "JUAN DELA CRUZ" — same key
+            # as a row that already spells it in natural order.
+            seen_norm_keys: set[str] = set()
+            deduped: list[dict]      = []
             dup_count = 0
 
             for file_row in records:
                 client_name = str(file_row.get(col_name) or "").strip()
                 if not client_name:
                     continue
-                name_key = client_name.upper()
-                if name_key in seen_names:
-                    dup_count += 1; continue
-                seen_names.add(name_key)
-                pn_joined = "\n".join(pn_collect.get(name_key, [])) if col_pn else ""
+                norm_key = _normalise_for_sim(client_name)
+                if norm_key in seen_norm_keys:
+                    dup_count += 1
+                    continue
+                seen_norm_keys.add(norm_key)
+                pn_joined = "\n".join(
+                    pn_collect.get(norm_key, [])) if col_pn else ""
                 deduped.append({
-                    "name":           client_name,
-                    "client_id":      str(file_row.get(col_clientid) or "").strip()
-                                      if col_clientid else "",
+                    "name":           client_name,   # original display name
+                    "norm_key":       norm_key,       # normalised form
+                    "client_id":      str(
+                        file_row.get(col_clientid) or "").strip()
+                        if col_clientid else "",
                     "pn_joined":      pn_joined,
-                    "industry":       str(file_row.get(col_industry) or "").strip()
-                                      if col_industry else "",
-                    "loan_balance":   loan_bal_agg.get(name_key)   if col_loanbal   else None,
-                    "amortized_cost": amortcost_agg.get(name_key)  if col_amortcost else None,
+                    "industry":       str(
+                        file_row.get(col_industry) or "").strip()
+                        if col_industry else "",
+                    "loan_balance":   loan_bal_agg.get(norm_key)
+                                      if col_loanbal   else None,
+                    "amortized_cost": amortcost_agg.get(norm_key)
+                                      if col_amortcost else None,
                 })
 
-            updated_strict   = []; updated_relaxed  = []; skipped_no_match = []
+            # ── B-3: pre-match by client_id (mirrors Amort import) ─────
+            # Build a lookup of client_id → db row id from the current DB.
+            updated_by_cid:  list = []
+            name_match_queue: list[dict] = []
 
-            for entry in deduped:
+            if col_clientid:
+                with _db_connect() as _conn:
+                    cid_to_dbid: dict[str, int] = {
+                        str(r[0]).strip().upper(): r[1]
+                        for r in _conn.execute(
+                            "SELECT client_id, id FROM applicants "
+                            "WHERE client_id IS NOT NULL "
+                            "AND TRIM(client_id) != ''"
+                        ).fetchall()
+                    }
+
+                for entry in deduped:
+                    file_cid = entry["client_id"].upper()
+                    if file_cid and file_cid in cid_to_dbid:
+                        db_id = cid_to_dbid[file_cid]
+                        rows_written = _db_update_other_data_all(
+                            [(db_id, None)],
+                            entry["client_id"],
+                            entry["pn_joined"],
+                            entry["industry"],
+                            entry["loan_balance"],
+                            entry["amortized_cost"],
+                        )
+                        if rows_written:
+                            updated_by_cid.append(
+                                (entry["norm_key"], db_id))
+                    else:
+                        # No client_id match — queue for name matching
+                        name_match_queue.append(entry)
+            else:
+                # No client_id column in file — everything goes to name match
+                name_match_queue = deduped
+
+            # ── Name-similarity matching for remaining entries ─────────
+            updated_strict   = []
+            updated_relaxed  = []
+            skipped_no_match = []
+
+            for entry in name_match_queue:
                 hits, sim_label = _resolve_name_similarity(entry["name"])
                 if not hits:
-                    skipped_no_match.append(entry["name"].upper()); continue
+                    skipped_no_match.append(
+                        entry["norm_key"]); continue
                 rows_written = _db_update_other_data_all(
-                    hits, entry["client_id"], entry["pn_joined"],
-                    entry["industry"], entry["loan_balance"], entry["amortized_cost"])
+                    hits,
+                    entry["client_id"],
+                    entry["pn_joined"],
+                    entry["industry"],
+                    entry["loan_balance"],
+                    entry["amortized_cost"],
+                )
                 if rows_written:
                     if sim_label == "exact":
-                        updated_strict.append((entry["name"].upper(), hits[0][1]))
+                        updated_strict.append(
+                            (entry["norm_key"], hits[0][1]))
                     else:
-                        updated_relaxed.append((entry["name"].upper(), hits[0][1]))
+                        updated_relaxed.append(
+                            (entry["norm_key"], hits[0][1]))
 
             _db_deduplicate_client_ids()
             self.after(0, lambda: _refresh_summary(self))
 
-            total_updated = len(updated_strict) + len(updated_relaxed)
+            # ── B-4: updated summary message ──────────────────────────
+            total_updated = (len(updated_by_cid)
+                             + len(updated_strict)
+                             + len(updated_relaxed))
             cols_imported = ", ".join(filter(None, [
                 "Client ID"            if col_clientid  else "",
                 "PN (all)"             if col_pn        else "",
@@ -1984,18 +2537,25 @@ def _import_other_data_file(self):
                 "Total Amortized Cost" if col_amortcost else "",
             ]))
             msg  = "Other Data import complete.\n\n"
-            msg += f"Columns imported  : {cols_imported}\n"
-            msg += f"✓  Updated        : {total_updated} record(s)\n"
-            msg += f"↩  Duplicates skipped: {dup_count}\n"
-            msg += f"–  No DB match    : {len(skipped_no_match)} name(s)\n"
+            msg += f"Columns imported       : {cols_imported}\n"
+            msg += f"✓  Matched by ID       : {len(updated_by_cid)} record(s)\n"
+            msg += f"✓  Matched by name     : {len(updated_strict) + len(updated_relaxed)} record(s)\n"
+            msg += f"↩  Duplicates skipped  : {dup_count}\n"
+            msg += f"–  No DB match         : {len(skipped_no_match)} name(s)\n"
             if loan_bal_bad:
-                msg += f"⚠  Unparseable loan balance values: {len(loan_bal_bad)}\n"
+                msg += (f"⚠  Unparseable loan balance values: "
+                        f"{len(loan_bal_bad)}\n")
             if amortcost_bad:
-                msg += f"⚠  Unparseable amortized cost values: {len(amortcost_bad)}\n"
+                msg += (f"⚠  Unparseable amortized cost values: "
+                        f"{len(amortcost_bad)}\n")
+            if not col_clientid:
+                msg += ("\nℹ  No Client ID column found — "
+                        "used name matching only.\n")
             if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via similarity — please verify:\n"
-                for file_n, db_n in updated_relaxed[:10]:
-                    msg += f"  • File: {file_n}  →  DB: {db_n}\n"
+                msg += (f"\n⚠  {len(updated_relaxed)} matched via "
+                        f"similarity — please verify:\n")
+                for file_n, db_id in updated_relaxed[:10]:
+                    msg += f"  • File: {file_n}  →  DB id: {db_id}\n"
                 if len(updated_relaxed) > 10:
                     msg += f"  … and {len(updated_relaxed) - 10} more\n"
             if skipped_no_match:
