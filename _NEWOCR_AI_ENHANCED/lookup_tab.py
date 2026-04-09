@@ -22,7 +22,6 @@ from app_constants import (
     IMAGE_EXTS,
 )
 
-# ── ADDED IMPORT for summary tab integration ──────────────────────────
 from summary_tab import db_save_applicant, lookup_summary_notify
 
 # ── Category master list ──────────────────────────────────────────────
@@ -36,7 +35,6 @@ LOOKUP_ROWS = [
     ("cibi_business_inventory", "CI/BI Report",      "Business Inventory",                   "cibi"),
     ("cibi_petrol_products",    "CI/BI Report",      "Petrol / Plastics / PVC Risk",         "cibi"),
     ("cibi_transport_services", "CI/BI Report",      "Transport Services Risk",              "cibi"),
-    # ── Credit History amortization rows ────────────────────────
     ("credit_history_amort",    "CI/BI Report",      "Credit History Amort.",                "cibi"),
     ("income_remittance",       "Cashflow Analysis", "Source of Income",                     "cfa"),
     ("cfa_business_expenses",   "Cashflow Analysis", "Business Expenses",                    "cfa"),
@@ -80,6 +78,11 @@ DOC_TYPE_KEYWORDS = {
         "source of income", "business income", "household expenses",
         "monthly expenses", "personal expenses", "net income",
         "remittance", "padala",
+        "cashflow analysis", "cash flow analysis", "income analysis",
+        "net surplus", "net cash flow", "total income", "total expenses",
+        "gross income", "business expenses", "household / personal",
+        "family expenses", "monthly totals", "semi-monthly",
+        "income source", "salary", "farming income", "farm income",
     ],
     "worksheet": [
         "worksheet", "work sheet",
@@ -97,20 +100,25 @@ QUEUE_COLORS = {
     "error":   ("#FEF2F2", "#991B1B"),
 }
 
-# ── Concurrency / rate-limit settings ────────────────────────────────
-MAX_CONCURRENT_FILES = 20
-MAX_PARALLEL_CALLS   = 2
-INTER_CALL_DELAY_S   = 0
-INTER_FILE_DELAY_S   = 0
+# ── Concurrency settings ──────────────────────────────────────────────
+MAX_PARALLEL_CALLS = 2
 
-# Retry settings
-GEMINI_MAX_RETRIES   = 3
-GEMINI_RETRY_DELAYS  = [60, 90, 120]
+# Retry settings — shortened delays for non-quota transient errors
+GEMINI_MAX_RETRIES  = 3
+GEMINI_RETRY_DELAYS = [15, 30, 60]   # FIX: was [60, 90, 120] — far too long
 
 # ── Global Gemini rate-limit gate ─────────────────────────────────────
 _GEMINI_CALL_LOCK = threading.Lock()
 _GEMINI_LAST_CALL = 0.0
-_GEMINI_MIN_GAP_S = 0.5
+_GEMINI_MIN_GAP_S = 0.3   # FIX: was 0.5 — shaved a bit for parallel calls
+
+# ── Ordinal helper (used for multi-CFA labelling) ─────────────────────
+_ORDINALS = ["First", "Second", "Third", "Fourth", "Fifth",
+             "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"]
+
+def _ordinal(n: int) -> str:
+    """Return English ordinal word for 1-based index n."""
+    return _ORDINALS[n - 1] if 1 <= n <= len(_ORDINALS) else f"#{n}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -118,43 +126,22 @@ _GEMINI_MIN_GAP_S = 0.5
 # ═══════════════════════════════════════════════════════════════════════
 
 def _auto_rotate_pdf(pdf_bytes: bytes) -> bytes:
+    # FIX: Skip the slow pytesseract OSD pass — it runs on every page and
+    # adds significant latency.  Only correct fitz-detected rotation flags,
+    # which is near-instant.
     try:
         import fitz
-
         doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
         modified = False
-
         for page in doc:
             if page.rotation != 0:
                 page.set_rotation(0)
                 modified = True
-
-            try:
-                import pytesseract
-                from PIL import Image
-
-                mat  = fitz.Matrix(72 / 72, 72 / 72)
-                pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
-                img  = Image.frombytes("L", (pix.width, pix.height), pix.samples)
-                osd  = pytesseract.image_to_osd(
-                    img, output_type=pytesseract.Output.DICT,
-                    config="--psm 0")
-                angle = int(osd.get("rotate", 0))
-                if angle != 0:
-                    page.set_rotation((360 - angle) % 360)
-                    modified = True
-            except Exception:
-                pass
-
         if not modified:
             return pdf_bytes
-
-        buf = io.BytesIO(pdf_bytes)
-        doc.save(buf,
-                 incremental=True,
-                 encryption=fitz.PDF_ENCRYPT_KEEP)
+        buf = io.BytesIO()
+        doc.save(buf, garbage=2, deflate=True, clean=False)
         return buf.getvalue()
-
     except Exception:
         return pdf_bytes
 
@@ -165,10 +152,8 @@ def _extract_page_subset(pdf_bytes: bytes, page_numbers: list) -> bytes:
     try:
         import fitz
         src = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
-
         if sorted(page_numbers) == list(range(1, src.page_count + 1)):
             return pdf_bytes
-
         dst = fitz.open()
         for pg in page_numbers:
             zero = pg - 1
@@ -176,9 +161,7 @@ def _extract_page_subset(pdf_bytes: bytes, page_numbers: list) -> bytes:
                 dst.insert_pdf(src, from_page=zero, to_page=zero)
         if dst.page_count == 0:
             return pdf_bytes
-
         return dst.tobytes(garbage=0, deflate=True, clean=False)
-
     except Exception:
         return pdf_bytes
 
@@ -187,7 +170,7 @@ def _pages_for_type(page_map: dict, doc_type: str,
                     total_pages: int, padding: int = 1) -> list:
     matched = sorted(pg for pg, t in page_map.items() if t == doc_type)
     if not matched:
-        return list(range(1, total_pages + 1))
+        return []
     expanded = set()
     for pg in matched:
         for offset in range(-padding, padding + 1):
@@ -243,14 +226,14 @@ def _populate_lookup(self, parent):
     tk.Label(left, text="Look-Up", font=F(20, "bold"),
              fg=NAVY_DEEP, bg=CARD_WHITE).pack(anchor="w")
     tk.Label(left,
-             text="One PDF per applicant  ·  each processed independently"
+             text="One PDF per applicant  ·  processed one at a time for accuracy"
                   "  ·  results saved to Summary tab",
              font=F(9), fg=TXT_SOFT, bg=CARD_WHITE).pack(
                  anchor="w", pady=(2, 0))
     badge = tk.Frame(hdr, bg="#EEF6FF",
                      highlightbackground="#4F8EF7", highlightthickness=1)
     badge.pack(side="right", pady=4)
-    tk.Label(badge, text="  Gemini 2.5 Flash · Parallel  ",
+    tk.Label(badge, text="  Gemini 2.5 Flash · Sequential  ",
              font=F(8, "bold"), fg="#4F8EF7", bg="#EEF6FF", pady=4).pack()
 
     tk.Frame(parent, bg=BORDER_LIGHT, height=1).pack(
@@ -369,14 +352,13 @@ def _populate_lookup(self, parent):
     tk.Frame(parent, bg=CARD_WHITE, height=32).pack()
 
     # ── Internal state ─────────────────────────────────────────────────
-    self._lookup_filepaths    = []
-    self._lookup_cancel       = threading.Event()
-    self._lookup_file_data    = {}
-    self._lookup_raw_log      = []
-    self._lookup_raw_lock     = threading.Lock()
-    self._lookup_done_count   = 0
-    self._lookup_done_lock    = threading.Lock()
-    self._lookup_gemini_cache = {}
+    self._lookup_filepaths   = []
+    self._lookup_cancel      = threading.Event()
+    self._lookup_file_data   = {}
+    self._lookup_raw_log     = []
+    self._lookup_raw_lock    = threading.Lock()
+    self._lookup_done_count  = 0
+    self._lookup_error_count = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -427,9 +409,6 @@ def _build_queue_row(self, path: str, index: int):
                         padx=10, anchor="w")
     name_lbl.pack(fill="x")
 
-    xlsx_lbl   = tk.Label(row_outer)
-    folder_btn = tk.Label(row_outer)
-
     detail_frame = tk.Frame(row_outer, bg=CARD_WHITE,
                             highlightbackground=BORDER_LIGHT,
                             highlightthickness=1)
@@ -440,8 +419,6 @@ def _build_queue_row(self, path: str, index: int):
         "status_lbl":   status_lbl,
         "step_lbl":     step_lbl,
         "name_lbl":     name_lbl,
-        "xlsx_lbl":     xlsx_lbl,
-        "folder_btn":   folder_btn,
         "expand_btn":   expand_btn,
         "detail_frame": detail_frame,
         "expanded":     False,
@@ -599,10 +576,11 @@ def _lookup_browse(self):
 
 def _lookup_clear(self):
     self._lookup_cancel.set()
-    self._lookup_filepaths    = []
-    self._lookup_file_data    = {}
-    self._lookup_raw_log      = []
-    self._lookup_gemini_cache = {}
+    self._lookup_filepaths   = []
+    self._lookup_file_data   = {}
+    self._lookup_raw_log     = []
+    self._lookup_done_count  = 0
+    self._lookup_error_count = 0
     for w in self._lookup_queue_frame.winfo_children():
         w.destroy()
     self._lookup_file_lbl.config(text="No files selected", fg=TXT_SOFT)
@@ -622,8 +600,9 @@ def _lookup_run(self):
     if not self._lookup_filepaths:
         return
     self._lookup_cancel.clear()
-    self._lookup_raw_log    = []
-    self._lookup_done_count = 0
+    self._lookup_raw_log     = []
+    self._lookup_done_count  = 0
+    self._lookup_error_count = 0
 
     self._lookup_session_id = datetime.now().isoformat(timespec="seconds")
 
@@ -634,7 +613,6 @@ def _lookup_run(self):
 
     try:
         client, gt = _get_gemini_client(self)
-        self._lookup_gemini_cache = {"client": client, "gt": gt}
     except Exception as exc:
         self._lookup_overall_lbl.config(
             text=f"Gemini init failed: {exc}", fg=ACCENT_RED)
@@ -642,55 +620,50 @@ def _lookup_run(self):
         return
 
     threading.Thread(
-        target=_lookup_worker, args=(self,), daemon=True).start()
+        target=_lookup_worker,
+        args=(self, client, gt),
+        daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MAIN WORKER — concurrent file processing
+#  MAIN WORKER — sequential file processing
 # ═══════════════════════════════════════════════════════════════════════
 
-def _lookup_worker(self):
+def _lookup_worker(self, client, gt):
     paths = list(self._lookup_filepaths)
     total = len(paths)
 
-    def cancelled():
-        return self._lookup_cancel.is_set()
+    for i, path in enumerate(paths):
+        if self._lookup_cancel.is_set():
+            break
 
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(MAX_CONCURRENT_FILES, total),
-            thread_name_prefix="lookup_file") as pool:
+        fname = Path(path).name
+        _ui(self, lambda n=fname, idx=i, t=total:
+            self._lookup_overall_lbl.config(
+                text=f"Processing {idx+1}/{t}: {n}…",
+                fg=ACCENT_GOLD))
 
-        futures = {}
-        for i, path in enumerate(paths):
-            if cancelled():
-                break
-            futures[pool.submit(
-                _process_single_file_safe, self, path, cancelled)] = path
+        try:
+            _process_single_file(self, path, client, gt)
+            self._lookup_done_count += 1
+            self._lookup_file_data[path]["status"] = "done"
+        except Exception as exc:
+            import traceback
+            self._lookup_error_count += 1
+            err_msg = str(exc)
+            _log(self, f"\n[ERROR — {fname}]\n{traceback.format_exc()}")
+            _ui(self, lambda p=path, e=err_msg:
+                _set_row_status(self, p, "error", f"Error: {e[:120]}"))
+            self._lookup_file_data[path]["error"] = err_msg
+            self._lookup_file_data[path]["status"] = "error"
 
-        for future in concurrent.futures.as_completed(futures):
-            if cancelled():
-                for f in futures:
-                    f.cancel()
-                break
+        done_so_far = self._lookup_done_count + self._lookup_error_count
+        _ui(self, lambda v=done_so_far / total:
+            self._lookup_prog_var.set(v))
 
-            try:
-                future.result()
-                with self._lookup_done_lock:
-                    self._lookup_done_count += 1
-            except Exception:
-                pass
-
-            with self._lookup_done_lock:
-                done = self._lookup_done_count
-
-            _ui(self, lambda v=done / total:
-                self._lookup_prog_var.set(v))
-
-    if not cancelled():
-        with self._lookup_done_lock:
-            done = self._lookup_done_count
-        errors = total - done
-
+    if not self._lookup_cancel.is_set():
+        done   = self._lookup_done_count
+        errors = self._lookup_error_count
         s = f"✓  {done}/{total} applicant(s) processed"
         if errors:
             s += f"  ·  {errors} error(s) — see queue"
@@ -698,34 +671,29 @@ def _lookup_worker(self):
             self._lookup_overall_lbl.config(
                 text=msg,
                 fg=ACCENT_SUCCESS if not errors else ACCENT_GOLD))
+    else:
+        _ui(self, lambda:
+            self._lookup_overall_lbl.config(
+                text="Cancelled.", fg=TXT_MUTED))
 
     _ui(self, lambda: self._lookup_run_btn.configure(
         state="normal", text="⚡  Run Look-Up"))
     _ui(self, lambda: self._lookup_prog_bar.pack_forget())
 
 
-def _process_single_file_safe(self, path: str, cancelled) -> None:
-    try:
-        _process_single_file(self, path, cancelled)
-        self._lookup_file_data[path]["status"] = "done"
-    except Exception as exc:
-        import traceback
-        _log(self, f"\n[ERROR — {Path(path).name}]\n{traceback.format_exc()}")
-        _ui(self, lambda p=path, e=str(exc):
-            _set_row_status(self, p, "error", f"Error: {e[:120]}"))
-        self._lookup_file_data[path]["error"] = str(exc)
-        self._lookup_file_data[path]["status"] = "error"
-        raise
-
-
 # ═══════════════════════════════════════════════════════════════════════
-#  SINGLE-FILE PROCESSOR  (optimized with 2 combined calls)
+#  SINGLE-FILE PROCESSOR
 # ═══════════════════════════════════════════════════════════════════════
 
-def _process_single_file(self, path: str, cancelled) -> None:
-    fname  = Path(path).name
-    client = self._lookup_gemini_cache["client"]
-    gt     = self._lookup_gemini_cache["gt"]
+def _process_single_file(self, path: str, client, gt) -> None:
+    fname = Path(path).name
+
+    file_cancel = threading.Event()
+
+    def cancelled():
+        if self._lookup_cancel.is_set():
+            file_cancel.set()
+        return file_cancel.is_set()
 
     def step(msg: str):
         _ui(self, lambda m=msg:
@@ -733,7 +701,6 @@ def _process_single_file(self, path: str, cancelled) -> None:
 
     _log(self, f"\n{'═'*60}\nFILE: {fname}\n{'═'*60}")
 
-    # ── Read PDF ──────────────────────────────────────────────────────
     step("Reading PDF…")
     try:
         pdf_bytes = Path(path).read_bytes()
@@ -744,12 +711,10 @@ def _process_single_file(self, path: str, cancelled) -> None:
 
     original_pdf_bytes = pdf_bytes
 
-    # ── Auto-rotate ───────────────────────────────────────────────────
     step("Correcting page orientation…")
     pdf_bytes = _auto_rotate_pdf(pdf_bytes)
     _log(self, f"[{fname}] {len(pdf_bytes):,} bytes (after rotation fix)")
 
-    # ── Step 1: extract text + classify ──────────────────────────────
     step("Step 1/3 — Extracting & classifying pages…")
     try:
         pages_text    = _extract_pages_text(pdf_bytes)
@@ -762,42 +727,81 @@ def _process_single_file(self, path: str, cancelled) -> None:
     except Exception as e:
         _log(self, f"[{fname}] Classification failed: {e}")
         raise
-    if cancelled(): return
+    if cancelled():
+        return
 
-    # ── Build PDF slices ──────────────────────────────────────────────
-    cibi_pages   = _pages_for_type(page_map, "cibi",      total_pages)
-    cfa_pages    = _pages_for_type(page_map, "cfa",       total_pages)
-    ws_pages     = _pages_for_type(page_map, "worksheet", total_pages)
-    pdf_cibi     = _extract_page_subset(pdf_bytes, cibi_pages)
-    cfa_ws_pages = sorted(set(cfa_pages) | set(ws_pages))
-    pdf_cfa_ws   = _extract_page_subset(pdf_bytes, cfa_ws_pages)
+    cibi_pages = _pages_for_type(page_map, "cibi", total_pages)
+    ws_pages   = _pages_for_type(page_map, "worksheet", total_pages)
 
-    original_pdf_cibi   = _extract_page_subset(original_pdf_bytes, cibi_pages)
-    original_pdf_cfa_ws = _extract_page_subset(original_pdf_bytes, cfa_ws_pages)
+    cfa_run_keys = sorted(
+        {t for t in page_map.values() if re.match(r"cfa_\d+$", str(t))},
+        key=lambda k: int(k.split("_")[1]))
+    _log(self, f"[{fname}] CFA runs detected: {cfa_run_keys or ['none']}")
+
+    if not cibi_pages:
+        _log(self, f"[{fname}] WARNING: No CI/BI pages detected — using full PDF for cibi call.")
+        cibi_pages = list(range(1, total_pages + 1))
+
+    pdf_cibi = _extract_page_subset(pdf_bytes, cibi_pages)
+    original_pdf_cibi = _extract_page_subset(original_pdf_bytes, cibi_pages)
+
+    if ws_pages:
+        pdf_ws          = _extract_page_subset(pdf_bytes,          ws_pages)
+        original_pdf_ws = _extract_page_subset(original_pdf_bytes, ws_pages)
+    else:
+        pdf_ws = original_pdf_ws = None
+
+    cfa_slices = []
+    if cfa_run_keys:
+        for ck in cfa_run_keys:
+            run_pages = _pages_for_type(page_map, ck, total_pages)
+            combined_pages = sorted(set(run_pages) | set(ws_pages))
+            if not combined_pages:
+                combined_pages = list(range(1, total_pages + 1))
+            cfa_slices.append((
+                ck,
+                _extract_page_subset(pdf_bytes,          combined_pages),
+                _extract_page_subset(original_pdf_bytes, combined_pages),
+                section_texts.get(ck, ""),
+            ))
+    else:
+        _log(self, f"[{fname}] WARNING: No CFA pages detected — using full PDF for cfa_ws call.")
+        all_pages = list(range(1, total_pages + 1))
+        cfa_slices.append((
+            "cfa_1",
+            _extract_page_subset(pdf_bytes,          all_pages),
+            _extract_page_subset(original_pdf_bytes, all_pages),
+            section_texts.get("cfa", ""),
+        ))
 
     _log(self,
          f"[{fname}] Slices — "
-         f"cibi:{len(pdf_cibi):,}b  cfa_ws:{len(pdf_cfa_ws):,}b  "
-         f"(full:{len(pdf_bytes):,}b)")
+         f"cibi:{len(pdf_cibi):,}b  "
+         + "  ".join(f"{ck}:{len(sl):,}b" for ck, sl, _, _ in cfa_slices)
+         + f"  (full:{len(pdf_bytes):,}b)")
 
     pg_summary = (None if not (set(page_map.values()) - {"unknown"})
                   else map_summary)
-    if cancelled(): return
+    if cancelled():
+        return
 
-    # ── Steps 2+3: Gemini calls ───────────────────────────────────────
-    step("Steps 2-3/3 — Gemini calls running…")
+    step(f"Gemini calls — 1 CI/BI + {len(cfa_slices)} CFA run(s)…")
     call_results      = {}
     call_results_lock = threading.Lock()
 
     call_defs = [
-        ("cibi_combined", _gemini_extract_cibi_combined, self, client, gt,
-         pdf_cibi, pg_summary,
-         section_texts.get("cibi", ""), original_pdf_cibi),
-        ("cfa_ws_combined", _gemini_extract_cfa_ws_combined, self, client, gt,
-         pdf_cfa_ws, pg_summary,
-         section_texts.get("cfa", ""), section_texts.get("worksheet", ""),
-         original_pdf_cfa_ws),
+        ("cibi_combined", _gemini_extract_cibi_combined,
+         self, client, gt, pdf_cibi, pg_summary,
+         section_texts.get("cibi", ""), original_pdf_cibi, file_cancel),
     ]
+    for ck, cfa_pdf, cfa_orig, cfa_hint in cfa_slices:
+        ws_hint = section_texts.get("worksheet", "")
+        call_defs.append((
+            f"cfa_ws_{ck}",
+            _gemini_extract_cfa_ws_combined,
+            self, client, gt, cfa_pdf, pg_summary,
+            cfa_hint, ws_hint, cfa_orig, file_cancel,
+        ))
 
     def _run(label, fn, *args):
         if cancelled():
@@ -812,29 +816,79 @@ def _process_single_file(self, path: str, cancelled) -> None:
         with call_results_lock:
             call_results[label] = result
 
-    if MAX_PARALLEL_CALLS == 1:
-        for i, defn in enumerate(call_defs):
-            if cancelled():
-                break
-            label = defn[0]; fn = defn[1]; args = defn[2:]
-            step(f"Steps 2-3/3 — call {i+1}/2: {label}…")
-            _run(label, fn, *args)
-            if i < len(call_defs) - 1 and INTER_CALL_DELAY_S > 0:
-                _log(self, f"[{fname}] Waiting {INTER_CALL_DELAY_S}s before next call…")
-                self._lookup_cancel.wait(timeout=INTER_CALL_DELAY_S)
-    else:
+    if MAX_PARALLEL_CALLS >= 2:
         with concurrent.futures.ThreadPoolExecutor(
-                max_workers=MAX_PARALLEL_CALLS,
+                max_workers=max(2, len(call_defs)),
                 thread_name_prefix=f"gem_{fname[:6]}") as pool:
             fs = [pool.submit(_run, defn[0], defn[1], *defn[2:])
                   for defn in call_defs]
             concurrent.futures.wait(fs)
+    else:
+        for defn in call_defs:
+            if cancelled():
+                break
+            _run(defn[0], defn[1], *defn[2:])
 
-    if cancelled(): return
+    if cancelled():
+        return
 
-    # ── Unpack ────────────────────────────────────────────────────────
-    raw_cibi_c, data_cibi_c = call_results.get("cibi_combined",   ("", {}))
-    raw_cfaws,  data_cfaws  = call_results.get("cfa_ws_combined", ("", {}))
+    raw_cibi_c, data_cibi_c = call_results.get("cibi_combined", ("", {}))
+
+    # FIX: Guard against Gemini returning non-dict for data_cibi_c
+    if not isinstance(data_cibi_c, dict):
+        _log(self, f"[{fname}] WARNING: cibi_combined returned non-dict — resetting")
+        data_cibi_c = {}
+
+    CFA_MULTI_FIELDS = (
+        "income_remittance",
+        "cfa_business_expenses",
+        "cfa_household_expenses",
+    )
+    merged_cfa: dict = {}
+    all_cfa_net_incomes: list = []
+    raw_cfa_parts: list = []
+
+    for idx, (ck, _, _, _) in enumerate(cfa_slices, start=1):
+        label_key  = f"cfa_ws_{ck}"
+        raw_r, data_r = call_results.get(label_key, ("", {}))
+
+        # FIX: Guard against non-dict CFA results
+        if not isinstance(data_r, dict):
+            _log(self, f"[{fname}] WARNING: {label_key} returned non-dict — skipping")
+            data_r = {}
+
+        raw_cfa_parts.append(raw_r)
+
+        ordinal = _ordinal(idx)
+        prefix  = f"{ordinal} Cashflow"
+
+        for field in CFA_MULTI_FIELDS:
+            entries = data_r.get(field, [])
+            if not isinstance(entries, list):
+                entries = []
+            tagged = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry = dict(entry)
+                    orig_desc = entry.get("description", "").strip()
+                    entry["description"] = (
+                        f"{prefix}: {orig_desc}" if orig_desc
+                        else prefix)
+                    tagged.append(entry)
+            merged_cfa.setdefault(field, []).extend(tagged)
+
+        net = str(data_r.get("cfa_net_income", "")).strip()
+        if net:
+            all_cfa_net_incomes.append(f"{prefix}: {net}")
+
+        WS_FIELDS = (
+            "ws_food_grocery", "ws_fuel_transport", "ws_electricity",
+            "ws_fertilizer",   "ws_forwarding",     "ws_fuel_diesel",
+            "ws_equipment",
+        )
+        for wf in WS_FIELDS:
+            if wf not in merged_cfa and data_r.get(wf):
+                merged_cfa[wf] = data_r[wf]
 
     applicant_name = _sanitize_extracted_text(
         data_cibi_c.get("applicant_name", "").strip())
@@ -848,25 +902,35 @@ def _process_single_file(self, path: str, cancelled) -> None:
     _log(self,
          f"[{fname}] name={applicant_name or '[not found]'}  "
          f"cibi_keys={list(data_cibi_c)}  "
-         f"cfaws_keys={list(data_cfaws)}")
+         f"cfa_runs={len(cfa_slices)}  merged_cfa_keys={list(merged_cfa)}")
     _log(self,
          f"[{fname}] Raw (first 3000 chars):\n"
-         + "\n---\n".join(filter(None, [raw_cibi_c, raw_cfaws]))[:3000])
+         + "\n---\n".join(filter(None, [raw_cibi_c] + raw_cfa_parts))[:3000])
 
+    # FIX: Build combined dict carefully — start fresh, layer CIBI first,
+    # then CFA.  Never let an empty merged_cfa key clobber a CIBI key that
+    # shares the same name.  CIBI-only keys are never overwritten by CFA.
     combined = {}
-    combined.update(data_cibi_c)
-    combined.update(data_cfaws)
+    # Layer 1: all CIBI data
+    for k, v in data_cibi_c.items():
+        combined[k] = v
+    # Layer 2: CFA/WS data — only overwrite if CFA has actual content
+    for k, v in merged_cfa.items():
+        if v:  # only overwrite if non-empty list
+            combined[k] = v
+
     results = _parse_extraction_response_from_dict(combined)
 
     fields_found = sum(1 for k, v in results.items()
                        if not k.startswith("_") and v.get("items"))
     _log(self, f"[{fname}] Fields with data: {fields_found}/{len(LOOKUP_ROWS)}")
 
-    results["_applicant_name"] = applicant_name
-    results["_gate_data"]      = gate_result
-    results["_page_map"]       = map_summary
-    results["_source_file"]    = fname
-    results["_cfa_net_income"] = data_cfaws.get("cfa_net_income", "")
+    results["_applicant_name"]    = applicant_name
+    results["_gate_data"]         = gate_result
+    results["_page_map"]          = map_summary
+    results["_source_file"]       = fname
+    results["_cfa_net_income"]    = "  /  ".join(all_cfa_net_incomes)
+    results["_cfa_run_count"]     = len(cfa_slices)
 
     self._lookup_file_data[path]["name"]      = applicant_name
     self._lookup_file_data[path]["gate_data"] = gate_result
@@ -876,9 +940,9 @@ def _process_single_file(self, path: str, cancelled) -> None:
     _ui(self, lambda n=display:
         self._lookup_file_data[path]["widgets"]["name_lbl"].config(
             text=f"  {n}"))
-    if cancelled(): return
+    if cancelled():
+        return
 
-    # ── Persist to SQLite ─────────────────────────────────────────────
     step("Saving to Summary…")
     try:
         session_id = getattr(self, "_lookup_session_id",
@@ -889,7 +953,6 @@ def _process_single_file(self, path: str, cancelled) -> None:
     except Exception as exc:
         _log(self, f"[{fname}] DB save failed (non-fatal): {exc}")
 
-    # ── Mark done ────────────────────────────────────────────────────
     _ui(self, lambda:
         _set_row_status(self, path, "done", "Done  ·  Saved to Summary"))
     _ui(self, lambda:
@@ -931,6 +994,18 @@ def _extract_pages_text(pdf_bytes: bytes) -> list:
 #  PAGE CLASSIFIER
 # ═══════════════════════════════════════════════════════════════════════
 
+_CFA_RUN_BOUNDARY_KEYWORDS = [
+    "cashflow analysis",
+    "cash flow analysis",
+    "cash-flow analysis",
+    "income analysis",
+    "statement of cash flow",
+    "monthly cash flow",
+]
+
+_CFA_PAGES_PER_FORM = 2
+
+
 def _classify_pages(pages_text: list) -> dict:
     page_types = {}
     for i, text in enumerate(pages_text):
@@ -955,29 +1030,118 @@ def _classify_pages(pages_text: list) -> dict:
         if page_types.get(nxt) in ("unknown", None):
             page_types[nxt] = "cibi"
 
+    # FIX: A worksheet page immediately before a CFA page must NOT trigger
+    # a new CFA run — only a genuine non-CFA/non-worksheet gap should.
+    # Expanded the "previous was not CFA" check to also allow worksheet.
+    cfa_run   = 0
+    prev_type = None
+    for pg in sorted(page_types):
+        t = page_types[pg]
+        if t == "cfa":
+            t_lower = pages_text[pg - 1].lower()
+
+            # A worksheet page immediately before CFA is still the same block
+            prev_is_cfa_adjacent = (
+                prev_type is not None and
+                (re.match(r"cfa_\d+$", str(prev_type)) or prev_type == "worksheet")
+            )
+            is_new_run_by_gap      = not prev_is_cfa_adjacent
+            is_new_run_by_boundary = (
+                cfa_run > 0 and
+                any(kw in t_lower for kw in _CFA_RUN_BOUNDARY_KEYWORDS)
+            )
+
+            if is_new_run_by_gap or is_new_run_by_boundary:
+                cfa_run += 1
+
+            page_types[pg] = f"cfa_{cfa_run}"
+        prev_type = page_types[pg]
+
+    all_unknown = all(v == "unknown" for v in page_types.values())
+    if all_unknown:
+        page_types = _heuristic_layout_split(page_types, pages_text)
+
     return page_types
+
+
+def _heuristic_layout_split(page_types: dict, pages_text: list) -> dict:
+    total  = len(pages_text)
+    result = dict(page_types)
+    cpf    = _CFA_PAGES_PER_FORM
+
+    if total == 4:
+        assign = ["cibi"] * 2 + ["cfa_1"] * 2
+    elif total == 5:
+        assign = ["cibi"] * 2 + ["cfa_1"] * 2 + ["worksheet"] * 1
+    elif total == 6:
+        assign = ["cibi"] * 2 + ["cfa_1"] * cpf + ["cfa_2"] * cpf
+    elif total == 7:
+        assign = ["cibi"] * 2 + ["cfa_1"] * cpf + ["cfa_2"] * cpf + ["worksheet"] * 1
+    elif total == 8:
+        assign = ["cibi"] * 2 + ["cfa_1"] * cpf + ["cfa_2"] * cpf + ["worksheet"] * 2
+    elif total == 9:
+        assign = ["cibi"] * 2 + ["cfa_1"] * cpf + ["cfa_2"] * cpf + ["worksheet"] * 3
+    else:
+        cibi_count = max(1, round(total * 0.25))
+        remaining  = total - cibi_count
+        ws_count   = 1 if total > 4 else 0
+        cfa_total  = remaining - ws_count
+        cfa1_count = cfa_total // 2
+        cfa2_count = cfa_total - cfa1_count
+        assign = (
+            ["cibi"]        * cibi_count
+            + ["cfa_1"]     * cfa1_count
+            + ["cfa_2"]     * cfa2_count
+            + ["worksheet"] * ws_count
+        )
+
+    assign = (assign + ["unknown"] * total)[:total]
+    for i, label in enumerate(assign):
+        result[i + 1] = label
+    return result
 
 
 def _format_page_map(page_map: dict, total_pages: int) -> str:
     labels = {
         "credit_scoring": "Credit Scoring",
         "cibi":           "CI/BI Report",
-        "cfa":            "Cashflow Analysis",
         "worksheet":      "Worksheet",
         "unknown":        "Unclassified",
     }
+
+    def _label(t: str) -> str:
+        if t in labels:
+            return labels[t]
+        m = re.match(r"cfa_(\d+)$", t)
+        if m:
+            n = int(m.group(1))
+            ord_ = _ORDINALS[n - 1] if 1 <= n <= len(_ORDINALS) else f"#{n}"
+            return f"Cashflow Analysis ({ord_})"
+        return "?"
+
     return "\n".join(
-        f"  Page {pg:>2}: {labels.get(page_map.get(pg, 'unknown'), '?')}"
+        f"  Page {pg:>2}: {_label(page_map.get(pg, 'unknown'))}"
         for pg in range(1, total_pages + 1))
 
 
 def _group_pages_by_section(pages_text: list, page_map: dict) -> dict:
     groups = {k: [] for k in
-              ("credit_scoring", "cibi", "cfa", "worksheet", "unknown")}
+              ("credit_scoring", "cibi", "worksheet", "unknown")}
     for i, text in enumerate(pages_text):
         pg    = i + 1
         dtype = page_map.get(pg, "unknown")
         groups.setdefault(dtype, []).append(f"[Page {pg}]\n{text}")
+
+    cfa_keys = sorted(
+        {t for t in page_map.values() if re.match(r"cfa_\d+$", str(t))},
+        key=lambda k: int(k.split("_")[1]))
+    for ck in cfa_keys:
+        groups.setdefault(ck, [])
+    all_cfa = []
+    for ck in cfa_keys:
+        all_cfa.extend(groups[ck])
+    groups["cfa"] = all_cfa
+
     return {k: "\n\n".join(v) for k, v in groups.items()}
 
 
@@ -995,7 +1159,8 @@ def _get_gemini_client(self):
     api_key = None
     for attr in ("_gemini_api_key", "gemini_api_key", "_api_key"):
         if hasattr(self, attr):
-            api_key = getattr(self, attr); break
+            api_key = getattr(self, attr)
+            break
     if not api_key:
         try:
             from app_constants import GEMINI_API_KEY
@@ -1004,7 +1169,8 @@ def _get_gemini_client(self):
             pass
     if not api_key:
         try:
-            import config; api_key = config.GEMINI_API_KEY
+            import config
+            api_key = config.GEMINI_API_KEY
         except Exception:
             pass
     if not api_key:
@@ -1048,25 +1214,36 @@ def _gemini_call(self, client, gt, contents, config,
             return resp
         except Exception as exc:
             msg = str(exc)
-            is_transient = any(x in msg for x in (
-                "500", "502", "503", "unavailable", "429", "quota",
-                "RESOURCE_EXHAUSTED", "Empty response",
-                "timeout", "timed out", "Connection", "RemoteDisconnected"))
+            # FIX: Differentiate quota exhaustion (needs long wait) from
+            # transient server errors (short wait is fine).
+            is_quota     = any(x in msg for x in ("429", "quota", "RESOURCE_EXHAUSTED"))
+            is_transient = is_quota or any(x in msg for x in (
+                "500", "502", "503", "unavailable",
+                "Empty response", "timeout", "timed out",
+                "Connection", "RemoteDisconnected"))
+
             if is_transient and attempt < max_retries - 1:
-                base  = GEMINI_RETRY_DELAYS[min(attempt, len(GEMINI_RETRY_DELAYS)-1)]
-                delay = base + random.uniform(-base * 0.2, base * 0.2)
+                if is_quota:
+                    # Quota errors still need a longer backoff
+                    base = [60, 90, 120][min(attempt, 2)]
+                else:
+                    # Transient 5xx / network errors: short retry
+                    base = GEMINI_RETRY_DELAYS[min(attempt, len(GEMINI_RETRY_DELAYS)-1)]
+                delay = base + random.uniform(-base * 0.1, base * 0.1)
+
                 _code = "ERR"
                 for _candidate in ("429", "502", "503", "500"):
                     if _candidate in msg:
                         _code = _candidate
                         break
                 else:
-                    if "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
+                    if is_quota:
                         _code = "QUOTA"
                     elif "timeout" in msg.lower() or "timed out" in msg.lower():
                         _code = "TIMEOUT"
                     elif "unavailable" in msg.lower():
                         _code = "UNAVAILABLE"
+
                 _ui(self, lambda w=int(delay), a=attempt, r=max_retries, c=_code:
                     self._lookup_overall_lbl.config(
                         text=f"Gemini {c} — retry {a+1}/{r} in {w}s…",
@@ -1139,13 +1316,14 @@ def _parse_json_safe(text: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  GEMINI CALL 1 — CI/BI + ASSETS  (rewritten to match exact doc layout)
+#  GEMINI CALL 1 — CI/BI + ASSETS
 # ═══════════════════════════════════════════════════════════════════════
 
 def _gemini_extract_cibi_combined(self, client, gt,
                                   pdf_bytes: bytes,
                                   pg_summary, hint: str,
-                                  original_pdf_bytes: bytes = None) -> tuple:
+                                  original_pdf_bytes: bytes = None,
+                                  cancel_event=None) -> tuple:
     if pg_summary:
         scope = (f"The page classifier identified these sections:\n{pg_summary}\n\n"
                  f"Focus on the CI/BI Report and Assets pages identified above.")
@@ -1292,8 +1470,6 @@ STILL ON CI/BI PAGE: CREDIT HISTORY & REFERENCES
    WHAT TO EXTRACT:
    • Extract individual data rows (one per lending institution).
      description = institution name, amount = Amort. value, date = Due Date.
-   • Also extract the TOTAL row at the bottom:
-     description = "TOTAL", amount = total Amort., date = "".
    • Use amount="" for rows where Amort. cell is blank or a dash.
    • Return [] only if the entire table is blank.
  
@@ -1408,9 +1584,14 @@ FINAL CHECKS BEFORE RESPONDING:
         pdf_bytes, fallback,
         prompt,
         gt.GenerateContentConfig(temperature=0.0),
-        cancel_event=self._lookup_cancel)
+        cancel_event=cancel_event)
     raw  = resp.text or ""
     data = _parse_json_safe(raw)
+
+    # FIX: Guard against non-dict parse result
+    if not isinstance(data, dict):
+        data = {}
+
     _NA = {"N/A", "NA", "NONE", "NONE.", "-", "\u2014", "N/A.", "N.A."}
     for field in ("applicant_name", "residence_address", "office_address"):
         val = data.get(field, "").strip()
@@ -1419,7 +1600,7 @@ FINAL CHECKS BEFORE RESPONDING:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  GEMINI CALL 2 — CFA + WORKSHEET  (rewritten to match exact doc layout)
+#  GEMINI CALL 2 — CFA + WORKSHEET
 # ═══════════════════════════════════════════════════════════════════════
 
 def _gemini_extract_cfa_ws_combined(self, client, gt,
@@ -1427,7 +1608,8 @@ def _gemini_extract_cfa_ws_combined(self, client, gt,
                                     pg_summary,
                                     cfa_hint: str,
                                     ws_hint: str,
-                                    original_pdf_bytes: bytes = None) -> tuple:
+                                    original_pdf_bytes: bytes = None,
+                                    cancel_event=None) -> tuple:
     if pg_summary:
         scope = (f"The page classifier identified these sections:\n{pg_summary}\n\n"
                  f"Focus on the Cashflow Analysis and Worksheet pages above.")
@@ -1607,9 +1789,15 @@ FINAL CHECKS BEFORE RESPONDING:
         pdf_bytes, fallback,
         prompt,
         gt.GenerateContentConfig(temperature=0.0),
-        cancel_event=self._lookup_cancel)
+        cancel_event=cancel_event)
     raw  = resp.text or ""
-    return raw, _parse_json_safe(raw)
+    data = _parse_json_safe(raw)
+
+    # FIX: Guard against non-dict parse result
+    if not isinstance(data, dict):
+        data = {}
+
+    return raw, data
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1631,7 +1819,12 @@ def _sanitize_extracted_text(text: str) -> str:
 
     text = re.sub(r"P[■-◿▀-▟]", "Purok ", text)
     text = re.sub(r"[■-◿▀-▟─-╿]", "", text)
-    text = re.sub(r"P(\d{1,2})",
+
+    # FIX: The original regex  P(\d{1,2})  incorrectly converts peso amounts
+    # like "PHP 50,000" or "P 8,500" → "PHurok  50,000" / "Purok 8,500".
+    # Restrict the Purok expansion to standalone "P" not preceded by letters
+    # and not followed by a space or currency context.
+    text = re.sub(r"(?<![A-Za-z])P(\d{1,2})(?!\d)",
                   lambda m: f"Purok {m.group(1)}", text)
 
     KEEP_WS = {" ", chr(10), chr(9)}
@@ -1651,6 +1844,10 @@ def _parse_extraction_response_from_dict(data: dict) -> dict:
     raw_entries = {}
     for key in all_keys:
         entries = data.get(key, [])
+        # FIX: Entries might arrive as a dict (single item) rather than a
+        # list when Gemini omits the surrounding brackets.  Normalise early.
+        if isinstance(entries, dict):
+            entries = [entries]
         raw_entries[key] = entries if isinstance(entries, list) else []
 
     cfa_biz_fingerprints = set()
@@ -1709,8 +1906,10 @@ def _parse_extraction_response_from_dict(data: dict) -> dict:
                 items_text.append(label)
 
             if key not in NO_TOTAL_KEYS and amt and amt.upper() != "N/A":
-                nums = re.findall(r"[\d,]+\.?\d*",
-                                  re.sub(r"[^\d.,]", " ", amt))
+                # FIX: Strip leading peso/currency prefix before numeric parse
+                # so "P 8,500.00", "PHP8500", "₱ 1,200" all parse correctly.
+                amt_clean = re.sub(r"^(?:PHP?|₱)\s*", "", amt, flags=re.IGNORECASE).strip()
+                nums = re.findall(r"[\d,]+\.?\d*", re.sub(r"[^\d.,]", " ", amt_clean))
                 if nums:
                     try:
                         total_sum += float(nums[0].replace(",", ""))
