@@ -24,7 +24,7 @@ DATA POPULATION SOURCES:
   • From "Amort." import (manual):
       amort_current_total
   • From "P.Loan" import (manual):
-      principal_loan, maturity, interest_rate
+      principal_loan, maturity, interest_rate, plus expanded fields
 """
 
 import re
@@ -118,6 +118,21 @@ TABLE_COLS = [
     ("principal_loan",      "Principal Loan",                      150, True,  False),
     ("maturity",            "Maturity",                            140, False, False),
     ("interest_rate",       "Interest Rate",                       120, False, False),
+    # ── Populated by P.Loan import (expanded fields) ──────────────────
+    ("branch",              "Branch",                              130, False, False),
+    ("loan_class_name",     "Loan Class",                          140, False, False),
+    ("product_name",        "Product Name",                        160, False, False),
+    ("industry_name_ploan", "Industry (PLoan)",                    160, False, False),
+    ("loan_date",           "Loan Date",                           120, False, False),
+    ("term_unit",           "Term Unit",                           90,  False, False),
+    ("term",                "Term",                                80,  False, False),
+    ("security",            "Security",                            160, False, True ),
+    ("release_tag",         "Release Tag",                         120, False, False),
+    ("loan_amount",         "Loan Amount",                         140, True,  False),
+    ("loan_balance_ploan",  "Loan Balance (PLoan)",                150, True,  False),
+    ("amort_ploan",         "Amort. (PLoan)",                      130, True,  False),
+    ("loan_status",         "Loan Status",                         120, False, False),
+    ("ao_name",             "AO Name",                             160, False, False),
 ]
 
 TREE_COLS = [c[0] for c in TABLE_COLS]
@@ -225,6 +240,18 @@ _CHECKLIST_PREVIEW_COLS = [
     ("Principal Loan",                           120, True),
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
+    # ── P.Loan expanded ───────────────────────────────────────────────
+    ("Branch",                                   110, False),
+    ("Loan Class",                               120, False),
+    ("Product Name",                             140, False),
+    ("Loan Date",                                100, False),
+    ("Term Unit",                                80,  False),
+    ("Term",                                     70,  False),
+    ("Loan Amount",                              120, True ),
+    ("Loan Balance (PLoan)",                     130, True ),
+    ("Amort. (PLoan)",                           110, True ),
+    ("Loan Status",                              100, False),
+    ("AO Name",                                  140, False),
 ]
 
 _ALL_EXPORT_COLS = [
@@ -252,6 +279,21 @@ _ALL_EXPORT_COLS = [
     ("Principal Loan",                           120, True),
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
+    # ── P.Loan expanded ───────────────────────────────────────────────
+    ("Branch",                                   120, False),
+    ("Loan Class",                               130, False),
+    ("Product Name",                             150, False),
+    ("Industry (PLoan)",                         150, False),
+    ("Loan Date",                                110, False),
+    ("Term Unit",                                90,  False),
+    ("Term",                                     80,  False),
+    ("Security",                                 160, False),
+    ("Release Tag",                              110, False),
+    ("Loan Amount",                              130, True ),
+    ("Loan Balance (PLoan)",                     140, True ),
+    ("Amort. (PLoan)",                           120, True ),
+    ("Loan Status",                              110, False),
+    ("AO Name",                                  150, False),
 ]
 
 
@@ -563,6 +605,10 @@ _PATCHABLE_COLS = [
     "amort_current_total",
     # ── Set by P.Loan import ─────────────────────────────────────────
     "principal_loan", "maturity", "interest_rate",
+    "branch", "loan_class_name", "product_name", "industry_name_ploan",
+    "loan_date", "term_unit", "term", "security", "release_tag",
+    "loan_amount", "loan_balance_ploan", "amort_ploan",
+    "loan_status", "ao_name",
 ]
 
 
@@ -623,7 +669,21 @@ def _db_init():
             amortized_cost      REAL,
             principal_loan      REAL,
             maturity            TEXT,
-            interest_rate       TEXT
+            interest_rate       TEXT,
+            branch              TEXT,
+            loan_class_name     TEXT,
+            product_name        TEXT,
+            industry_name_ploan TEXT,
+            loan_date           TEXT,
+            term_unit           TEXT,
+            term                TEXT,
+            security            TEXT,
+            release_tag         TEXT,
+            loan_amount         REAL,
+            loan_balance_ploan  REAL,
+            amort_ploan         REAL,
+            loan_status         TEXT,
+            ao_name             TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session   ON applicants(session_id);
         CREATE INDEX IF NOT EXISTS idx_name      ON applicants(applicant_name COLLATE NOCASE);
@@ -646,6 +706,20 @@ def _db_init():
             ("principal_loan",      "REAL"),
             ("maturity",            "TEXT"),
             ("interest_rate",       "TEXT"),
+            ("branch",              "TEXT"),
+            ("loan_class_name",     "TEXT"),
+            ("product_name",        "TEXT"),
+            ("industry_name_ploan", "TEXT"),
+            ("loan_date",           "TEXT"),
+            ("term_unit",           "TEXT"),
+            ("term",                "TEXT"),
+            ("security",            "TEXT"),
+            ("release_tag",         "TEXT"),
+            ("loan_amount",         "REAL"),
+            ("loan_balance_ploan",  "REAL"),
+            ("amort_ploan",         "REAL"),
+            ("loan_status",         "TEXT"),
+            ("ao_name",             "TEXT"),
         ]
         for col_name, col_type in migrations:
             if col_name not in cols:
@@ -764,7 +838,11 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 amort_current_total,
                 client_id, pn, industry_name,
                 loan_balance, amortized_cost,
-                principal_loan, maturity, interest_rate
+                principal_loan, maturity, interest_rate,
+                branch, loan_class_name, product_name, industry_name_ploan,
+                loan_date, term_unit, term, security, release_tag,
+                loan_amount, loan_balance_ploan, amort_ploan,
+                loan_status, ao_name
             ) VALUES (
                 :session_id, :processed_at, :source_file, :status,
                 :applicant_name, :residence_address, :office_address,
@@ -777,7 +855,11 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 :amort_current_total,
                 :client_id, :pn, :industry_name,
                 :loan_balance, :amortized_cost,
-                :principal_loan, :maturity, :interest_rate
+                :principal_loan, :maturity, :interest_rate,
+                :branch, :loan_class_name, :product_name, :industry_name_ploan,
+                :loan_date, :term_unit, :term, :security, :release_tag,
+                :loan_amount, :loan_balance_ploan, :amort_ploan,
+                :loan_status, :ao_name
             )
         """, row_data)
         return cur.lastrowid
@@ -806,8 +888,7 @@ def _db_query(search: str = "", session_id: str = "",
             "OR office_address LIKE ? OR income_items LIKE ? "
             "OR business_items LIKE ? OR household_items LIKE ? "
             "OR source_file LIKE ? OR client_id LIKE ? "
-            "OR pn LIKE ? OR industry_name LIKE ?)"
-        )
+            "OR pn LIKE ? OR industry_name LIKE ?)")
         params.extend([like] * 10)
 
     if session_id:
@@ -836,8 +917,7 @@ def _db_totals(session_id: str = "", search: str = "") -> dict:
             "OR office_address LIKE ? OR income_items LIKE ? "
             "OR business_items LIKE ? OR household_items LIKE ? "
             "OR source_file LIKE ? OR client_id LIKE ? "
-            "OR pn LIKE ? OR industry_name LIKE ?)"
-        )
+            "OR pn LIKE ? OR industry_name LIKE ?)")
         params.extend([like] * 10)
 
     if session_id:
@@ -928,6 +1008,10 @@ _EDITABLE_COLS = {
     "amort_history_total", "amort_current_total",
     "loan_balance", "amortized_cost",
     "principal_loan", "maturity", "interest_rate",
+    "branch", "loan_class_name", "product_name", "industry_name_ploan",
+    "loan_date", "term_unit", "term", "security", "release_tag",
+    "loan_amount", "loan_balance_ploan", "amort_ploan",
+    "loan_status", "ao_name",
 }
 
 # Subset of _EDITABLE_COLS that must be stored as REAL in SQLite.
@@ -935,6 +1019,7 @@ _MONETARY_COLS = {
     "income_total", "business_total", "household_total", "net_income",
     "amort_history_total", "amort_current_total",
     "loan_balance", "amortized_cost", "principal_loan",
+    "loan_amount", "loan_balance_ploan", "amort_ploan",
 }
 
 
@@ -1205,7 +1290,7 @@ def db_save_applicant(session_id: str, results: dict):
 
     Only data that comes directly from the Look-Up extraction is written
     here. client_id, pn, industry_name, loan_balance, amortized_cost,
-    principal_loan, maturity, and interest_rate are left as NULL/empty
+    principal_loan, maturity, interest_rate are left as NULL/empty
     intentionally — they are populated later via the import buttons.
     """
     _db_init()
@@ -1281,6 +1366,21 @@ def db_save_applicant(session_id: str, results: dict):
         "principal_loan":      None,
         "maturity":            "",
         "interest_rate":       "",
+        # Expanded P.Loan fields (initially empty)
+        "branch":              "",
+        "loan_class_name":     "",
+        "product_name":        "",
+        "industry_name_ploan": "",
+        "loan_date":           "",
+        "term_unit":           "",
+        "term":                "",
+        "security":            "",
+        "release_tag":         "",
+        "loan_amount":         None,
+        "loan_balance_ploan":  None,
+        "amort_ploan":         None,
+        "loan_status":         "",
+        "ao_name":             "",
     }
     _db_upsert(session_id, row_data)
 
@@ -1957,6 +2057,20 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
         ("Principal Loan",       _fmt_money(row.get("principal_loan")) or "—"),
         ("Maturity",             row.get("maturity",          "—") or "—"),
         ("Interest Rate",        row.get("interest_rate",     "—") or "—"),
+        ("Branch",               row.get("branch",            "—") or "—"),
+        ("Loan Class",           row.get("loan_class_name",   "—") or "—"),
+        ("Product Name",         row.get("product_name",      "—") or "—"),
+        ("Industry (PLoan)",     row.get("industry_name_ploan","—") or "—"),
+        ("Loan Date",            row.get("loan_date",         "—") or "—"),
+        ("Term Unit",            row.get("term_unit",         "—") or "—"),
+        ("Term",                 row.get("term",              "—") or "—"),
+        ("Security",             row.get("security",          "—") or "—"),
+        ("Release Tag",          row.get("release_tag",       "—") or "—"),
+        ("Loan Amount",          _fmt_money(row.get("loan_amount"))         or "—"),
+        ("Loan Balance (PLoan)", _fmt_money(row.get("loan_balance_ploan"))  or "—"),
+        ("Amort. (PLoan)",       _fmt_money(row.get("amort_ploan"))         or "—"),
+        ("Loan Status",          row.get("loan_status",       "—") or "—"),
+        ("AO Name",              row.get("ao_name",           "—") or "—"),
         ("Amort. History",       _fmt_money(row.get("amort_history_total")) or "—"),
         ("Curr. Amort.",         _fmt_money(row.get("amort_current_total")) or "—"),
         ("Source File",          row.get("source_file",       "—") or "—"),
@@ -2597,6 +2711,7 @@ def _import_ploan_file(self):
 
     def _worker():
         try:
+            # ── 1. Read file (Excel or CSV) ──────────────────────────────
             if path.lower().endswith(".csv"):
                 import csv as _csv
                 with open(path, newline="", encoding="utf-8-sig") as f:
@@ -2627,6 +2742,7 @@ def _import_ploan_file(self):
             if not records:
                 raise ValueError("No data rows found in the file.")
 
+            # ── 2. Column detection helper ───────────────────────────────
             def _find_col(cols, *keywords):
                 for kw in keywords:
                     kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
@@ -2636,121 +2752,329 @@ def _import_ploan_file(self):
                             return c
                 return None
 
-            col_clientid = _find_col(all_cols, "clientid", "client id",
-                                     "client_id", "cid")
-            col_amount   = _find_col(all_cols, "loanamount", "loan amount",
-                                     "loan_amount", "principalloan",
-                                     "principal loan", "principal_loan",
-                                     "amount", "loanamt")
-            col_maturity = _find_col(all_cols, "maturity", "maturitydate",
-                                     "maturity date", "maturity_date",
-                                     "duedate", "due date", "due_date",
-                                     "expirydate", "expiry date",
-                                     "loanterm", "loan term", "term")
-            col_interest = _find_col(all_cols, "interestrate", "interest rate",
-                                     "interest_rate", "rate", "intrate",
-                                     "int rate", "annualrate", "annual rate",
-                                     "interestpercent", "interest percent",
-                                     "interest")
+            # ── 3. Detect all columns ────────────────────────────────────
+            # Required
+            col_clientname = _find_col(all_cols,
+                                       "clientname", "client name", "client_name",
+                                       "applicant", "applicantname", "name")
+            col_clientid   = _find_col(all_cols,
+                                       "clientid", "client id", "client_id", "cid")
 
-            missing = []
-            if not col_clientid: missing.append("Client ID  (clientid / cid)")
-            if not col_amount:   missing.append("Loan Amount  (loanamount / principalloan / amount)")
-            if missing:
+            # Financial — required
+            col_loanamount = _find_col(all_cols,
+                                       "loanamount", "loan amount", "loan_amount",
+                                       "principalloan", "principal loan",
+                                       "principal_loan", "amount", "loanamt")
+
+            # Optional descriptive fields
+            col_branch      = _find_col(all_cols, "branch", "branchname", "branch name")
+            col_loanclass   = _find_col(all_cols,
+                                        "loanclassname", "loan class name",
+                                        "loan class", "loanclass", "classname")
+            col_product     = _find_col(all_cols,
+                                        "productname", "product name",
+                                        "product_name", "product")
+            col_industry    = _find_col(all_cols,
+                                        "industryname", "industry name",
+                                        "industry_name", "industry")
+            col_loandate    = _find_col(all_cols,
+                                        "loandate", "loan date", "loan_date",
+                                        "dateofrelease", "releasedate", "release date")
+            col_termunit    = _find_col(all_cols,
+                                        "termunit", "term unit", "term_unit",
+                                        "paymentfrequency", "frequency")
+            col_term        = _find_col(all_cols,
+                                        "term", "loanterm", "loan term",
+                                        "numberofterms", "no of terms", "terms")
+            col_security    = _find_col(all_cols,
+                                        "security", "collateral",
+                                        "securitydescription", "securitydesc")
+            col_releasetag  = _find_col(all_cols,
+                                        "releasetag", "release tag", "release_tag",
+                                        "tag")
+            col_loanbalance = _find_col(all_cols,
+                                        "loanbalance", "loan balance", "loan_balance",
+                                        "outstanding", "outstandingbalance",
+                                        "outstanding balance", "balance")
+            col_amortization= _find_col(all_cols,
+                                        "amortization", "amort",
+                                        "monthlypayment", "monthly payment",
+                                        "monthlypaymentamount", "paymentamount")
+            col_loanstatus  = _find_col(all_cols,
+                                        "loanstatus", "loan status", "loan_status",
+                                        "status", "accountstatus")
+            col_aoname      = _find_col(all_cols,
+                                        "aoname", "ao name", "ao_name",
+                                        "accountofficer", "account officer",
+                                        "officername", "officer name", "ao")
+            # Legacy optional
+            col_maturity    = _find_col(all_cols,
+                                        "maturity", "maturitydate", "maturity date",
+                                        "maturity_date", "duedate", "due date",
+                                        "expirydate", "expiry date")
+            col_interest    = _find_col(all_cols,
+                                        "interestrate", "interest rate",
+                                        "interest_rate", "rate", "intrate",
+                                        "annualrate", "annual rate", "interest")
+
+            # Require at least a name or a client-id column + loan amount
+            if not col_clientname and not col_clientid:
                 raise ValueError(
-                    "Could not detect required column(s):\n"
-                    + "\n".join(f"  • {m}" for m in missing)
-                    + f"\n\nFile has: {', '.join(all_cols)}")
+                    "Could not detect a client name or client ID column.\n\n"
+                    f"File has: {', '.join(all_cols)}")
+            if not col_loanamount:
+                raise ValueError(
+                    "Could not detect a Loan Amount column  "
+                    "(loanamount / principalloan / amount).\n\n"
+                    f"File has: {', '.join(all_cols)}")
 
-            aggregated:   dict[str, float] = {}
-            maturity_map: dict[str, str]   = {}
-            interest_map: dict[str, str]   = {}
-            bad_rows:     list[tuple]      = []
+            # ── 4. Parse every row into a per-client record ──────────────
+            # Key: upper-cased client_id (preferred) or normalised name
+            # Value: dict accumulating all fields (amounts summed; text
+            #        fields: first non-empty value wins).
+            aggregated: dict[str, dict] = {}
+            bad_amounts: list[tuple]    = []
+
+            def _first_text(current, new_val):
+                """Return current if already set, else new_val."""
+                if current:
+                    return current
+                v = str(new_val or "").strip()
+                return v if v else current
+
+            def _parse_num(raw):
+                cleaned = re.sub(r"[^\d.]", "", str(raw or "").replace(",", ""))
+                return float(cleaned) if cleaned else None
 
             for file_row in records:
-                raw_cid = str(file_row.get(col_clientid) or "").strip()
-                raw_amt = str(file_row.get(col_amount)   or "").strip()
-                if not raw_cid:
-                    continue
-                cid_key = raw_cid.upper()
-                try:
-                    cleaned = re.sub(r"[^\d.]", "", raw_amt.replace(",", ""))
-                    amount  = float(cleaned) if cleaned else None
-                except Exception:
-                    amount = None
-                if amount is None:
-                    bad_rows.append((raw_cid, f"bad amount: '{raw_amt}'"))
-                else:
-                    aggregated[cid_key] = aggregated.get(cid_key, 0.0) + amount
-                if col_maturity and cid_key not in maturity_map:
-                    raw_mat = str(file_row.get(col_maturity) or "").strip()
-                    if raw_mat:
-                        maturity_map[cid_key] = raw_mat
-                if col_interest and cid_key not in interest_map:
-                    raw_int = str(file_row.get(col_interest) or "").strip()
-                    if raw_int:
-                        interest_map[cid_key] = raw_int
+                # Determine the aggregation key
+                raw_cid  = str(file_row.get(col_clientid,   "") or "").strip() \
+                           if col_clientid   else ""
+                raw_name = str(file_row.get(col_clientname, "") or "").strip() \
+                           if col_clientname else ""
 
-            updated:   list[str] = []
-            not_found: list[str] = []
+                agg_key = raw_cid.upper() if raw_cid else \
+                          _normalise_for_sim(raw_name)
+                if not agg_key:
+                    continue
+
+                # Parse numeric fields
+                raw_loan_amt  = str(file_row.get(col_loanamount,  "") or "").strip()
+                raw_loan_bal  = str(file_row.get(col_loanbalance, "") or "").strip() \
+                                if col_loanbalance  else ""
+                raw_amort     = str(file_row.get(col_amortization,"") or "").strip() \
+                                if col_amortization else ""
+
+                loan_amt_val  = _parse_num(raw_loan_amt)
+                loan_bal_val  = _parse_num(raw_loan_bal)  if raw_loan_bal  else None
+                amort_val     = _parse_num(raw_amort)      if raw_amort     else None
+
+                if loan_amt_val is None:
+                    bad_amounts.append((agg_key, f"bad loanamount: '{raw_loan_amt}'"))
+
+                if agg_key not in aggregated:
+                    aggregated[agg_key] = {
+                        "client_id":   raw_cid,
+                        "client_name": raw_name,
+                        # summed numerics
+                        "loan_amount":        0.0,
+                        "loan_balance_ploan": 0.0,
+                        "amort_ploan":        0.0,
+                        # text: first-wins
+                        "branch":             "",
+                        "loan_class_name":    "",
+                        "product_name":       "",
+                        "industry_name_ploan":"",
+                        "loan_date":          "",
+                        "term_unit":          "",
+                        "term":               "",
+                        "security":           "",
+                        "release_tag":        "",
+                        "loan_status":        "",
+                        "ao_name":            "",
+                        "maturity":           "",
+                        "interest_rate":      "",
+                    }
+
+                e = aggregated[agg_key]
+
+                # Accumulate numeric fields
+                if loan_amt_val is not None:
+                    e["loan_amount"]        += loan_amt_val
+                if loan_bal_val is not None:
+                    e["loan_balance_ploan"] += loan_bal_val
+                if amort_val is not None:
+                    e["amort_ploan"]        += amort_val
+
+                # First-wins text fields
+                if col_branch:
+                    e["branch"]              = _first_text(e["branch"],
+                        file_row.get(col_branch, ""))
+                if col_loanclass:
+                    e["loan_class_name"]     = _first_text(e["loan_class_name"],
+                        file_row.get(col_loanclass, ""))
+                if col_product:
+                    e["product_name"]        = _first_text(e["product_name"],
+                        file_row.get(col_product, ""))
+                if col_industry:
+                    e["industry_name_ploan"] = _first_text(e["industry_name_ploan"],
+                        file_row.get(col_industry, ""))
+                if col_loandate:
+                    e["loan_date"]           = _first_text(e["loan_date"],
+                        file_row.get(col_loandate, ""))
+                if col_termunit:
+                    e["term_unit"]           = _first_text(e["term_unit"],
+                        file_row.get(col_termunit, ""))
+                if col_term:
+                    e["term"]                = _first_text(e["term"],
+                        file_row.get(col_term, ""))
+                if col_security:
+                    e["security"]            = _first_text(e["security"],
+                        file_row.get(col_security, ""))
+                if col_releasetag:
+                    e["release_tag"]         = _first_text(e["release_tag"],
+                        file_row.get(col_releasetag, ""))
+                if col_loanstatus:
+                    e["loan_status"]         = _first_text(e["loan_status"],
+                        file_row.get(col_loanstatus, ""))
+                if col_aoname:
+                    e["ao_name"]             = _first_text(e["ao_name"],
+                        file_row.get(col_aoname, ""))
+                if col_maturity:
+                    e["maturity"]            = _first_text(e["maturity"],
+                        file_row.get(col_maturity, ""))
+                if col_interest:
+                    e["interest_rate"]       = _first_text(e["interest_rate"],
+                        file_row.get(col_interest, ""))
+
+            # ── 5. Build client_id → db row id lookup ────────────────────
+            with _db_connect() as _conn:
+                cid_to_dbid: dict[str, int] = {
+                    str(r[0]).strip().upper(): r[1]
+                    for r in _conn.execute(
+                        "SELECT client_id, id FROM applicants "
+                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''"
+                    ).fetchall()
+                }
+
+            # ── 6. Match & write to DB ────────────────────────────────────
+            updated_by_id   = []
+            updated_by_name = []
+            updated_relaxed = []
+            not_found       = []
+
+            def _build_update(entry: dict) -> tuple[list, list]:
+                """Return (SET parts, values) for all non-empty fields."""
+                parts, vals = [], []
+                _NUMERIC = {
+                    "loan_amount", "loan_balance_ploan", "amort_ploan",
+                }
+                _TEXT = {
+                    "branch", "loan_class_name", "product_name",
+                    "industry_name_ploan", "loan_date", "term_unit", "term",
+                    "security", "release_tag", "loan_status", "ao_name",
+                    "maturity", "interest_rate",
+                }
+                for col in _NUMERIC:
+                    v = entry.get(col, 0.0)
+                    if v and v != 0.0:
+                        parts.append(f"{col}=?"); vals.append(v)
+                for col in _TEXT:
+                    v = entry.get(col, "")
+                    if v:
+                        parts.append(f"{col}=?"); vals.append(v)
+                # legacy principal_loan = loan_amount (keep backward compat)
+                if entry.get("loan_amount"):
+                    parts.append("principal_loan=?")
+                    vals.append(entry["loan_amount"])
+                return parts, vals
 
             with _db_connect() as conn:
-                all_cids = (set(aggregated.keys())
-                            | set(maturity_map.keys())
-                            | set(interest_map.keys()))
-                for cid_key in all_cids:
-                    db_row = conn.execute(
-                        "SELECT id FROM applicants "
-                        "WHERE UPPER(TRIM(client_id)) = ?",
-                        (cid_key,)).fetchone()
-                    if db_row is None:
-                        not_found.append(cid_key); continue
-                    row_id = db_row["id"]
-                    parts, vals = [], []
-                    if cid_key in aggregated:
-                        parts.append("principal_loan=?")
-                        vals.append(aggregated[cid_key])
-                    if cid_key in maturity_map:
-                        parts.append("maturity=?")
-                        vals.append(maturity_map[cid_key])
-                    if cid_key in interest_map:
-                        parts.append("interest_rate=?")
-                        vals.append(interest_map[cid_key])
-                    if parts:
+                for agg_key, entry in aggregated.items():
+                    parts, vals = _build_update(entry)
+                    if not parts:
+                        continue
+
+                    # PRIMARY: match by client_id
+                    file_cid = entry["client_id"].upper()
+                    if file_cid and file_cid in cid_to_dbid:
+                        db_id = cid_to_dbid[file_cid]
                         conn.execute(
                             f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
-                            vals + [row_id])
-                        updated.append(cid_key)
+                            vals + [db_id])
+                        updated_by_id.append((agg_key, db_id))
+                        continue
+
+                    # SECONDARY: name similarity
+                    display_name = entry["client_name"] or agg_key
+                    hits, sim_label = _resolve_name_similarity(display_name)
+                    if not hits:
+                        not_found.append(agg_key)
+                        continue
+                    for hit_id, _ in hits:
+                        conn.execute(
+                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+                            vals + [hit_id])
+                    if sim_label in ("exact", "high"):
+                        updated_by_name.append((agg_key, hits[0][1]))
+                    else:
+                        updated_relaxed.append((agg_key, hits[0][1]))
 
             self.after(0, lambda: _refresh_summary(self))
 
-            cols_found = ", ".join(filter(None, [
-                "Loan Amount",
-                f"Maturity (col: '{col_maturity}')" if col_maturity  else "",
-                f"Interest Rate (col: '{col_interest}')" if col_interest else "",
+            # ── 7. Build result message ───────────────────────────────────
+            detected_cols = ", ".join(filter(None, [
+                f"clientname='{col_clientname}'" if col_clientname else "",
+                f"clientid='{col_clientid}'"     if col_clientid   else "",
+                f"loanamount='{col_loanamount}'"  if col_loanamount else "",
+                f"branch='{col_branch}'"          if col_branch     else "",
+                f"loanclass='{col_loanclass}'"    if col_loanclass  else "",
+                f"product='{col_product}'"        if col_product    else "",
+                f"industry='{col_industry}'"      if col_industry   else "",
+                f"loandate='{col_loandate}'"      if col_loandate   else "",
+                f"termunit='{col_termunit}'"      if col_termunit   else "",
+                f"term='{col_term}'"              if col_term       else "",
+                f"security='{col_security}'"      if col_security   else "",
+                f"releasetag='{col_releasetag}'"  if col_releasetag else "",
+                f"loanbalance='{col_loanbalance}'"if col_loanbalance else "",
+                f"amortization='{col_amortization}'" if col_amortization else "",
+                f"loanstatus='{col_loanstatus}'"  if col_loanstatus else "",
+                f"aoname='{col_aoname}'"          if col_aoname     else "",
+                f"maturity='{col_maturity}'"      if col_maturity   else "",
+                f"interest='{col_interest}'"      if col_interest   else "",
             ]))
+
             msg  = "Principal Loan import complete.\n\n"
-            msg += f"Columns detected  : {cols_found}\n"
-            msg += f"✓  Updated  : {len(updated):,} record(s)\n"
-            msg += f"–  Not found: {len(not_found):,} client ID(s)\n"
+            msg += f"Columns detected      : {detected_cols}\n\n"
+            msg += f"✓  Matched by ID      : {len(updated_by_id):,} record(s)\n"
+            msg += f"✓  Matched by name    : {len(updated_by_name):,} record(s)\n"
+            msg += f"–  Not found          : {len(not_found):,} key(s)\n"
+            if bad_amounts:
+                msg += f"⚠  Bad amount values  : {len(bad_amounts):,} row(s)\n"
+            if not col_clientid:
+                msg += "\nℹ  No Client ID column — used name matching only.\n"
             if not col_maturity:
-                msg += "ℹ  Maturity column not detected — skipped\n"
+                msg += "ℹ  Maturity column not detected — skipped.\n"
             if not col_interest:
-                msg += "ℹ  Interest Rate column not detected — skipped\n"
-            if bad_rows:
-                msg += f"⚠  Bad amount values: {len(bad_rows):,} row(s)\n"
+                msg += "ℹ  Interest Rate column not detected — skipped.\n"
+            if updated_relaxed:
+                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed similarity — verify:\n"
+                for file_n, db_id in updated_relaxed[:10]:
+                    msg += f"  • {file_n}  →  DB id: {db_id}\n"
+                if len(updated_relaxed) > 10:
+                    msg += f"  … and {len(updated_relaxed) - 10} more\n"
             if not_found:
-                msg += "\nClient IDs with no DB match:\n"
-                for cid in not_found[:15]:
-                    msg += f"  • {cid}\n"
+                msg += "\nKeys with no DB match:\n"
+                for k in not_found[:15]:
+                    msg += f"  • {k}\n"
                 if len(not_found) > 15:
                     msg += f"  … and {len(not_found) - 15} more\n"
-            if bad_rows:
+            if bad_amounts:
                 msg += "\nRows with unparseable amounts:\n"
-                for cid, reason in bad_rows[:10]:
-                    msg += f"  • {cid}  ({reason})\n"
-                if len(bad_rows) > 10:
-                    msg += f"  … and {len(bad_rows) - 10} more\n"
+                for k, reason in bad_amounts[:10]:
+                    msg += f"  • {k}  ({reason})\n"
+                if len(bad_amounts) > 10:
+                    msg += f"  … and {len(bad_amounts) - 10} more\n"
 
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
@@ -2799,6 +3123,10 @@ def _merge_db_files(self):
         "client_id", "pn", "industry_name",
         "loan_balance", "amortized_cost",
         "principal_loan", "maturity", "interest_rate",
+        "branch", "loan_class_name", "product_name", "industry_name_ploan",
+        "loan_date", "term_unit", "term", "security", "release_tag",
+        "loan_amount", "loan_balance_ploan", "amort_ploan",
+        "loan_status", "ao_name",
     ]
     _INSERT = (
         f"INSERT INTO applicants ({', '.join(_COLS)}) "
@@ -2822,6 +3150,20 @@ def _merge_db_files(self):
         ("principal_loan",      "REAL"),
         ("maturity",            "TEXT"),
         ("interest_rate",       "TEXT"),
+        ("branch",              "TEXT"),
+        ("loan_class_name",     "TEXT"),
+        ("product_name",        "TEXT"),
+        ("industry_name_ploan", "TEXT"),
+        ("loan_date",           "TEXT"),
+        ("term_unit",           "TEXT"),
+        ("term",                "TEXT"),
+        ("security",            "TEXT"),
+        ("release_tag",         "TEXT"),
+        ("loan_amount",         "REAL"),
+        ("loan_balance_ploan",  "REAL"),
+        ("amort_ploan",         "REAL"),
+        ("loan_status",         "TEXT"),
+        ("ao_name",             "TEXT"),
     ]
 
     def _worker():
@@ -2958,12 +3300,18 @@ def _merge_excel_files(self):
             "Total Amortization History", "Total Current Amortization",
             "Loan Balance", "Total Amortized Cost", "Principal Loan",
             "Maturity", "Interest Rate",
+            # P.Loan expanded
+            "Branch", "Loan Class", "Product Name", "Industry (PLoan)",
+            "Loan Date", "Term Unit", "Term", "Security", "Release Tag",
+            "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
+            "Loan Status", "AO Name",
         ]
         _MONETARY = {
             "Total Source Of Income", "Total Business Expenses",
             "Total Household / Personal Expenses",
             "Total Amortization History", "Total Current Amortization",
             "Loan Balance", "Total Amortized Cost", "Principal Loan",
+            "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
         }
         _NET_COL    = "Total Net Income"
         _SUM_COLS   = _MONETARY | {_NET_COL}
@@ -2981,6 +3329,11 @@ def _merge_excel_files(self):
             "Total Amortization History": 26, "Total Current Amortization": 26,
             "Loan Balance": 22, "Total Amortized Cost": 24,
             "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
+            "Branch": 18, "Loan Class": 20, "Product Name": 22,
+            "Industry (PLoan)": 22, "Loan Date": 16, "Term Unit": 14,
+            "Term": 10, "Security": 24, "Release Tag": 16,
+            "Loan Amount": 20, "Loan Balance (PLoan)": 22,
+            "Amort. (PLoan)": 18, "Loan Status": 16, "AO Name": 22,
         }
 
         def _to_float(val):
@@ -3241,6 +3594,21 @@ def _row_to_export_dict(row: dict) -> dict:
         "Principal Loan":                      _fmt(row.get("principal_loan")),
         "Maturity":                            row.get("maturity",           "") or "",
         "Interest Rate":                       row.get("interest_rate",      "") or "",
+        # ── P.Loan expanded fields ─────────────────────────────────────
+        "Branch":                              row.get("branch",             "") or "",
+        "Loan Class":                          row.get("loan_class_name",    "") or "",
+        "Product Name":                        row.get("product_name",       "") or "",
+        "Industry (PLoan)":                    row.get("industry_name_ploan","") or "",
+        "Loan Date":                           row.get("loan_date",          "") or "",
+        "Term Unit":                           row.get("term_unit",          "") or "",
+        "Term":                                row.get("term",               "") or "",
+        "Security":                            row.get("security",           "") or "",
+        "Release Tag":                         row.get("release_tag",        "") or "",
+        "Loan Amount":                         _fmt(row.get("loan_amount")),
+        "Loan Balance (PLoan)":                _fmt(row.get("loan_balance_ploan")),
+        "Amort. (PLoan)":                      _fmt(row.get("amort_ploan")),
+        "Loan Status":                         row.get("loan_status",        "") or "",
+        "AO Name":                             row.get("ao_name",            "") or "",
     }
 
 
@@ -3338,6 +3706,7 @@ def _export_excel(self):
                 "Total Household / Personal Expenses",
                 "Total Amortization History", "Total Current Amortization",
                 "Loan Balance", "Total Amortized Cost", "Principal Loan",
+                "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
             }
             NET_COL  = "Total Net Income"
             SUM_COLS = TOTAL_COLS | {NET_COL}
@@ -3357,6 +3726,11 @@ def _export_excel(self):
                 "Total Current Amortization": 26,
                 "Loan Balance": 22, "Total Amortized Cost": 24,
                 "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
+                "Branch": 18, "Loan Class": 20, "Product Name": 22,
+                "Industry (PLoan)": 22, "Loan Date": 16, "Term Unit": 14,
+                "Term": 10, "Security": 24, "Release Tag": 16,
+                "Loan Amount": 20, "Loan Balance (PLoan)": 22,
+                "Amort. (PLoan)": 18, "Loan Status": 16, "AO Name": 22,
             }
 
             for ci, h in enumerate(headers, 1):
@@ -3547,7 +3921,9 @@ def _validate_clients(self):
                     "income_total, business_total, household_total, net_income, "
                     "amort_history_total, amort_current_total, "
                     "loan_balance, amortized_cost, "
-                    "principal_loan, maturity, interest_rate "
+                    "principal_loan, maturity, interest_rate, "
+                    "branch, loan_class_name, product_name, loan_date, security, loan_status, ao_name, "
+                    "loan_amount, loan_balance_ploan, amort_ploan "
                     "FROM applicants"
                 ).fetchall()
             db_rows = [dict(r) for r in db_rows]
@@ -3598,6 +3974,16 @@ def _validate_clients(self):
                 ("principal_loan",      "Principal Loan"),
                 ("maturity",            "Maturity"),
                 ("interest_rate",       "Interest Rate"),
+                ("branch",              "Branch"),
+                ("loan_class_name",     "Loan Class"),
+                ("product_name",        "Product Name"),
+                ("loan_date",           "Loan Date"),
+                ("security",            "Security"),
+                ("loan_status",         "Loan Status"),
+                ("ao_name",             "AO Name"),
+                ("loan_amount",         "Loan Amount"),
+                ("loan_balance_ploan",  "Loan Balance (PLoan)"),
+                ("amort_ploan",         "Amort. (PLoan)"),
             ]
 
             missing_info_rows: list[dict] = []
