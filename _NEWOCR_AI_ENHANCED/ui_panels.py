@@ -3,14 +3,14 @@ ui_panels.py — DocExtract Pro
 ================================
 UI building methods attached to DocExtractorApp.
 
-REDESIGN (FinSet-inspired):
-  - Sidebar now hosts all navigation tabs as icon+label menu items,
-    matching the FinSet dashboard style (rounded active pill, subtle
-    hover states, branding at top, utility links at bottom).
-  - Right panel is a clean content area — no tab row, no toolbar clutter.
-    The extract toolbar is injected inside the Extracted content frame.
-  - Color palette: deep navy sidebar (#0F1B2D), white card content area,
-    lime/green accent (#A8E063 → #6BBF3E) for active state.
+REDESIGN (FinSet-inspired, v2.1):
+  - Sidebar: deep navy background, richer active pill with icon chip,
+    pulsing status dot, version badge on logo, grouped nav divider,
+    subtle left-edge glow line, and a clean footer.
+  - Right panel: clean content card, no tab row, extract toolbar injected
+    inside the Extracted content frame.
+  - Color palette: deep navy sidebar (#0B1622), white card content area,
+    lime/green accent (#5BBF3E / #7DD65C) for active state.
 """
 
 import re
@@ -25,32 +25,36 @@ from doc_classifier_tab import (
 from lookup_tab import attach as _attach_lookup
 from summary_tab import attach as _attach_summary, _refresh_summary
 from lu_analysis_tab import attach as _attach_lu_analysis
-from general_lookup import attach as _attach_general_lookup
-from general_summary import attach as _attach_general_summary
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  DESIGN TOKENS  (FinSet-inspired palette on top of existing constants)
+#  DESIGN TOKENS
 # ─────────────────────────────────────────────────────────────────────
-_SB_BG        = "#0F1B2D"   # sidebar background  — deep navy
-_SB_ACTIVE_BG = "#1A2F47"   # active nav pill background
-_SB_HOVER_BG  = "#162338"   # hover background
-_SB_ACCENT    = "#6BBF3E"   # lime-green accent (active indicator)
-_SB_TXT       = "#7A94B0"   # inactive label colour
-_SB_TXT_ACT   = "#FFFFFF"   # active label colour
-_SB_BORDER    = "#1E3A5F"   # subtle divider
-_SB_WIDTH     = 220         # sidebar width in pixels
+_SB_BG         = "#0B1622"   # sidebar background — deepest navy
+_SB_BG2        = "#111E2E"   # slightly lighter surface (unused but kept)
+_SB_ACTIVE_BG  = "#162438"   # active nav pill background
+_SB_HOVER_BG   = "#131D2D"   # hover background
+_SB_ACCENT     = "#5BBF3E"   # lime-green accent (active indicator / glow)
+_SB_ACCENT2    = "#7DD65C"   # lighter lime for text on active
+_SB_TXT        = "#7A94B0"   # inactive label colour
+_SB_TXT_DIM    = "#4A6480"   # very dim — section labels, footer
+_SB_TXT_ACT    = "#EEF3FA"   # active label colour
+_SB_BORDER     = "#1A2F47"   # subtle divider
+_SB_WIDTH      = 220         # sidebar width in pixels
+
+_ICON_CHIP_ACTIVE_BG = "#1A3D1A"   # greenish chip bg when active
+_ICON_CHIP_ACTIVE_FG = _SB_ACCENT2
 
 _CARD_BG      = "#FFFFFF"
-_PAGE_BG      = "#F4F6FA"   # outer page / window background
+_PAGE_BG      = "#F4F6FA"
 _HDR_BG       = "#FFFFFF"
 _HDR_BORDER   = "#E8ECF2"
 
-_PILL_R       = 10          # nav-pill corner radius
+_PILL_R       = 8            # nav-pill corner radius
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  TOP BAR  (unchanged logic, refreshed palette)
+#  TOP BAR
 # ─────────────────────────────────────────────────────────────────────
 def _build_topbar(self):
     bar = tk.Frame(self, bg=_SB_BG, height=52)
@@ -85,8 +89,8 @@ def _build_topbar(self):
 
     mark = tk.Canvas(brand, width=28, height=28, bg=_SB_BG, highlightthickness=0)
     mark.pack(side="left", padx=(0, 10), pady=12)
-    mark.create_rectangle(0, 8, 17, 28, fill=NAVY_LIGHT, outline="")
-    mark.create_rectangle(11, 0, 28, 20, fill=_SB_ACCENT,  outline="")
+    mark.create_rectangle(0, 9, 16, 28, fill=NAVY_LIGHT,   outline="")
+    mark.create_rectangle(10, 0, 28, 19, fill=_SB_ACCENT,  outline="")
     mark.create_rectangle(13, 10, 15, 12, fill=_SB_BG,     outline="")
 
     tk.Label(brand, text="DocExtract Pro",
@@ -103,30 +107,118 @@ def _build_topbar(self):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  LEFT SIDEBAR  — FinSet-style icon+label navigation
+#  LEFT SIDEBAR — redesigned nav
 # ─────────────────────────────────────────────────────────────────────
+
+# (tab_key, icon, label, badge_text_or_None)
 _NAV_ITEMS = [
-    # (tab_key,         icon,  label)
-    ("cibi",            "📋",  "CIBI Mode"),
-    ("extract",         "📄",  "Extracted"),
-    ("analysis",        "🏦",  "CIBI Analysis"),
-    ("summary",         "📊",  "Summary"),
-    ("aiprompt",        "🤖",  "AI Chat"),
-    ("samples",         "🗂",  "Samples"),
-    ("lookup",          "🔎",  "Look-Up"),
-    ("lookup_summary",  "📋",  "LU Summary"),
-    ("lu_analysis",     "📈",  "LU Analysis"),
-    ("general_lookup",  "📂",  "General Look-Up"),
-    ("general_summary", "📋",  "General Summary"),
+    ("cibi",           "📋",  "CIBI Mode",    None),
+    ("extract",        "📄",  "Extracted",    None),
+    ("analysis",       "🏦",  "CIBI Analysis",None),
+    ("summary",        "📊",  "Summary",      None),
+    ("aiprompt",       "🤖",  "AI Chat",      "AI"),
+    ("samples",        "🗂",  "Samples",      None),
 ]
 
-def _build_left(self, p):
-    # p is the left pane passed in from the main app — fill it directly
-    # so the sidebar colour and layout take full ownership of that pane.
-    p.configure(bg=_SB_BG)
+_NAV_ITEMS_2 = [
+    ("lookup",         "🔎",  "Look-Up",      None),
+    ("lookup_summary", "📋",  "LU Summary",   None),
+    ("lu_analysis",    "📈",  "LU Analysis",  None),
+]
 
-    # Convenience alias — all children go into p
+
+def _build_nav_pill(self, parent, tab_key, icon, label, badge=None):
+    """Build one nav pill row and register it in self._nav_btns."""
+
+    PILL_H = 46
+
+    outer = tk.Frame(parent, bg=_SB_BG, height=PILL_H, cursor="hand2")
+    outer.pack(fill="x", pady=1)
+    outer.pack_propagate(False)
+
+    # Left accent stripe (3 px, revealed when active)
+    accent_bar = tk.Frame(outer, bg=_SB_ACCENT, width=3)
+
+    # Icon chip — small rounded container (simulated with a Label + relief)
+    chip_frame = tk.Frame(outer, bg=_SB_BG, width=30, height=30)
+    chip_frame.pack(side="left", padx=(10, 6), pady=8)
+    chip_frame.pack_propagate(False)
+
+    icon_lbl = tk.Label(chip_frame,
+                        text=icon,
+                        font=("Segoe UI Emoji", 12),
+                        fg=_SB_TXT, bg=_SB_BG,
+                        anchor="center")
+    icon_lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+    text_lbl = tk.Label(outer, text=label,
+                        font=F(10), fg=_SB_TXT, bg=_SB_BG,
+                        anchor="w")
+    text_lbl.pack(side="left", fill="x", expand=True)
+
+    badge_lbl = None
+    if badge:
+        badge_lbl = tk.Label(outer, text=badge,
+                             font=F(7, "bold"),
+                             fg=_SB_ACCENT2, bg="#0F2610",
+                             padx=5, pady=1,
+                             relief="flat")
+        badge_lbl.pack(side="right", padx=(0, 10))
+
+    self._nav_btns[tab_key] = (outer, accent_bar, chip_frame, icon_lbl, text_lbl, badge_lbl)
+
+    def _click(e=None, k=tab_key): self._switch_tab(k)
+
+    def _enter(e=None, pill=outer, chip=chip_frame, icon=icon_lbl, txt=text_lbl, key=tab_key):
+        if self._active_tab_key.get() != key:
+            for w in (pill, chip, icon, txt):
+                w.config(bg=_SB_HOVER_BG)
+
+    def _leave(e=None, pill=outer, chip=chip_frame, icon=icon_lbl, txt=text_lbl, key=tab_key):
+        if self._active_tab_key.get() != key:
+            for w in (pill, chip, icon, txt):
+                w.config(bg=_SB_BG)
+
+    for w in (outer, chip_frame, icon_lbl, text_lbl):
+        w.bind("<Button-1>", _click)
+        w.bind("<Enter>",    _enter)
+        w.bind("<Leave>",    _leave)
+    if badge_lbl:
+        badge_lbl.bind("<Button-1>", _click)
+        badge_lbl.bind("<Enter>",    _enter)
+        badge_lbl.bind("<Leave>",    _leave)
+
+
+def _build_left(self, p):
+    p.configure(bg=_SB_BG)
     sidebar = p
+
+    # ── Thin left-edge glow line ──────────────────────────────────────
+    glow = tk.Canvas(sidebar, width=1, bg=_SB_BG, highlightthickness=0)
+    glow.place(x=0, y=0, relheight=1.0, width=1)
+    # We'll draw it after the window maps; schedule it
+    def _draw_glow(e=None):
+        h = glow.winfo_height()
+        if h < 10:
+            sidebar.after(100, _draw_glow)
+            return
+        glow.delete("all")
+        steps = 30
+        for i in range(steps):
+            t    = i / steps
+            mid  = abs(t - 0.5) * 2        # 0 at center, 1 at edges
+            alpha = max(0, 1 - mid)
+            r, g, b = 91, 191, 62
+            hex_c = "#{:02x}{:02x}{:02x}".format(
+                int(r * alpha * 0.5),
+                int(g * alpha * 0.5),
+                int(b * alpha * 0.5)
+            )
+            y0 = int(h * i / steps)
+            y1 = int(h * (i + 1) / steps) + 1
+            glow.create_rectangle(0, y0, 1, y1, fill=hex_c, outline="")
+    sidebar.bind("<Map>",       _draw_glow)
+    sidebar.bind("<Configure>", _draw_glow)
 
     # ── Logo / branding block ─────────────────────────────────────────
     logo_block = tk.Frame(sidebar, bg=_SB_BG, height=72)
@@ -144,13 +236,13 @@ def _build_left(self, p):
             )
             bg_pil.paste(img, mask=img.split()[3])
             bg_pil = bg_pil.convert("RGB")
-            bg_pil.thumbnail((160, 38), Image.LANCZOS)
+            bg_pil.thumbnail((150, 36), Image.LANCZOS)
             self._logo_img = ctk.CTkImage(
                 light_image=bg_pil, dark_image=bg_pil,
                 size=(bg_pil.width, bg_pil.height)
             )
             lf = ctk.CTkFrame(logo_block, fg_color="transparent")
-            lf.place(relx=0.5, rely=0.5, anchor="center")
+            lf.place(relx=0.08, rely=0.5, anchor="w")
             ctk.CTkLabel(lf, image=self._logo_img, text="",
                          fg_color="transparent").pack()
             logo_loaded = True
@@ -160,108 +252,122 @@ def _build_left(self, p):
     if not logo_loaded:
         inner = tk.Frame(logo_block, bg=_SB_BG)
         inner.place(relx=0.5, rely=0.5, anchor="center")
-        mark = tk.Canvas(inner, width=24, height=26,
+
+        mark = tk.Canvas(inner, width=26, height=26,
                          bg=_SB_BG, highlightthickness=0)
         mark.pack(side="left", padx=(0, 8))
-        mark.create_rectangle(0, 8, 14, 26, fill=NAVY_LIGHT,  outline="")
-        mark.create_rectangle(10, 0, 24, 18, fill=_SB_ACCENT, outline="")
-        tk.Label(inner, text="BSV AI-OCR",
-                 font=F(11, "bold"), fg=WHITE, bg=_SB_BG).pack(side="left")
+        mark.create_rectangle(0, 8, 15, 26, fill=NAVY_LIGHT,  outline="")
+        mark.create_rectangle(11, 0, 26, 18, fill=_SB_ACCENT, outline="")
+        mark.create_rectangle(13, 9, 15, 11, fill=_SB_BG,     outline="")
 
-    # Thin border under logo
+        lbl_col = tk.Frame(inner, bg=_SB_BG)
+        lbl_col.pack(side="left")
+        tk.Label(lbl_col, text="BSV AI-OCR",
+                 font=F(11, "bold"), fg=WHITE, bg=_SB_BG).pack(anchor="w")
+        tk.Label(lbl_col, text="Banco San Vicente",
+                 font=F(7), fg=_SB_TXT_DIM, bg=_SB_BG).pack(anchor="w")
+
+    # Version badge (top-right of logo block)
+    ver_badge = tk.Label(logo_block, text="v2.0",
+                         font=F(7, "bold"),
+                         fg=_SB_ACCENT2, bg="#0F2610",
+                         padx=6, pady=2)
+    ver_badge.place(relx=1.0, x=-10, rely=0.5, anchor="e")
+
+    # Border under logo
     tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x")
 
-    # ── NAVIGATION section label ──────────────────────────────────────
-    tk.Frame(sidebar, bg=_SB_BG, height=12).pack()
-    tk.Label(sidebar, text="NAVIGATION",
-             font=F(7, "bold"), fg=_SB_TXT, bg=_SB_BG,
-             anchor="w").pack(fill="x", padx=18, pady=(0, 4))
+    # ── Status dot row ────────────────────────────────────────────────
+    status_row = tk.Frame(sidebar, bg=_SB_BG)
+    status_row.pack(fill="x", padx=18, pady=(10, 2))
 
-    # ── Nav items ─────────────────────────────────────────────────────
+    self._status_dot = tk.Canvas(status_row, width=8, height=8,
+                                 bg=_SB_BG, highlightthickness=0)
+    self._status_dot.pack(side="left", padx=(0, 6))
+    self._status_dot.create_oval(1, 1, 7, 7, fill=_SB_ACCENT, outline="")
+
+    self._status_sidebar_lbl = tk.Label(
+        status_row, text="Ready",
+        font=F(9, "bold"), fg=_SB_ACCENT2, bg=_SB_BG
+    )
+    self._status_sidebar_lbl.pack(side="left")
+
+    # Animate the dot (pulse effect via color cycling)
+    _pulse_state = [0, 1]
+    def _pulse_dot():
+        t   = _pulse_state[0] / 20.0
+        mid = abs((t % 1.0) - 0.5) * 2
+        r   = int(91  + (30  * (1 - mid)))
+        g   = int(191 + (30  * (1 - mid)))
+        b   = int(62  + (10  * (1 - mid)))
+        r, g, b = min(r, 255), min(g, 255), min(b, 255)
+        col = "#{:02x}{:02x}{:02x}".format(r, g, b)
+        try:
+            self._status_dot.itemconfig(1, fill=col)
+        except Exception:
+            return
+        _pulse_state[0] += 1
+        sidebar.after(80, _pulse_dot)
+    sidebar.after(500, _pulse_dot)
+
+    # ── Section label ─────────────────────────────────────────────────
+    tk.Label(sidebar, text="NAVIGATION",
+             font=F(7, "bold"), fg=_SB_TXT_DIM, bg=_SB_BG,
+             anchor="w").pack(fill="x", padx=18, pady=(10, 4))
+
+    # ── Nav pills ─────────────────────────────────────────────────────
     self._nav_btns       = {}
     self._active_tab_key = tk.StringVar(value="cibi")
 
     nav_container = tk.Frame(sidebar, bg=_SB_BG)
-    nav_container.pack(fill="x", padx=10)
+    nav_container.pack(fill="x", padx=8)
 
-    for tab_key, icon, label in _NAV_ITEMS:
-        # Each pill is a fixed-height frame; pack_propagate kept True so
-        # children are visible — we control height via minsize in the row.
-        pill = tk.Frame(nav_container, bg=_SB_BG, cursor="hand2", height=36)
-        pill.pack(fill="x", pady=1)
-        pill.pack_propagate(False)
+    for tab_key, icon, label, badge in _NAV_ITEMS:
+        _build_nav_pill(self, nav_container, tab_key, icon, label, badge)
 
-        # Left accent stripe (3 px wide, shown only when active)
-        accent_bar = tk.Frame(pill, bg=_SB_ACCENT, width=3)
-        # Not packed yet — shown by _apply_nav_active
+    # Thin grouped divider
+    div_row = tk.Frame(sidebar, bg=_SB_BG)
+    div_row.pack(fill="x", padx=16, pady=(6, 4))
+    tk.Frame(div_row, bg=_SB_BORDER, height=1).pack(fill="x")
 
-        # Icon label
-        icon_lbl = tk.Label(pill, text=icon,
-                            font=("Segoe UI Emoji", 12),
-                            fg=_SB_TXT, bg=_SB_BG,
-                            width=2, anchor="center")
-        icon_lbl.pack(side="left", padx=(8, 4))
+    nav_container2 = tk.Frame(sidebar, bg=_SB_BG)
+    nav_container2.pack(fill="x", padx=8)
 
-        # Text label
-        text_lbl = tk.Label(pill, text=label,
-                            font=F(9), fg=_SB_TXT, bg=_SB_BG,
-                            anchor="w")
-        text_lbl.pack(side="left", fill="x", expand=True)
+    for tab_key, icon, label, badge in _NAV_ITEMS_2:
+        _build_nav_pill(self, nav_container2, tab_key, icon, label, badge)
 
-        self._nav_btns[tab_key] = (pill, accent_bar, icon_lbl, text_lbl)
-
-        def _make_click(k=tab_key):
-            return lambda e: self._switch_tab(k)
-
-        def _make_enter(pill=pill, icon=icon_lbl, txt=text_lbl, key=tab_key):
-            def _on(e):
-                if self._active_tab_key.get() != key:
-                    for w in (pill, icon, txt):
-                        w.config(bg=_SB_HOVER_BG)
-            return _on
-
-        def _make_leave(pill=pill, icon=icon_lbl, txt=text_lbl, key=tab_key):
-            def _off(e):
-                if self._active_tab_key.get() != key:
-                    for w in (pill, icon, txt):
-                        w.config(bg=_SB_BG)
-            return _off
-
-        for w in (pill, icon_lbl, text_lbl):
-            w.bind("<Button-1>", _make_click())
-            w.bind("<Enter>",    _make_enter())
-            w.bind("<Leave>",    _make_leave())
-
-    # ── Divider ───────────────────────────────────────────────────────
-    tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x", pady=(14, 0), padx=10)
+    # ── Spacer ────────────────────────────────────────────────────────
+    tk.Frame(sidebar, bg=_SB_BG).pack(fill="both", expand=True)
 
     # ── Utility links ─────────────────────────────────────────────────
+    tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x", padx=10, pady=(0, 4))
+
     util_frame = tk.Frame(sidebar, bg=_SB_BG)
-    util_frame.pack(fill="x", padx=10, pady=(6, 0))
+    util_frame.pack(fill="x", padx=8, pady=(0, 6))
 
     for u_icon, u_label in [("❓", "Help"), ("⚙", "Settings")]:
-        row = tk.Frame(util_frame, bg=_SB_BG, cursor="hand2", height=32)
+        row = tk.Frame(util_frame, bg=_SB_BG, cursor="hand2", height=38)
         row.pack(fill="x", pady=1)
         row.pack_propagate(False)
         il = tk.Label(row, text=u_icon, font=("Segoe UI Emoji", 11),
-                      fg=_SB_TXT, bg=_SB_BG, width=2, anchor="center")
-        il.pack(side="left", padx=(8, 4))
-        tl = tk.Label(row, text=u_label, font=F(9), fg=_SB_TXT,
+                      fg=_SB_TXT_DIM, bg=_SB_BG, width=3, anchor="center")
+        il.pack(side="left", padx=(10, 4))
+        tl = tk.Label(row, text=u_label, font=F(10), fg=_SB_TXT_DIM,
                       bg=_SB_BG, anchor="w")
-        tl.pack(side="left")
+        tl.pack(side="left", fill="x", expand=True)
         for w in (row, il, tl):
             w.bind("<Enter>", lambda e, r=row, i=il, t=tl: [
-                x.config(bg=_SB_HOVER_BG) for x in (r, i, t)])
+                x.config(bg=_SB_HOVER_BG,
+                         fg=(_SB_TXT if x in (i, t) else _SB_HOVER_BG))
+                for x in (r, i, t)])
             w.bind("<Leave>", lambda e, r=row, i=il, t=tl: [
-                x.config(bg=_SB_BG) for x in (r, i, t)])
-
-    # ── Spacer pushes footer to bottom ────────────────────────────────
-    tk.Frame(sidebar, bg=_SB_BG).pack(fill="both", expand=True)
+                x.config(bg=_SB_BG, fg=(_SB_TXT_DIM if x in (i, t) else _SB_BG))
+                for x in (r, i, t)])
 
     # ── Version footer ────────────────────────────────────────────────
+    tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x", padx=16)
     ver = tk.Frame(sidebar, bg=_SB_BG)
-    ver.pack(fill="x", pady=(0, 12), padx=16)
-    tk.Frame(ver, bg=_SB_BORDER, height=1).pack(fill="x", pady=(0, 8))
+    ver.pack(fill="x", pady=(6, 12), padx=18)
     tk.Label(ver, text="Gemini 2.5 Flash · PaddleOCR",
              font=F(7), fg="#2D4F7A", bg=_SB_BG, anchor="w").pack(anchor="w")
     tk.Label(ver, text="BSV AI-OCR v2.0",
@@ -269,35 +375,39 @@ def _build_left(self, p):
 
 
 def _apply_nav_active(self, active_key):
-    """Update sidebar nav pill styles to reflect the active tab.
-    The accent stripe uses place() so it never disrupts the pack chain
-    of icon_lbl / text_lbl.
-    """
+    """Update sidebar nav pill styles to reflect the active tab."""
     self._active_tab_key.set(active_key)
-    for key, (pill, accent_bar, icon_lbl, text_lbl) in self._nav_btns.items():
+
+    for key, widgets in self._nav_btns.items():
+        pill, accent_bar, chip_frame, icon_lbl, text_lbl, badge_lbl = widgets
         if key == active_key:
             pill.config(bg=_SB_ACTIVE_BG)
-            icon_lbl.config(fg=WHITE,   bg=_SB_ACTIVE_BG)
-            text_lbl.config(fg=WHITE,   bg=_SB_ACTIVE_BG, font=F(9, "bold"))
-            # Place the 3-px stripe flush-left; it floats above pack children
+            chip_frame.config(bg=_ICON_CHIP_ACTIVE_BG)
+            icon_lbl.config(fg=_ICON_CHIP_ACTIVE_FG, bg=_ICON_CHIP_ACTIVE_BG)
+            text_lbl.config(fg=_SB_TXT_ACT, bg=_SB_ACTIVE_BG, font=F(10, "bold"))
+            if badge_lbl:
+                badge_lbl.config(bg=_SB_ACTIVE_BG)
+            # Show accent stripe
             accent_bar.place(x=0, y=0, width=3, relheight=1.0)
             accent_bar.lift()
         else:
             pill.config(bg=_SB_BG)
+            chip_frame.config(bg=_SB_BG)
             icon_lbl.config(fg=_SB_TXT, bg=_SB_BG)
-            text_lbl.config(fg=_SB_TXT, bg=_SB_BG, font=F(9))
+            text_lbl.config(fg=_SB_TXT, bg=_SB_BG, font=F(10))
+            if badge_lbl:
+                badge_lbl.config(bg=_SB_BG)
             accent_bar.place_forget()
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  RIGHT PANEL  — clean content card, no tab row
+#  RIGHT PANEL
 # ─────────────────────────────────────────────────────────────────────
 def _build_right(self, p):
-    # p is the right pane — configure it directly as the page background
     p.configure(bg=_PAGE_BG)
-    page = p   # alias for readability; all children pack into p
+    page = p
 
-    # ── Top header bar (title + status + copy) ────────────────────────
+    # ── Top header bar ────────────────────────────────────────────────
     hdr = tk.Frame(page, bg=_HDR_BG, height=64)
     hdr.pack(fill="x")
     hdr.pack_propagate(False)
@@ -397,7 +507,6 @@ def _build_right(self, p):
     card = tk.Frame(card_outer, bg=_CARD_BG)
     card.pack(fill="both", expand=True)
 
-    # Thin top accent bar
     top_acc = tk.Canvas(card, height=4, bg=_CARD_BG, highlightthickness=0)
     top_acc.pack(fill="x")
     top_acc.bind("<Configure>",
@@ -426,7 +535,7 @@ def _build_right(self, p):
     self._prog_bar.pack()
     tk.Frame(self._loader_frame, bg=_CARD_BG).pack(expand=True, fill="both")
 
-    # Content panels (same as before — logic unchanged)
+    # Content panels
     self._build_classifier_panel(card)
 
     self._analysis_frame = tk.Frame(card, bg=_CARD_BG)
@@ -453,8 +562,6 @@ def _build_right(self, p):
     self._build_lookup_panel(card)
     self._build_lookup_summary_panel(card)
     self._build_lu_analysis_panel(card)
-    self._build_general_lookup_panel(card)
-    self._build_general_summary_panel(card)
 
     self._put_placeholder()
     self._current_tab = "cibi"
@@ -462,12 +569,11 @@ def _build_right(self, p):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  EXTRACT TOOLBAR  (injected at top of _txt_frame — unchanged logic)
+#  EXTRACT TOOLBAR
 # ─────────────────────────────────────────────────────────────────────
 def _build_extract_toolbar(self, parent):
     BG = _CARD_BG
 
-    # ① Header row
     hdr_row = tk.Frame(parent, bg=BG)
     hdr_row.pack(fill="x", padx=20, pady=(14, 6))
 
@@ -484,7 +590,6 @@ def _build_extract_toolbar(self, parent):
     )
     self._toolbar_count_lbl.pack(side="right")
 
-    # ② Drop-zone + file list
     middle_row = tk.Frame(parent, bg=BG)
     middle_row.pack(fill="x", padx=20, pady=(0, 6))
 
@@ -548,7 +653,6 @@ def _build_extract_toolbar(self, parent):
     list_sb.config(command=self._file_listbox.yview)
     self._file_listbox.bind("<Button-3>", self._remove_selected_file)
 
-    # ③ Action buttons
     btn_row = tk.Frame(parent, bg=BG)
     btn_row.pack(fill="x", padx=20, pady=(0, 10))
 
@@ -557,7 +661,7 @@ def _build_extract_toolbar(self, parent):
         command=self._browse,
         height=34, corner_radius=7,
         fg_color=_SB_ACCENT, hover_color=LIME_BRIGHT,
-        text_color="#0F1B2D",
+        text_color="#0B1622",
         font=FF(9, "bold"),
         border_width=0, width=110
     )
@@ -618,10 +722,8 @@ def _build_extract_toolbar(self, parent):
         font=F(7), fg=TXT_MUTED, bg=BG
     ).pack(side="right")
 
-    # ④ Divider
     tk.Frame(parent, bg=BORDER_LIGHT, height=1).pack(fill="x", padx=20, pady=(0, 4))
 
-    # Keep count label in sync
     def _update_toolbar_count(event=None):
         n = self._file_listbox.size()
         if n == 0:
@@ -641,7 +743,7 @@ def _build_extract_toolbar(self, parent):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  TAG CONFIGURATION  (unchanged)
+#  TAG CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────
 def _configure_analysis_tags(self, box):
     sz = 11
@@ -670,7 +772,7 @@ def _configure_analysis_tags(self, box):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  WRITE HELPERS  (unchanged)
+#  WRITE HELPERS
 # ─────────────────────────────────────────────────────────────────────
 def _write(self, txt, color=TXT_NAVY):
     box = self._textbox
@@ -764,10 +866,8 @@ def _put_placeholder(self):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  TAB SWITCHING  — updated to drive sidebar nav active state
+#  TAB SWITCHING
 # ─────────────────────────────────────────────────────────────────────
-
-# Map tab key → human-readable page title shown in the header
 _TAB_TITLES = {
     "cibi":            "CIBI Mode",
     "extract":         "Extracted Content",
@@ -778,22 +878,17 @@ _TAB_TITLES = {
     "lookup":          "Look-Up",
     "lookup_summary":  "LU Summary",
     "lu_analysis":     "LU Analysis",
-    "general_lookup":  "General Look-Up",
-    "general_summary": "General Summary",
 }
 
 def _switch_tab(self, tab):
     self._current_tab = tab
 
-    # Update sidebar active highlight
     if hasattr(self, '_nav_btns'):
         self._apply_nav_active(tab)
 
-    # Update page title
     if hasattr(self, '_page_title_lbl'):
         self._page_title_lbl.config(text=_TAB_TITLES.get(tab, tab.title()))
 
-    # Hide all content frames
     self._loader_frame.pack_forget()
     self._txt_frame.pack_forget()
     self._analysis_frame.pack_forget()
@@ -804,10 +899,7 @@ def _switch_tab(self, tab):
     self._lookup_frame.pack_forget()
     self._lookup_summary_frame.pack_forget()
     self._lu_analysis_frame.pack_forget()
-    self._general_lookup_frame.pack_forget()
-    self._general_summary_frame.pack_forget()
 
-    # Show the requested frame
     if tab == "extract":
         self._txt_frame.pack(fill="both", expand=True)
     elif tab == "analysis":
@@ -825,10 +917,6 @@ def _switch_tab(self, tab):
         _refresh_summary(self)
     elif tab == "lu_analysis":
         self._lu_analysis_frame.pack(fill="both", expand=True)
-    elif tab == "general_lookup":
-        self._general_lookup_frame.pack(fill="both", expand=True)
-    elif tab == "general_summary":
-        self._general_summary_frame.pack(fill="both", expand=True)
     else:  # aiprompt
         self._aiprompt_frame.pack(fill="both", expand=True)
         self.after(50, self._chat_input.focus_set)
@@ -838,7 +926,7 @@ def _switch_tab(self, tab):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  LOADER  (unchanged logic, updated bg colour)
+#  LOADER
 # ─────────────────────────────────────────────────────────────────────
 def _show_loader(self, show, stage_text="Processing…"):
     if show:
@@ -850,13 +938,14 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._lookup_frame.pack_forget()
         self._lookup_summary_frame.pack_forget()
         self._lu_analysis_frame.pack_forget()
-        self._general_lookup_frame.pack_forget()
-        self._general_summary_frame.pack_forget()
         self._loader_frame.pack(fill="both", expand=True)
         self._stage_lbl.config(text=stage_text)
         self._spinner.start()
         self._status_lbl.config(text="●  Processing…", fg=ACCENT_GOLD)
         self._topbar_status.config(text="● Processing…", fg=ACCENT_GOLD, bg="#1A2F47")
+        # Update sidebar status dot/label
+        if hasattr(self, '_status_sidebar_lbl'):
+            self._status_sidebar_lbl.config(text="Processing…", fg=ACCENT_GOLD)
     else:
         self._spinner.stop()
         self._loader_frame.pack_forget()
@@ -872,14 +961,14 @@ def _show_loader(self, show, stage_text="Processing…"):
             self._lookup_frame.pack(fill="both", expand=True)
         elif self._current_tab == "lookup_summary":
             self._lookup_summary_frame.pack(fill="both", expand=True)
-        elif self._current_tab == "general_lookup":
-            self._general_lookup_frame.pack(fill="both", expand=True)
-        elif self._current_tab == "general_summary":
-            self._general_summary_frame.pack(fill="both", expand=True)
+        elif self._current_tab == "lu_analysis":
+            self._lu_analysis_frame.pack(fill="both", expand=True)
         else:
             self._aiprompt_frame.pack(fill="both", expand=True)
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
         self._topbar_status.config(text="● Ready", fg=_SB_ACCENT, bg="#1A2F47")
+        if hasattr(self, '_status_sidebar_lbl'):
+            self._status_sidebar_lbl.config(text="Ready", fg=_SB_ACCENT2)
 
 def _set_progress(self, pct, stage=""):
     self._pct_lbl.config(text=f"{pct}%")
@@ -889,7 +978,7 @@ def _set_progress(self, pct, stage=""):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  GRADIENT / LAYOUT HELPERS  (unchanged)
+#  GRADIENT / LAYOUT HELPERS
 # ─────────────────────────────────────────────────────────────────────
 def _hbar(self, canvas, c1, c2, steps=40):
     canvas.delete("all")
@@ -950,7 +1039,7 @@ def _file_icon_for(self, name):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  SEARCH  (unchanged)
+#  SEARCH
 # ─────────────────────────────────────────────────────────────────────
 def _active_textbox(self):
     return self._textbox if self._current_tab == "extract" else self._analysis_box
@@ -1018,7 +1107,7 @@ def _clear_search(self):
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  COPY  (unchanged)
+#  COPY
 # ─────────────────────────────────────────────────────────────────────
 def _copy(self):
     if self._current_tab == "extract":
@@ -1042,8 +1131,9 @@ def attach(cls):
     cls._build_left              = _build_left
     cls._build_right             = _build_right
 
-    # Sidebar nav helper (NEW)
+    # Sidebar nav helpers
     cls._apply_nav_active        = _apply_nav_active
+    cls._build_nav_pill          = _build_nav_pill
 
     # Extract-tab toolbar
     cls._build_extract_toolbar   = _build_extract_toolbar
@@ -1087,5 +1177,3 @@ def attach(cls):
     _attach_lookup(cls)
     _attach_summary(cls)
     _attach_lu_analysis(cls)
-    _attach_general_lookup(cls)
-    _attach_general_summary(cls)

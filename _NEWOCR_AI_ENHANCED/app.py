@@ -191,40 +191,23 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
     # ── UI build ──────────────────────────────────────────────────────────
     def _build_ui(self):
         self._build_topbar()
+
         body = tk.Frame(self, bg=SIDEBAR_BG)
         body.pack(fill="both", expand=True)
 
-        left_outer = tk.Frame(body, bg=SIDEBAR_BG, width=280)
-        left_outer.pack(side="left", fill="y")
-        left_outer.pack_propagate(False)
+        # ── Sidebar — direct Frame, no canvas/scrollbar wrapper ───────────
+        left = tk.Frame(body, bg=SIDEBAR_BG, width=280)
+        left.pack(side="left", fill="both")
+        left.pack_propagate(False)
 
-        left_sb = tk.Scrollbar(left_outer, orient="vertical", relief="flat",
-                               troughcolor=SIDEBAR_BG, bg="#142B52", width=4, bd=0)
-        left_sb.pack(side="right", fill="y")
-
-        left_canvas = tk.Canvas(left_outer, bg=SIDEBAR_BG, highlightthickness=0,
-                                yscrollcommand=left_sb.set)
-        left_canvas.pack(side="left", fill="both", expand=True)
-        left_sb.config(command=left_canvas.yview)
-
-        left     = tk.Frame(left_canvas, bg=SIDEBAR_BG)
-        left_win = left_canvas.create_window((0, 0), window=left, anchor="nw")
-
-        left.bind("<Configure>",
-                  lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
-        left_canvas.bind("<Configure>",
-                         lambda e: left_canvas.itemconfig(left_win, width=e.width))
-        left_canvas.bind("<MouseWheel>",
-                         lambda e: left_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-        left.bind("<MouseWheel>",
-                  lambda e: left_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-
+        # ── Thin gradient divider between sidebar and content ─────────────
         from app_constants import LIME_BRIGHT, LIME_DARK
         div_canvas = tk.Canvas(body, bg=SIDEBAR_BG, width=2, highlightthickness=0)
         div_canvas.pack(side="left", fill="y")
         div_canvas.bind("<Configure>",
                         lambda e, c=div_canvas: self._vbar_full(c, LIME_BRIGHT, LIME_DARK))
 
+        # ── Right content area ────────────────────────────────────────────
         right = tk.Frame(body, bg=OFF_WHITE)
         right.pack(side="left", fill="both", expand=True)
 
