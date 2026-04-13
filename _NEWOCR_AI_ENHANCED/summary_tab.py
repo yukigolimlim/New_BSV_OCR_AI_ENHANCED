@@ -837,9 +837,9 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 client_id, pn, industry_name,
                 loan_balance, amortized_cost,
                 principal_loan, maturity, interest_rate,
-                branch, loan_class_name, product_name, industry_name_ploan,
+                branch, loan_class_name, product_name,
                 loan_date, term_unit, term, security, release_tag,
-                loan_amount, loan_balance_ploan, amort_ploan,
+                loan_balance_ploan, amort_ploan,
                 loan_status, ao_name
             ) VALUES (
                 :session_id, :processed_at, :source_file, :status,
@@ -854,9 +854,9 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 :client_id, :pn, :industry_name,
                 :loan_balance, :amortized_cost,
                 :principal_loan, :maturity, :interest_rate,
-                :branch, :loan_class_name, :product_name, :industry_name_ploan,
+                :branch, :loan_class_name, :product_name,
                 :loan_date, :term_unit, :term, :security, :release_tag,
-                :loan_amount, :loan_balance_ploan, :amort_ploan,
+                :loan_balance_ploan, :amort_ploan,
                 :loan_status, :ao_name
             )
         """, row_data)
@@ -1368,13 +1368,11 @@ def db_save_applicant(session_id: str, results: dict):
         "branch":              "",
         "loan_class_name":     "",
         "product_name":        "",
-        "industry_name_ploan": "",
         "loan_date":           "",
         "term_unit":           "",
         "term":                "",
         "security":            "",
         "release_tag":         "",
-        "loan_amount":         None,
         "loan_balance_ploan":  None,
         "amort_ploan":         None,
         "loan_status":         "",
