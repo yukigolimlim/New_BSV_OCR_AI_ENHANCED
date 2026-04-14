@@ -13,6 +13,8 @@ Changes vs original:
     the already-constructed panel on the first mainloop idle tick, because
     lu_analysis_tab calls the module-level builder directly during panel
     construction (before this patch's attach() runs).
+  • Column alignment fix: static header with fixed column widths using
+    columnconfigure(minsize) to perfectly align with CTkEntry in expense rows.
 
 HOW TO APPLY
 ------------
@@ -267,6 +269,47 @@ def _build_simulator_panel_patched(self, parent):
 
     tk.Frame(parent, bg=_BORDER_MID, height=1).pack(fill="x")
 
+    # ── Column header row (fixed, does not scroll) ────────────────────────────
+    header_row = tk.Frame(parent, bg=_NAVY_DEEP)
+    header_row.pack(fill="x", padx=0)
+
+    # Define column headers: (text, width_chars, anchor)
+    headers = [
+        ("Expense Item", 26, "w"),
+        ("Risk", 6, "center"),
+        ("Base Amount", 13, "e"),
+        ("% Input", 9, "center"),
+        ("Extra Cost", 13, "e"),
+        ("Simulated", 13, "e"),
+    ]
+
+    for col, (text, width, anchor) in enumerate(headers):
+        if col == 3:  # % Input column - use fixed-width frame to match CTkEntry
+            f = tk.Frame(header_row, bg=_NAVY_DEEP, width=80)
+            f.grid(row=0, column=col, padx=8)
+            f.pack_propagate(False)
+            tk.Label(f, text=text, font=_F(8, "bold"), fg=_TXT_MUTED,
+                     bg=_NAVY_DEEP, anchor="center").pack(fill="x")
+        else:
+            tk.Label(
+                header_row, text=text,
+                font=_F(8, "bold"), fg=_TXT_MUTED, bg=_NAVY_DEEP,
+                anchor=anchor, padx=6 if anchor != "center" else 0,
+                width=width
+            ).grid(row=0, column=col, sticky="ew", padx=(4 if col == 3 else 0))
+
+    # Lock column widths using minsize (pixels)
+    header_row.columnconfigure(0, minsize=200)  # Expense Item
+    header_row.columnconfigure(1, minsize=50)   # Risk
+    header_row.columnconfigure(2, minsize=100)  # Base Amount
+    header_row.columnconfigure(3, minsize=96)   # % Input (80px entry + 16px pad)
+    header_row.columnconfigure(4, minsize=100)  # Extra Cost
+    header_row.columnconfigure(5, minsize=100)  # Simulated
+
+    # Uniform group to keep all columns consistent across rows
+    for i in range(6):
+        header_row.columnconfigure(i, uniform="simcol")
+
     # ── Scrollable expense list (full width — no chart panel) ─────────────────
     body = tk.Frame(parent, bg=_CARD_WHITE)
     body.pack(fill="both", expand=True)
@@ -347,7 +390,6 @@ def _sim_on_client_change(self, value):
         bg=_NAVY_MID if is_general else _ACCENT_RED
     )
 
-   
     if is_general:
         results = self._lu_all_data.get("general", [])
     else:
@@ -389,7 +431,7 @@ def _sim_on_client_change(self, value):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  POPULATE
+#  POPULATE (header removed – now static; rows only)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _sim_populate_patched(self):
@@ -419,23 +461,7 @@ def _sim_populate_patched(self):
                  ).pack(pady=60)
         return
 
-    # Column header
-    hdr = tk.Frame(self._sim_scroll_frame, bg=_OFF_WHITE)
-    hdr.pack(fill="x", pady=(8, 0))
-    for text, col, w in [
-        ("Expense Item",   0, 220),
-        ("Risk",           1,  60),
-        ("Base Amount",    2, 110),
-        ("% Input",        3,  80),
-        ("Extra Cost",     4, 110),
-        ("Simulated",      5, 110),
-    ]:
-        tk.Label(hdr, text=text, font=_F(8, "bold"), fg=_NAVY_PALE,
-                 bg=_OFF_WHITE, width=w//8, anchor="w", padx=6, pady=5
-                 ).grid(row=0, column=col, sticky="ew", padx=(0, 2))
-
-    tk.Frame(self._sim_scroll_frame, bg=_BORDER_MID, height=1).pack(fill="x")
-
+    # Expense rows (no header inside scroll area)
     for idx, exp in enumerate(self._sim_expenses):
         var = tk.StringVar(value="0")
         self._sim_sliders[exp["name"]] = var
@@ -445,7 +471,7 @@ def _sim_populate_patched(self):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  EXPENSE ROW
+#  EXPENSE ROW (ALIGNED with static header using fixed column widths)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _sim_build_expense_row_patched(self, parent, exp, var, idx):
@@ -454,36 +480,53 @@ def _sim_build_expense_row_patched(self, parent, exp, var, idx):
     row    = tk.Frame(parent, bg=row_bg)
     row.pack(fill="x")
 
+    # Apply same column minsizes and uniform group as header row
+    row.columnconfigure(0, minsize=200)  # Expense Item
+    row.columnconfigure(1, minsize=50)   # Risk
+    row.columnconfigure(2, minsize=100)  # Base Amount
+    row.columnconfigure(3, minsize=96)   # % Input (80px entry + 16px pad)
+    row.columnconfigure(4, minsize=100)  # Extra Cost
+    row.columnconfigure(5, minsize=100)  # Simulated
+    for i in range(6):
+        row.columnconfigure(i, uniform="simcol")
+
+    # Column 0: Expense name (fixed width 26 characters)
     tk.Label(row, text=exp["name"], font=_F(9, "bold"),
              fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=6, width=26
              ).grid(row=0, column=0, sticky="ew")
 
-    tk.Label(row, text=risk[:3], font=_F(7, "bold"),
+    # Column 1: Risk badge (fixed width 6 characters)
+    tk.Label(row, text=risk[:3], font=_F(7, "bold"), width=6,
              fg=_RISK_COLOR.get(risk, _TXT_SOFT),
              bg=_RISK_BADGE_BG.get(risk, _OFF_WHITE),
              padx=4, pady=3
              ).grid(row=0, column=1, padx=4, pady=6)
 
-    tk.Label(row, text=f"₱{exp['total']:,.2f}", font=_F(9),
-             fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6, width=13
+    # Column 2: Base amount (fixed width 13 characters, right-aligned)
+    tk.Label(row, text=f"₱{exp['total']:,.2f}", font=_F(9), width=13,
+             fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6
              ).grid(row=0, column=2, sticky="ew")
 
+    # Column 3: Percentage entry (fixed pixel width 80)
     pct_entry = ctk.CTkEntry(
         row, textvariable=var,
         width=80, height=26, corner_radius=4,
         font=_FF(9), fg_color=_WHITE, text_color=_TXT_NAVY,
         border_color=_BORDER_MID,
     )
-    pct_entry.grid(row=0, column=3, padx=8, pady=6)
+    pct_entry.grid(row=0, column=3, padx=8, pady=6, sticky="w")
+
     pct_entry.bind("<Return>",   lambda e, exp=exp: _sim_on_slide_patched(self, exp, var.get()))
     pct_entry.bind("<FocusOut>", lambda e, exp=exp: _sim_on_slide_patched(self, exp, var.get()))
 
-    extra_lbl = tk.Label(row, text="—", font=_F(9),
-                         fg=_ACCENT_RED, bg=row_bg, anchor="e", padx=6, width=13)
+    # Column 4: Extra cost (fixed width 13 characters, right-aligned)
+    extra_lbl = tk.Label(row, text="—", font=_F(9), width=13,
+                         fg=_ACCENT_RED, bg=row_bg, anchor="e", padx=6)
     extra_lbl.grid(row=0, column=4, sticky="ew")
 
-    sim_lbl = tk.Label(row, text="—", font=_F(9, "bold"),
-                       fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6, width=13)
+    # Column 5: Simulated amount (fixed width 13 characters, right-aligned)
+    sim_lbl = tk.Label(row, text="—", font=_F(9, "bold"), width=13,
+                       fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6)
     sim_lbl.grid(row=0, column=5, sticky="ew")
 
     var._extra_lbl = extra_lbl
