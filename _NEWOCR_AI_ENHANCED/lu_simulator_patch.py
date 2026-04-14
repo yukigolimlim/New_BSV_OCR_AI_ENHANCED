@@ -108,6 +108,9 @@ def _rebuild_simulator_panel_patched(self):
     if getattr(self, "_lu_results", None):
         _sim_populate_patched(self)
 
+    # Hook the global search bar so typing a name updates the simulator
+    _sim_bind_search_bar(self)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN PANEL BUILDER  (cost impact chart removed)
@@ -190,7 +193,7 @@ def _build_simulator_panel_patched(self, parent):
     income_strip.pack(fill="x")
     income_strip.pack_propagate(False)
 
-    tk.Label(income_strip, text="💰  Declared Net Income (₱):",
+    tk.Label(income_strip, text="💰  Total Source of Income (₱):",
              font=_F(9, "bold"), fg=_ACCENT_SUCCESS, bg="#E8F5E9"
              ).pack(side="left", padx=(16, 8), pady=10)
 
@@ -208,7 +211,7 @@ def _build_simulator_panel_patched(self, parent):
     income_entry.bind("<FocusOut>", lambda e: _sim_refresh_patched(self))
 
     tk.Label(income_strip,
-             text="  ← Enter client's net income to compute surplus / deficit",
+             text="  ← Enter client's total source of income to compute surplus / deficit",
              font=_F(8), fg=_TXT_SOFT, bg="#E8F5E9"
              ).pack(side="left", padx=6)
 
@@ -240,7 +243,7 @@ def _build_simulator_panel_patched(self, parent):
     self._sim_income_status_lbl.pack(side="left", anchor="center")
 
     self._sim_net_result_lbl = tk.Label(
-        hero_inner, text="Enter net income above",
+        hero_inner, text="Enter total source of income above",
         font=_F(14, "bold"), fg=_TXT_MUTED, bg=_SURPLUS_BG
     )
     self._sim_net_result_lbl.pack(side="left", padx=20, anchor="center")
@@ -356,17 +359,16 @@ def _sim_on_client_change(self, value):
     self._lu_active_client = value
     self._sim_sliders      = {}
 
-    # Auto-fill net income from the Excel data if available
-    net_income   = None
+    # Auto-fill total source of income from the Excel data if available
+    total_source = None
     gross_income = None
     if not is_general and results:
-        net_income   = results[0].get("net_income",   None)
+        total_source = results[0].get("total_source", None)
         gross_income = results[0].get("gross_income", None)
 
     # Fallback: check income_map directly (single-sheet summary files)
-    if net_income is None and not is_general:
+    if total_source is None and not is_general:
         income_map = getattr(self, "_lu_all_data", {}).get("income_map", {})
-        # Try exact match first, then case-insensitive
         income = income_map.get(value)
         if not income:
             for k, v in income_map.items():
@@ -374,11 +376,11 @@ def _sim_on_client_change(self, value):
                     income = v
                     break
         if income:
-            net_income   = income.get("net")
+            total_source = income.get("total_source") or income.get("gross")
             gross_income = income.get("gross")
 
-    if net_income is not None:
-        self._sim_income_var.set(f"{net_income:,.2f}")
+    if total_source is not None:
+        self._sim_income_var.set(f"{total_source:,.2f}")
     elif is_general:
         self._sim_income_var.set("")
 
@@ -579,7 +581,7 @@ def _sim_refresh_patched(self):
         )
         self._sim_surplus_lbl.config(
             text=(f"Expenses {ratio:.1f}% of income  |  "
-                  f"Declared: ₱{net_income:,.2f}  |  "
+                  f"Total Source: ₱{net_income:,.2f}  |  "
                   f"Simulated: ₱{sim_total:,.2f}"),
             fg=_TXT_MUTED, bg=hero_bg
         )
@@ -593,7 +595,7 @@ def _sim_refresh_patched(self):
         self._sim_income_hero.config(bg=_SURPLUS_BG)
         self._sim_income_status_lbl.config(text="NET INCOME", fg=_LIME_MID, bg=_SURPLUS_BG)
         self._sim_net_result_lbl.config(
-            text="Enter net income above", fg=_TXT_MUTED, bg=_SURPLUS_BG
+            text="Enter total source of income above", fg=_TXT_MUTED, bg=_SURPLUS_BG
         )
         self._sim_surplus_lbl.config(text="", bg=_SURPLUS_BG)
         self._sim_ratio_lbl.config(text="—", fg=_WHITE, bg=_SURPLUS_BG)
@@ -651,14 +653,179 @@ def _sim_show_placeholder_patched(self):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SEARCH BAR INTEGRATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _sim_on_search_patched(self, text: str):
+    """
+    Called whenever the global search bar changes while the simulator is active.
+    Finds the best-matching client name, updates the simulator dropdown,
+    and triggers the full client-change flow (income auto-fill, expense reload, etc.).
+    """
+    text = text.strip()
+
+    if not text:
+        # Empty search → revert to General
+        self._sim_client_var.set(GENERAL_CLIENT)
+        _sim_on_client_change(self, GENERAL_CLIENT)
+        return
+
+    clients = sorted(self._lu_all_data.get("clients", {}).keys())
+    if not clients:
+        return
+
+    text_up = text.upper()
+
+    # 1. Exact match
+    exact = next((c for c in clients if c.strip().upper() == text_up), None)
+    if exact:
+        _sim_select_client(self, exact)
+        return
+
+    # 2. Starts-with match
+    starts = [c for c in clients if c.strip().upper().startswith(text_up)]
+    if starts:
+        _sim_select_client(self, starts[0])
+        return
+
+    # 3. Contains match
+    contains = [c for c in clients if text_up in c.strip().upper()]
+    if contains:
+        _sim_select_client(self, contains[0])
+        return
+
+    # 4. No match — keep current selection, do nothing
+    # (avoids jarring reset while the user is still typing)
+
+
+def _sim_select_client(self, client_name: str):
+    """Update the dropdown and fire the full client-change handler."""
+    self._sim_client_var.set(client_name)
+    _sim_on_client_change(self, client_name)
+
+
+def _sim_bind_search_bar(self):
+    """
+    Find the app's global search Entry widget and attach a trace so the
+    simulator reacts when the user types in it.
+
+    Tries several attribute names that the host app may use.
+    Also attempts to locate the widget by walking the widget tree if
+    no known attribute is found.
+    """
+    # Common attribute names used by the host app for the search field
+    _SEARCH_ATTR_CANDIDATES = [
+        "_lu_search_var",       # StringVar — preferred
+        "_search_var",
+        "_lu_search_entry",     # Entry widget
+        "_search_entry",
+        "_lu_client_search_var",
+        "_client_search_var",
+    ]
+
+    for attr in _SEARCH_ATTR_CANDIDATES:
+        obj = getattr(self, attr, None)
+        if obj is None:
+            continue
+
+        if isinstance(obj, tk.StringVar):
+            # Trace on StringVar: fires on every keystroke
+            obj.trace_add("write", lambda *_: _sim_on_search_patched(
+                self, obj.get()))
+            self._sim_search_bound_var = obj
+            return
+
+        if isinstance(obj, (tk.Entry, ctk.CTkEntry)):
+            # Bind directly on an Entry widget
+            var = tk.StringVar()
+            obj.configure(textvariable=var)
+            var.trace_add("write", lambda *_: _sim_on_search_patched(
+                self, var.get()))
+            self._sim_search_bound_var = var
+            return
+
+    # Fallback: walk widget tree looking for an Entry in the top-level frame
+    # that is NOT inside the simulator panel itself.
+    _sim_search_bind_by_walk(self)
+
+
+def _sim_search_bind_by_walk(self):
+    """
+    Last-resort: walk the widget tree from the root window and bind to the
+    first Entry (or CTkEntry) that is NOT a child of _lu_simulator_view.
+    """
+    sim_view = getattr(self, "_lu_simulator_view", None)
+
+    def _is_inside_sim(w):
+        try:
+            p = w
+            while p:
+                if p == sim_view:
+                    return True
+                p = p.master
+        except Exception:
+            pass
+        return False
+
+    def _walk(widget):
+        for child in widget.winfo_children():
+            if _is_inside_sim(child):
+                continue
+            if isinstance(child, (tk.Entry, ctk.CTkEntry)):
+                var = tk.StringVar()
+                try:
+                    child.configure(textvariable=var)
+                    var.trace_add("write", lambda *_: _sim_on_search_patched(
+                        self, var.get()))
+                    self._sim_search_bound_var = var
+                    return True
+                except Exception:
+                    pass
+            if _walk(child):
+                return True
+        return False
+
+    try:
+        _walk(self)
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  STRESS REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _rl_hex(color) -> str:
+    """Convert a reportlab color to a hex string for use in Paragraph markup."""
+    try:
+        return f"{int(color.red*255):02X}{int(color.green*255):02X}{int(color.blue*255):02X}"
+    except Exception:
+        return "000000"
+
+
 def _sim_generate_report(self):
+    """Generate and save a PDF stress report."""
     if not self._sim_expenses:
         messagebox.showwarning("No Data", "Run an analysis and load expenses first.")
         return
 
+    try:
+        from reportlab.lib.pagesizes import A4, landscape as rl_landscape
+        from reportlab.lib import colors as rl_colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            HRFlowable,
+        )
+    except ImportError:
+        messagebox.showerror(
+            "Missing Library",
+            "reportlab is not installed.\nRun:  pip install reportlab"
+        )
+        return
+
+    # ── Gather data ───────────────────────────────────────────────────────────
     income_raw = self._sim_income_var.get().replace(",", "").replace("₱", "").strip()
     try:
         net_income = float(income_raw) if income_raw else None
@@ -667,161 +834,288 @@ def _sim_generate_report(self):
 
     client     = getattr(self, "_sim_active_client", GENERAL_CLIENT)
     now        = datetime.now().strftime("%B %d, %Y  %H:%M")
-    fname      = Path(self._lu_filepath).name if self._lu_filepath else "—"
+    fname      = Path(self._lu_filepath).name if getattr(self, "_lu_filepath", None) else "—"
 
-    base_total = sum(e["total"] for e in self._sim_expenses)
-    sim_total  = sum(
-        e["total"] + e["total"] * (
-            self._sim_sliders.get(e["name"], tk.DoubleVar()).get() or 0
-        ) / 100
-        for e in self._sim_expenses
-    )
+    base_total   = sum(e["total"] for e in self._sim_expenses)
+    sim_total    = 0.0
+    expense_rows = []
+
+    for exp in self._sim_expenses:
+        var = self._sim_sliders.get(exp["name"])
+        try:
+            pct = float(var.get()) if var else 0.0
+        except (ValueError, TypeError):
+            pct = 0.0
+        base  = exp["total"]
+        extra = base * pct / 100.0
+        sim   = base + extra
+        sim_total += sim
+        expense_rows.append((exp["name"], exp["risk"], base, sim, extra, pct))
+
     increase   = sim_total - base_total
     pct_inc    = (increase / base_total * 100) if base_total > 0 else 0.0
     remaining  = (net_income - sim_total) if net_income is not None else None
     is_deficit = (remaining is not None and remaining < 0)
+    ratio      = (sim_total / net_income * 100) if net_income and net_income > 0 else None
 
-    dbl  = "═" * 72
-    rule = "─" * 72
-    lines = []
+    deficit_items = sorted(
+        [(name, risk, extra) for name, risk, base, sim, extra, pct in expense_rows
+         if pct > 0 and is_deficit],
+        key=lambda x: -x[2]
+    )
 
-    lines.append(dbl)
-    lines.append("  INFLATION / COST-SHOCK STRESS REPORT")
-    lines.append(dbl)
-    lines.append(f"  File      : {fname}")
-    lines.append(f"  Generated : {now}")
-    lines.append(f"  Client    : {client}")
+    # ── File dialog ───────────────────────────────────────────────────────────
+    safe_client  = client.replace(" ", "_").replace("/", "_")[:40]
+    default_name = f"StressReport_{safe_client}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    path = filedialog.asksaveasfilename(
+        title="Save Stress Report PDF",
+        defaultextension=".pdf",
+        filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        initialfile=default_name,
+    )
+    if not path:
+        return
+
+    # ── Colours ───────────────────────────────────────────────────────────────
+    c_navy   = rl_colors.HexColor("#1A3A6B")
+    c_navy_m = rl_colors.HexColor("#EEF3FB")
+    c_red    = rl_colors.HexColor("#E53E3E")
+    c_gold   = rl_colors.HexColor("#D4A017")
+    c_green  = rl_colors.HexColor("#2E7D32")
+    c_white  = rl_colors.white
+    c_off    = rl_colors.HexColor("#F5F7FA")
+    c_border = rl_colors.HexColor("#C5D0E8")
+    c_muted  = rl_colors.HexColor("#9AAACE")
+    c_hdr_bg = c_red if is_deficit else c_navy
+    RISK_C   = {"HIGH": c_red, "MODERATE": c_gold, "LOW": c_green}
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    styles  = getSampleStyleSheet()
+    s_title = ParagraphStyle("SRTitle", parent=styles["Normal"],
+                             fontSize=14, textColor=c_white, leading=18,
+                             fontName="Helvetica-Bold")
+    s_sub   = ParagraphStyle("SRSub",   parent=styles["Normal"],
+                             fontSize=8,  textColor=c_muted,  leading=11)
+    s_h2    = ParagraphStyle("SRH2",    parent=styles["Normal"],
+                             fontSize=10, textColor=c_navy,   leading=14,
+                             fontName="Helvetica-Bold", spaceBefore=8)
+    s_body  = ParagraphStyle("SRBody",  parent=styles["Normal"],
+                             fontSize=8,  textColor=rl_colors.HexColor("#1A2B4A"), leading=11)
+    s_muted = ParagraphStyle("SRMuted", parent=styles["Normal"],
+                             fontSize=7,  textColor=c_muted,  leading=10)
+    s_warn  = ParagraphStyle("SRWarn",  parent=styles["Normal"],
+                             fontSize=9,  textColor=c_red,    leading=12,
+                             fontName="Helvetica-Bold")
+
+    # ── Build PDF ─────────────────────────────────────────────────────────────
+    PAGE = rl_landscape(A4)
+    doc  = SimpleDocTemplate(
+        path, pagesize=PAGE,
+        leftMargin=1.5*cm, rightMargin=1.5*cm,
+        topMargin=1.5*cm,  bottomMargin=1.5*cm,
+    )
+    pw    = PAGE[0] - 3*cm   # usable page width
+    story = []
+
+    # Title banner
+    status_text = "DEFICIT STRESS REPORT" if is_deficit else "SURPLUS STRESS REPORT"
+    banner = Table(
+        [[Paragraph(f"INFLATION / COST-SHOCK  —  {status_text}", s_title)]],
+        colWidths=[pw]
+    )
+    banner.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), c_hdr_bg),
+        ("TOPPADDING",    (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+    ]))
+    story.append(banner)
+    story.append(Spacer(1, 0.25*cm))
+    story.append(Paragraph(
+        f"File: <b>{fname}</b>&nbsp;&nbsp; Generated: <b>{now}</b>&nbsp;&nbsp; Client: <b>{client}</b>",
+        s_sub))
+    story.append(Spacer(1, 0.25*cm))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=c_navy))
+    story.append(Spacer(1, 0.25*cm))
+
+    # Summary cards
+    card_items = [
+        ("Base Total Expenses", f"P{base_total:,.2f}", c_navy),
+        ("Simulated Total",     f"P{sim_total:,.2f}",  c_navy),
+        ("Total Increase",      f"+P{increase:,.2f}  (+{pct_inc:.1f}%)",
+         c_red if increase > 0 else c_navy),
+    ]
     if net_income is not None:
-        lines.append(f"  Net Income: ₱{net_income:,.2f}")
-    lines.append(rule)
-    lines.append(f"  Base Total Expenses : ₱{base_total:,.2f}")
-    lines.append(f"  Simulated Total     : ₱{sim_total:,.2f}")
-    lines.append(f"  Total Increase      : +₱{increase:,.2f}  (+{pct_inc:.1f}%)")
-    if net_income is not None:
-        sign   = "-" if is_deficit else "+"
-        status = "⚠️  DEFICIT" if is_deficit else "✅  SURPLUS"
-        ratio  = sim_total / net_income * 100 if net_income > 0 else 0
-        lines.append(f"  Net Result          : {sign}₱{abs(remaining):,.2f}  [{status}]")
-        lines.append(f"  Expense / Income    : {ratio:.1f}%")
-    lines.append(dbl)
-    lines.append("")
-    lines.append(f"  {'EXPENSE ITEM':<28} {'RISK':<10} {'BASE':>12} {'SIMULATED':>12} {'EXTRA':>12} {'%':>6}")
-    lines.append("  " + rule)
+        card_items.append(("Total Source of Income", f"P{net_income:,.2f}", c_green))
 
-    deficit_items = []
-    for exp in self._sim_expenses:
-        var = self._sim_sliders.get(exp["name"])
-        pct = 0.0
-        if var:
-            try:
-                pct = float(var.get())
-            except Exception:
-                pass
-        base  = exp["total"]
-        extra = base * pct / 100.0
-        sim   = base + extra
-        flag  = " ◄ STRESS" if pct > 0 else ""
-        lines.append(
-            f"  {exp['name'][:27]:<28} {exp['risk']:<10} ₱{base:>11,.2f} "
-            f"₱{sim:>11,.2f} +₱{extra:>10,.2f} {pct:>5.1f}%{flag}"
-        )
-        if pct > 0 and is_deficit:
-            deficit_items.append((exp["name"], exp["risk"], extra))
+    card_col_w = pw / len(card_items)
+    card_data  = [[
+        Paragraph(
+            f"<font size='7' color='#{_rl_hex(c_muted)}'>{lbl}</font><br/>"
+            f"<font size='12' color='#{_rl_hex(fg)}'><b>{val}</b></font>",
+            s_body)
+        for lbl, val, fg in card_items
+    ]]
+    card_tbl = Table(card_data, colWidths=[card_col_w] * len(card_items))
+    card_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), c_navy_m),
+        ("BOX",           (0, 0), (-1, -1), 0.5, c_border),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.5, c_border),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(card_tbl)
+    story.append(Spacer(1, 0.25*cm))
 
-    lines.append("")
-    lines.append(dbl)
+    # Net result hero (only if income entered)
+    if net_income is not None and remaining is not None:
+        ratio_c     = c_red if ratio > 100 else (c_gold if ratio > 80 else c_green)
+        result_fg   = c_red if is_deficit else c_green
+        result_sign = "-" if is_deficit else "+"
+        hero_bg     = rl_colors.HexColor("#2D0A0A") if is_deficit else rl_colors.HexColor("#0A1A0A")
+        hero = Table([[Paragraph(
+            f"<font color='#{_rl_hex(result_fg)}'><b>"
+            f"{'DEFICIT' if is_deficit else 'SURPLUS'}  "
+            f"{result_sign}P{abs(remaining):,.2f}"
+            f"</b></font>"
+            f"&nbsp;&nbsp;&nbsp; Expense Ratio: "
+            f"<font color='#{_rl_hex(ratio_c)}'><b>{ratio:.1f}%</b></font>"
+            f"&nbsp;&nbsp; Simulated P{sim_total:,.2f} vs "
+            f"Total Source P{net_income:,.2f}",
+            s_body)]], colWidths=[pw])
+        hero.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), hero_bg),
+            ("TOPPADDING",    (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+        ]))
+        story.append(hero)
+        story.append(Spacer(1, 0.25*cm))
 
+    # Expense table
+    story.append(Paragraph("Expense Breakdown", s_h2))
+    story.append(Spacer(1, 0.15*cm))
+
+    hdr_s   = ParagraphStyle("EHdr", parent=styles["Normal"],
+                             fontSize=7, textColor=c_white, leading=9)
+    e_cols  = [pw*0.28, pw*0.09, pw*0.14, pw*0.14, pw*0.14, pw*0.10, pw*0.11]
+    tbl_data = [[
+        Paragraph("<b>Expense Item</b>",  hdr_s),
+        Paragraph("<b>Risk</b>",          hdr_s),
+        Paragraph("<b>Base Amount</b>",   hdr_s),
+        Paragraph("<b>Simulated</b>",     hdr_s),
+        Paragraph("<b>Extra Cost</b>",    hdr_s),
+        Paragraph("<b>Rate (%)</b>",      hdr_s),
+        Paragraph("<b>Flag</b>",          hdr_s),
+    ]]
+
+    tbl_style = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  c_navy),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("LEADING",       (0, 0), (-1, -1), 10),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("BOX",           (0, 0), (-1, -1), 0.5, c_border),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.3, c_border),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+    ])
+
+    for idx, (name, risk, base, sim, extra, pct) in enumerate(expense_rows):
+        risk_c   = RISK_C.get(risk, c_muted)
+        stressed = pct > 0
+        row_bg   = (rl_colors.HexColor("#FFF5F5") if risk == "HIGH" else
+                    rl_colors.HexColor("#FFFBF0") if risk == "MODERATE" else
+                    c_white) if idx % 2 == 0 else c_off
+        tbl_style.add("BACKGROUND", (0, idx+1), (-1, idx+1), row_bg)
+        tbl_data.append([
+            Paragraph(f"<b>{name[:42]}</b>", s_body),
+            Paragraph(f"<font color='#{_rl_hex(risk_c)}'><b>{risk}</b></font>", s_body),
+            Paragraph(f"P{base:,.2f}", s_body),
+            Paragraph(f"<b>P{sim:,.2f}</b>", s_body),
+            Paragraph(
+                f"<font color='#{_rl_hex(c_red)}'><b>+P{extra:,.2f}</b></font>"
+                if stressed else "—", s_body),
+            Paragraph(
+                f"<font color='#{_rl_hex(c_red)}'><b>{pct:.1f}%</b></font>"
+                if stressed else "0.0%", s_body),
+            Paragraph(
+                f"<font color='#{_rl_hex(c_red)}'><b>STRESS</b></font>"
+                if stressed else "", s_body),
+        ])
+
+    # Totals row
+    tbl_data.append([
+        Paragraph("<b>TOTAL</b>", s_body),
+        Paragraph("", s_body),
+        Paragraph(f"<b>P{base_total:,.2f}</b>", s_body),
+        Paragraph(f"<b>P{sim_total:,.2f}</b>",  s_body),
+        Paragraph(f"<b>+P{increase:,.2f}</b>",  s_body),
+        Paragraph(f"<b>{pct_inc:.1f}%</b>",     s_body),
+        Paragraph("", s_body),
+    ])
+    tbl_style.add("BACKGROUND", (0, -1), (-1, -1), c_navy_m)
+    tbl_style.add("FONTNAME",   (0, -1), (-1, -1), "Helvetica-Bold")
+    tbl_style.add("LINEABOVE",  (0, -1), (-1, -1), 1.2, c_navy)
+
+    exp_tbl = Table(tbl_data, colWidths=e_cols, repeatRows=1)
+    exp_tbl.setStyle(tbl_style)
+    story.append(exp_tbl)
+
+    # Deficit contributing items
     if is_deficit and deficit_items:
-        lines.append("")
-        lines.append("  ⚠️  DEFICIT CONTRIBUTING ITEMS")
-        lines.append("  " + rule)
-        for name, risk, extra in sorted(deficit_items, key=lambda x: -x[2]):
-            lines.append(f"  • {name}  [{risk}]  +₱{extra:,.2f} extra cost")
-        lines.append("")
-        lines.append("  RECOMMENDATION: Review HIGH and MODERATE risk expenses above.")
-        lines.append("  Consider renegotiating or hedging these cost items.")
-        lines.append(dbl)
+        story.append(Spacer(1, 0.35*cm))
+        story.append(HRFlowable(width="100%", thickness=1, color=c_red))
+        story.append(Paragraph("Deficit Contributing Items", s_warn))
+        story.append(Spacer(1, 0.15*cm))
 
-    lines.append("")
-    lines.append("  END OF STRESS REPORT")
-    lines.append(dbl)
+        di_cols = [pw*0.40, pw*0.12, pw*0.18, pw*0.30]
+        di_s    = ParagraphStyle("DIHdr", parent=styles["Normal"],
+                                 fontSize=7, textColor=c_white, leading=9)
+        di_data = [[
+            Paragraph("<b>Expense Item</b>",    di_s),
+            Paragraph("<b>Risk</b>",            di_s),
+            Paragraph("<b>Extra Cost</b>",      di_s),
+            Paragraph("<b>Recommendation</b>",  di_s),
+        ]]
+        for i, (name, risk, extra) in enumerate(deficit_items):
+            risk_c = RISK_C.get(risk, c_muted)
+            rec    = ("Renegotiate or hedge immediately"    if risk == "HIGH"     else
+                      "Monitor closely, plan mitigation"   if risk == "MODERATE" else
+                      "Review for cost savings")
+            di_data.append([
+                Paragraph(f"<b>{name[:55]}</b>", s_body),
+                Paragraph(f"<font color='#{_rl_hex(risk_c)}'><b>{risk}</b></font>", s_body),
+                Paragraph(f"<font color='#{_rl_hex(c_red)}'><b>+P{extra:,.2f}</b></font>", s_body),
+                Paragraph(rec, s_muted),
+            ])
+        di_tbl = Table(di_data, colWidths=di_cols, repeatRows=1)
+        di_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),  c_red),
+            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+            ("LEADING",       (0, 0), (-1, -1), 10),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ("BOX",           (0, 0), (-1, -1), 0.5, c_border),
+            ("INNERGRID",     (0, 0), (-1, -1), 0.3, c_border),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            *[("BACKGROUND", (0, i), (-1, i), c_off if i % 2 == 0 else c_white)
+              for i in range(1, len(di_data))],
+        ]))
+        story.append(di_tbl)
 
-    report_text = "\n".join(lines)
+    story.append(Spacer(1, 0.35*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=c_border))
+    story.append(Paragraph("END OF STRESS REPORT", s_muted))
 
-    win = tk.Toplevel(self)
-    win.title("Stress Report")
-    win.configure(bg=_NAVY_DEEP)
-    win.geometry("860x620")
-    win.grab_set()
-
-    hdr_bg = _ACCENT_RED if is_deficit else _NAVY_MID
-    title_bar = tk.Frame(win, bg=hdr_bg, height=44)
-    title_bar.pack(fill="x")
-    title_bar.pack_propagate(False)
-    tk.Label(title_bar,
-             text="⚠️  DEFICIT STRESS REPORT" if is_deficit else "✅  SURPLUS STRESS REPORT",
-             font=_F(11, "bold"), fg=_WHITE, bg=hdr_bg
-             ).pack(side="left", padx=20, pady=10)
-
-    def _save():
-        path = filedialog.asksaveasfilename(
-            title="Save Stress Report", defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            initialfile=f"StressReport_{client.replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-        )
-        if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(report_text)
-            messagebox.showinfo("Saved", f"Report saved to:\n{path}", parent=win)
-
-    ctk.CTkButton(title_bar, text="💾  Save Report", command=_save,
-                  width=120, height=30, corner_radius=4,
-                  fg_color=_LIME_DARK, hover_color=_LIME_MID,
-                  text_color=_TXT_ON_LIME, font=_FF(9, "bold")
-                  ).pack(side="right", padx=12, pady=7)
-    ctk.CTkButton(title_bar, text="✕  Close", command=win.destroy,
-                  width=80, height=30, corner_radius=4,
-                  fg_color=_NAVY_LIGHT, hover_color=_NAVY_DEEP,
-                  text_color=_WHITE, font=_FF(9)
-                  ).pack(side="right", padx=(0, 4), pady=7)
-
-    body = tk.Frame(win, bg=_NAVY_DEEP)
-    body.pack(fill="both", expand=True, padx=8, pady=8)
-    sb = tk.Scrollbar(body, relief="flat", troughcolor=_NAVY_MID,
-                      bg=_NAVY_PALE, width=8, bd=0)
-    sb.pack(side="right", fill="y")
-    txt = tk.Text(body, font=("Consolas", 9), fg=_WHITE, bg=_NAVY_DEEP,
-                  relief="flat", bd=0, padx=16, pady=12,
-                  wrap="none", yscrollcommand=sb.set)
-    txt.pack(side="left", fill="both", expand=True)
-    sb.config(command=txt.yview)
-
-    txt.tag_configure("deficit", foreground=_ACCENT_RED,  font=("Consolas", 9, "bold"))
-    txt.tag_configure("surplus", foreground=_LIME_MID,    font=("Consolas", 9, "bold"))
-    txt.tag_configure("stress",  foreground=_ACCENT_GOLD, font=("Consolas", 9))
-    txt.tag_configure("rule",    foreground="#3A5A8A",     font=("Consolas", 9))
-    txt.tag_configure("title",   foreground=_LIME_BRIGHT, font=("Consolas", 12, "bold"))
-    txt.tag_configure("normal",  foreground="#C8D8F0",     font=("Consolas", 9))
-    txt.tag_configure("warning", foreground=_ACCENT_RED,  font=("Consolas", 9, "bold"))
-
-    for line in lines:
-        if "═" in line or "─" in line:
-            txt.insert("end", line + "\n", "rule")
-        elif "STRESS REPORT" in line:
-            txt.insert("end", line + "\n", "title")
-        elif "DEFICIT" in line or "⚠️" in line:
-            txt.insert("end", line + "\n", "deficit" if is_deficit else "normal")
-        elif "SURPLUS" in line or "✅" in line:
-            txt.insert("end", line + "\n", "surplus")
-        elif "◄ STRESS" in line:
-            txt.insert("end", line + "\n", "stress")
-        elif "RECOMMENDATION" in line or "Consider" in line:
-            txt.insert("end", line + "\n", "warning")
-        else:
-            txt.insert("end", line + "\n", "normal")
-
-    txt.config(state="disabled")
-    txt.yview_moveto(0)
+    try:
+        doc.build(story)
+        messagebox.showinfo("Export Complete", f"Stress Report PDF saved to:\n{path}")
+    except Exception as ex:
+        messagebox.showerror("PDF Export Error", str(ex))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -842,6 +1136,8 @@ def attach(cls):
     cls._sim_generate_report     = _sim_generate_report
     cls._sim_on_client_change    = _sim_on_client_change
     cls._rebuild_simulator_panel = _rebuild_simulator_panel_patched
+    cls._sim_on_search           = _sim_on_search_patched
+    cls._sim_bind_search_bar     = _sim_bind_search_bar
 
     # THE FIX: wrap __init__ to schedule rebuild on first idle tick
     original_init = cls.__init__

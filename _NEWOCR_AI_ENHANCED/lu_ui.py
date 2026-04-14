@@ -1196,25 +1196,25 @@ def _charts_render(self):
 # ══════════════════════════════════════════════════════════════════════
 
 _SECTOR_COLS = [
-    ("Sector",              2, 160, "w"),
-    ("# Clients",           1,  70, "center"),
-    ("Total Loan Balance",  2, 150, "center"),
-    ("% of Total",          2, 110, "center"),
-    ("Avg Loan per Client", 2, 140, "center"),
-    ("Avg Net Income",      2, 130, "center"),
-    ("Risk Profile",        2,  90, "center"),
+    ("Sector",              3, 200, "w"),
+    ("# Clients",           1,  80, "center"),
+    ("Total Loan Balance",  2, 170, "center"),
+    ("% of Total",          2, 130, "center"),
+    ("Avg Loan per Client", 2, 160, "center"),
+    ("Avg Net Income",      2, 150, "center"),
+    ("Risk Profile",        1, 100, "center"),
 ]
 
 _CLIENT_COLS = [
-    ("Client",          2, 180, "w"),
+    ("Client",          3, 200, "w"),
     ("ID",              1,  60, "center"),
-    ("Sector",          2, 150, "center"),
-    ("Principal Loan",  2, 125, "center"),
-    ("Loan Balance",    2, 120, "center"),
-    ("% of Total",      1,  90, "center"),
-    ("Net Income",      2, 110, "center"),
-    ("Current Amort",   2, 120, "center"),
-    ("Risk",            2,  70, "center"),
+    ("Sector",          2, 160, "center"),
+    ("Principal Loan",  2, 130, "center"),
+    ("Loan Balance",    2, 130, "center"),
+    ("% of Total",      1, 100, "center"),
+    ("Net Income",      2, 120, "center"),
+    ("Current Amort",   2, 130, "center"),
+    ("Risk",            1,  90, "center"),
 ]
 
 
@@ -1943,7 +1943,7 @@ def _loanbal_render(self):
                  font=F(10), fg=_TXT_MUTED, bg=_CARD_WHITE).pack(pady=60)
         return
 
-    _, inner, _ = _make_scrollable(self._loanbal_body, _CARD_WHITE)
+    _, inner, canvas_scroll = _make_scrollable(self._loanbal_body, _CARD_WHITE)
     pad = tk.Frame(inner, bg=_CARD_WHITE)
     pad.pack(fill="both", expand=True, padx=20, pady=14)
 
@@ -1952,21 +1952,22 @@ def _loanbal_render(self):
                           highlightbackground=_NAVY_MID, highlightthickness=1)
     grand_card.pack(fill="x", pady=(0, 14))
     gc_inner = tk.Frame(grand_card, bg=_NAVY_DEEP)
-    gc_inner.pack(fill="x", padx=22, pady=14)
+    gc_inner.pack(fill="both", padx=22, pady=16)
 
+    # Left side — main balance figure
     left_gc = tk.Frame(gc_inner, bg=_NAVY_DEEP)
     left_gc.pack(side="left", fill="y")
 
-    if active_sectors:
-        tk.Label(left_gc,
-                 text=f"💰  FILTERED LOAN BALANCE  ·  {' · '.join(active_sectors)}",
-                 font=F(9, "bold"), fg=_LIME_MID, bg=_NAVY_DEEP).pack(anchor="w")
-    else:
-        tk.Label(left_gc, text="💰  GRAND TOTAL LOAN BALANCE",
-                 font=F(9, "bold"), fg=_TXT_MUTED, bg=_NAVY_DEEP).pack(anchor="w")
+    lbl_icon_text = (
+        f"💰  FILTERED LOAN BALANCE  ·  {' · '.join(active_sectors)}"
+        if active_sectors else "💰  GRAND TOTAL LOAN BALANCE"
+    )
+    lbl_icon_fg = _LIME_MID if active_sectors else _TXT_MUTED
+    tk.Label(left_gc, text=lbl_icon_text,
+             font=F(9, "bold"), fg=lbl_icon_fg, bg=_NAVY_DEEP).pack(anchor="w")
 
     tk.Label(left_gc, text=f"₱{grand_lb:,.2f}",
-             font=F(20, "bold"), fg=_LIME_MID, bg=_NAVY_DEEP).pack(anchor="w")
+             font=F(22, "bold"), fg=_LIME_MID, bg=_NAVY_DEEP).pack(anchor="w")
 
     sector_count = len(sector_map)
     tk.Label(left_gc,
@@ -1978,17 +1979,21 @@ def _loanbal_render(self):
                  text="⚠  Export button exports the full unfiltered dataset",
                  font=F(7), fg=_ACCENT_GOLD, bg=_NAVY_DEEP).pack(anchor="w", pady=(4, 0))
 
+    # Right side — secondary stats (Total Net Income + Avg Loan per Client)
     right_gc = tk.Frame(gc_inner, bg=_NAVY_DEEP)
-    right_gc.pack(side="right", fill="y")
+    right_gc.pack(side="right", anchor="e", pady=(4, 0))
     total_net = sum(r.get("net_income") or 0 for r in general)
-    for lbl, val in [
+    avg_loan  = (grand_lb / len(general)) if general else 0.0
+    for lbl_text, val_text in [
         ("Total Net Income",    f"₱{total_net:,.2f}"),
-        ("Avg Loan per Client", f"₱{grand_lb/len(general):,.2f}" if general else "—"),
+        ("Avg Loan per Client", f"₱{avg_loan:,.2f}"),
     ]:
-        c = tk.Frame(right_gc, bg=_NAVY_DEEP)
-        c.pack(anchor="e", pady=2)
-        tk.Label(c, text=lbl, font=F(8), fg=_TXT_MUTED, bg=_NAVY_DEEP).pack(side="left", padx=(0,8))
-        tk.Label(c, text=val, font=F(10, "bold"), fg=_WHITE, bg=_NAVY_DEEP).pack(side="left")
+        row_f = tk.Frame(right_gc, bg=_NAVY_DEEP)
+        row_f.pack(anchor="e", pady=3)
+        tk.Label(row_f, text=lbl_text, font=F(8),
+                 fg=_TXT_MUTED, bg=_NAVY_DEEP).pack(side="left", padx=(0, 12))
+        tk.Label(row_f, text=val_text, font=F(11, "bold"),
+                 fg=_WHITE, bg=_NAVY_DEEP).pack(side="left")
 
     # ── Section heading ───────────────────────────────────────────────
     tk.Label(pad, text="Sector Loan Balance Breakdown",
@@ -2038,37 +2043,45 @@ def _loanbal_render(self):
         name_fg = _LIME_MID if (active_sectors and sector in active_sectors) else col_color
         val_fg  = _WHITE    if (active_sectors and sector in active_sectors) else _TXT_NAVY
 
+        # Col 0: Sector name — left aligned, sector colour, bold
         tk.Label(sector_tf, text=f"  {icon}  {sector}", font=F(9, "bold"),
-                 fg=name_fg, bg=row_bg, anchor="w", padx=6, pady=10
+                 fg=name_fg, bg=row_bg, anchor="w", padx=8, pady=11
                  ).grid(row=grid_row, column=0, sticky="nsew")
+        # Col 1: # Clients — centered
         tk.Label(sector_tf, text=str(n), font=F(9),
-                 fg=val_fg, bg=row_bg, anchor="center", padx=6, pady=10
+                 fg=val_fg, bg=row_bg, anchor="center", padx=6, pady=11
                  ).grid(row=grid_row, column=1, sticky="nsew")
+        # Col 2: Total Loan Balance — bold, right-ish
         tk.Label(sector_tf, text=f"₱{s_lb:,.2f}", font=F(9, "bold"),
-                 fg=val_fg, bg=row_bg, anchor="center", padx=10, pady=10
+                 fg=val_fg, bg=row_bg, anchor="e", padx=14, pady=11
                  ).grid(row=grid_row, column=2, sticky="nsew")
-
+        # Col 3: % of Total with mini bar
         pct_cell = tk.Frame(sector_tf, bg=row_bg)
-        pct_cell.grid(row=grid_row, column=3, sticky="nsew", padx=6, pady=6)
+        pct_cell.grid(row=grid_row, column=3, sticky="nsew", padx=8, pady=6)
         tk.Label(pct_cell, text=f"{pct:.1f}%", font=F(9, "bold"),
-                 fg=name_fg, bg=row_bg, anchor="center").pack(anchor="w", pady=(2, 1))
-        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=6)
+                 fg=name_fg, bg=row_bg, anchor="w").pack(anchor="w", pady=(3, 1))
+        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=5)
         bar_outer.pack(fill="x", pady=(0, 2))
         bar_outer.pack_propagate(False)
-        fill_w = max(3, int(90 * pct / 100))
-        tk.Frame(bar_outer, bg=col_color, height=6, width=fill_w).place(x=0, y=0, relheight=1)
-
+        fill_w = max(3, int(100 * pct / 100))
+        tk.Frame(bar_outer, bg=col_color, height=5, width=fill_w).place(x=0, y=0, relheight=1)
+        # Col 4: Avg Loan per Client
         tk.Label(sector_tf, text=f"₱{avg_lb:,.2f}", font=F(9),
-                 fg=val_fg, bg=row_bg, anchor="center", padx=10, pady=10
+                 fg=val_fg, bg=row_bg, anchor="e", padx=14, pady=11
                  ).grid(row=grid_row, column=4, sticky="nsew")
+        # Col 5: Avg Net Income
         tk.Label(sector_tf, text=f"₱{avg_net:,.2f}" if avg_net else "—",
-                 font=F(9), fg=val_fg, bg=row_bg, anchor="center", padx=10, pady=10
+                 font=F(9), fg=val_fg, bg=row_bg, anchor="e", padx=14, pady=11
                  ).grid(row=grid_row, column=5, sticky="nsew")
-
+        # Col 6: Risk badge — outlined pill centred in cell
         badge_cell = tk.Frame(sector_tf, bg=row_bg)
-        badge_cell.grid(row=grid_row, column=6, sticky="nsew", pady=8, padx=8)
+        badge_cell.grid(row=grid_row, column=6, sticky="nsew", pady=9, padx=10)
         tk.Label(badge_cell, text=risk_label, font=F(8, "bold"),
-                 fg=risk_fg, bg=risk_bg, padx=10, pady=4).pack(anchor="center")
+                 fg=risk_fg, bg=risk_bg,
+                 padx=12, pady=5,
+                 relief="flat",
+                 highlightbackground=risk_fg, highlightthickness=1
+                 ).pack(anchor="center")
 
         grid_row += 1
         div = tk.Frame(sector_tf, bg=_BORDER_LIGHT, height=1)
@@ -2173,43 +2186,45 @@ def _loanbal_render(self):
         stripe.lower()
 
         tk.Label(client_tf, text=f"  {rec['client'][:30]}", font=F(9, "bold"),
-                 fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=6, pady=9
+                 fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=10
                  ).grid(row=grid_row, column=0, sticky="nsew")
         tk.Label(client_tf, text=rec.get("client_id", "—"), font=F(8),
-                 fg=_TXT_SOFT, bg=row_bg, anchor="center", padx=4, pady=9
+                 fg=_TXT_SOFT, bg=row_bg, anchor="center", padx=4, pady=10
                  ).grid(row=grid_row, column=1, sticky="nsew")
         tk.Label(client_tf,
                  text=f"{_SECTOR_ICON.get(sec,'')} {sec[:22]}",
-                 font=F(8), fg=col_clr, bg=row_bg, anchor="center", padx=6, pady=9
+                 font=F(8), fg=col_clr, bg=row_bg, anchor="center", padx=6, pady=10
                  ).grid(row=grid_row, column=2, sticky="nsew")
         tk.Label(client_tf, text=f"₱{pl:,.2f}" if pl else "—", font=F(9),
-                 fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=10, pady=9
+                 fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=14, pady=10
                  ).grid(row=grid_row, column=3, sticky="nsew")
         tk.Label(client_tf, text=f"₱{lb:,.2f}", font=F(9, "bold"),
-                 fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=10, pady=9
+                 fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=14, pady=10
                  ).grid(row=grid_row, column=4, sticky="nsew")
 
         pct_cell = tk.Frame(client_tf, bg=row_bg)
-        pct_cell.grid(row=grid_row, column=5, sticky="nsew", padx=6, pady=5)
+        pct_cell.grid(row=grid_row, column=5, sticky="nsew", padx=8, pady=5)
         tk.Label(pct_cell, text=f"{pct:.2f}%", font=F(8, "bold"),
-                 fg=col_clr, bg=row_bg, anchor="center").pack(anchor="w", pady=(2, 1))
-        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=5)
+                 fg=col_clr, bg=row_bg, anchor="w").pack(anchor="w", pady=(3, 1))
+        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=4)
         bar_outer.pack(fill="x", pady=(0, 2))
         bar_outer.pack_propagate(False)
         bw = max(2, int(80 * pct / 100))
-        tk.Frame(bar_outer, bg=col_clr, height=5, width=bw).place(x=0, y=0, relheight=1)
+        tk.Frame(bar_outer, bg=col_clr, height=4, width=bw).place(x=0, y=0, relheight=1)
 
         tk.Label(client_tf, text=f"₱{net:,.2f}" if net else "—",
-                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=10, pady=9
+                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=14, pady=10
                  ).grid(row=grid_row, column=6, sticky="nsew")
         tk.Label(client_tf, text=f"₱{amrt:,.2f}" if amrt else "—",
-                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=10, pady=9
+                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=14, pady=10
                  ).grid(row=grid_row, column=7, sticky="nsew")
 
         badge_cell = tk.Frame(client_tf, bg=row_bg)
-        badge_cell.grid(row=grid_row, column=8, sticky="nsew", pady=7, padx=8)
-        tk.Label(badge_cell, text=rl, font=F(7, "bold"),
-                 fg=risk_fg, bg=risk_bg, padx=8, pady=4).pack(anchor="center")
+        badge_cell.grid(row=grid_row, column=8, sticky="nsew", pady=9, padx=10)
+        tk.Label(badge_cell, text=rl, font=F(8, "bold"),
+                 fg=risk_fg, bg=risk_bg, padx=10, pady=4,
+                 highlightbackground=risk_fg, highlightthickness=1
+                 ).pack(anchor="center")
 
         grid_row += 1
         div = tk.Frame(client_tf, bg=_BORDER_LIGHT, height=1)

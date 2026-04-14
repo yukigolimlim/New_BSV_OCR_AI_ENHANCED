@@ -183,7 +183,8 @@ SECTOR_EXPENSE_RISK: dict[str, dict[str, tuple[str, str]]] = {
     },
     SECTOR_WHOLESALE: {
         "Freight / Logistics":     ("HIGH",     "Wholesale margins are thin; rising logistics and fuel costs reduce competitiveness."),
-        "Fuel / Diesel":           ("MODERATE", "Delivery vehicles and generator backup are diesel-dependent."),
+        "Fuel / Diesel":           ("HIGH",     "Delivery vehicles and generator backup are heavily fuel-dependent; price spikes directly raise operating costs."),
+        "Oil & Lubricants":        ("HIGH",     "Vehicle and equipment maintenance requires constant oil supply; cost increases compound with fuel exposure."),
         "Utilities (Power)":       ("MODERATE", "Warehousing and refrigerated storage are power-intensive."),
         "Ice / Cold Storage":      ("MODERATE", "Perishable goods wholesalers face cold-chain cost pressure."),
         "Interest / Bank Charges": ("MODERATE", "Higher interest rate environment raises working capital financing cost."),
@@ -368,6 +369,7 @@ _COL_PATTERNS = {
     "total_net_income":  re.compile(r'total\s+net\s+income',                  re.I),
     "amort_history":     re.compile(r'total\s+amortization\s+history',        re.I),
     "current_amort":     re.compile(r'total\s+current\s+amortization',        re.I),
+    "principal_loan":    re.compile(r'principal\s*loan',                      re.I),
     "loan_balance":      re.compile(r'loan\s+balance',                        re.I),
 }
 
@@ -412,9 +414,10 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
     total_biz     = _parse_numeric(get("total_biz_exp"))
     total_hhld    = _parse_numeric(get("total_hhld_exp"))
     total_net     = _parse_numeric(get("total_net_income"))
-    amort_hist    = _parse_numeric(get("amort_history"))
-    current_amort = _parse_numeric(get("current_amort"))
-    loan_balance  = _parse_numeric(get("loan_balance"))
+    amort_hist     = _parse_numeric(get("amort_history"))
+    current_amort  = _parse_numeric(get("current_amort"))
+    loan_balance   = _parse_numeric(get("loan_balance"))
+    principal_loan = _parse_numeric(get("principal_loan"))
 
     residence = str(get("residence") or "").strip()
     office    = str(get("office")    or "").strip()
@@ -473,6 +476,20 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
     expenses_out.sort(key=lambda x: (_RISK_ORDER.get(x["risk"], 9), -x["total"]))
     score, score_label, score_fg, score_bg = _compute_risk_score(expenses_out)
 
+    # ── Sector-level override: these sectors are always HIGH risk ─────────────
+    _HIGH_RISK_SECTORS = {
+        SECTOR_AGRICULTURE,   # Agriculture (Fishing & Forestry)
+        SECTOR_WHOLESALE,     # Wholesale / Retail Trade
+        SECTOR_CONSUMER,      # Consumer Loan
+        SECTOR_REMITTANCE,    # Remittance
+        SECTOR_TRANSPORT,     # Transport
+    }
+    if sector in _HIGH_RISK_SECTORS:
+        score       = max(score, 1.8)   # ensure score sits in the HIGH band
+        score_label = "HIGH"
+        score_fg    = "#E53E3E"
+        score_bg    = "#FFF5F5"
+
     return {
         "client_id":      client_id,
         "pn":             pn,
@@ -490,6 +507,7 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
         "net_income":     total_net,
         "amort_history":  amort_hist,
         "current_amort":  current_amort,
+        "principal_loan": principal_loan,
         "loan_balance":   loan_balance,
         "expenses":       expenses_out,
         "score":          score,

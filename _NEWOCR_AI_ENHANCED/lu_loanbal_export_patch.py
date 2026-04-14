@@ -133,6 +133,39 @@ _CHART_SECTORS = [
 _MPL_BG   = "#FAFBFD"
 _MPL_NAVY = "#1A3A6B"
 
+# ── Pagination & filter state constants ───────────────────────────────────────
+_LOANBAL_PAGE_SIZE = 15
+_LOANBAL_SENTINEL  = object()
+
+# ── Column specs (must match lu_ui.py) ────────────────────────────────────────
+_SECTOR_COLS = [
+    ("Sector",              3, 200, "w"),
+    ("# Clients",           1,  80, "center"),
+    ("Total Loan Balance",  2, 170, "center"),
+    ("% of Total",          2, 130, "center"),
+    ("Avg Loan per Client", 2, 160, "center"),
+    ("Avg Net Income",      2, 150, "center"),
+    ("Risk Profile",        1, 100, "center"),
+]
+
+_CLIENT_COLS = [
+    ("Client",          3, 200, "w"),
+    ("ID",              1,  60, "center"),
+    ("Sector",          2, 160, "center"),
+    ("Principal Loan",  2, 130, "center"),
+    ("Loan Balance",    2, 130, "center"),
+    ("% of Total",      1, 100, "center"),
+    ("Net Income",      2, 120, "center"),
+    ("Current Amort",   2, 130, "center"),
+    ("Risk",            1,  90, "center"),
+]
+
+# ── Import helpers from lu_ui ─────────────────────────────────────────────────
+from lu_ui import (
+    _lu_get_filtered_all_data, _lu_get_active_sectors,
+    _make_table_frame, _table_header, _table_divider,
+)
+
 
 def F(size, weight="normal"):
     return ("Segoe UI", size, weight)
@@ -141,7 +174,7 @@ def FF(size, weight="normal"):
     return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
 
 
-# ── Scrollable helper (self-contained copy so we don't import from lu_ui) ────
+# ── Scrollable helper ────────────────────────────────────────────────────────
 
 def _bind_mousewheel(canvas: tk.Canvas):
     def _on_enter(e):
@@ -176,34 +209,31 @@ def _make_scrollable(parent, bg=None):
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PATCHED _build_loanbal_panel
-#  Identical to the original except we add the Export button in the header.
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_loanbal_panel_patched(self, parent):
-    # ── Header bar ────────────────────────────────────────────────────────────
-    hdr = tk.Frame(parent, bg=_NAVY_MID, height=38)
+    hdr = tk.Frame(parent, bg=_NAVY_MID, height=46)
     hdr.pack(fill="x")
     hdr.pack_propagate(False)
 
-    tk.Label(
+    self._loanbal_hdr_lbl = tk.Label(
         hdr,
         text="📊  Sector vs Total Loan Balance  —  Exposure Analysis",
         font=F(10, "bold"), fg=_WHITE, bg=_NAVY_MID,
-    ).pack(side="left", padx=20, pady=8)
+    )
+    self._loanbal_hdr_lbl.pack(side="left", padx=20, pady=12)
 
-    # ── Export button ─────────────────────────────────────────────────────────
     self._loanbal_export_btn = ctk.CTkButton(
         hdr,
         text="💾  Export",
         command=lambda: _loanbal_show_export_menu(self),
-        width=100, height=26, corner_radius=4,
+        width=110, height=30, corner_radius=6,
         fg_color=_LIME_DARK, hover_color=_LIME_MID,
-        text_color=_TXT_ON_LIME, font=FF(8, "bold"),
+        text_color=_TXT_ON_LIME, font=FF(9, "bold"),
         state="disabled",
     )
-    self._loanbal_export_btn.pack(side="right", padx=12, pady=6)
+    self._loanbal_export_btn.pack(side="right", padx=16, pady=8)
 
-    # ── Body ──────────────────────────────────────────────────────────────────
     self._loanbal_body = tk.Frame(parent, bg=_CARD_WHITE)
     self._loanbal_body.pack(fill="both", expand=True)
     tk.Label(
@@ -214,8 +244,245 @@ def _build_loanbal_panel_patched(self, parent):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CLIENT TABLE HELPER — paginated + risk-filtered + name-searched
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _loanbal_render_client_table(pad, clients_sorted, grand_lb,
+                                 page, risk_filter, name_search, canvas,
+                                 on_page_change, on_risk_change, on_name_search):
+    # ── Heading row: title left, risk pills right ─────────────────────────────
+    hdr_row = tk.Frame(pad, bg=_CARD_WHITE)
+    hdr_row.pack(fill="x", pady=(14, 4))
+
+    tk.Label(hdr_row, text="Individual Client Loan Balance",
+             font=F(11, "bold"), fg=_TXT_NAVY, bg=_CARD_WHITE
+             ).pack(side="left", anchor="w")
+
+    pill_frame = tk.Frame(hdr_row, bg=_CARD_WHITE)
+    pill_frame.pack(side="right", anchor="e", padx=(0, 4))
+
+    PILLS = [
+        (None,       "All",      _NAVY_MID,       _WHITE),
+        ("HIGH",     "🔴 High",  _ACCENT_RED,     _WHITE),
+        ("MODERATE", "🟡 Mod",   _ACCENT_GOLD,    _WHITE),
+        ("LOW",      "🟢 Low",   _ACCENT_SUCCESS, _WHITE),
+    ]
+    for rv, lbl_text, act_bg, act_fg in PILLS:
+        is_active = (rv == risk_filter)
+        pill = tk.Label(
+            pill_frame, text=lbl_text,
+            font=F(8, "bold" if is_active else "normal"),
+            fg=act_fg if is_active else _TXT_NAVY,
+            bg=act_bg if is_active else _BORDER_LIGHT,
+            padx=10, pady=4, relief="flat", cursor="hand2",
+        )
+        pill.pack(side="left", padx=(0, 4))
+        pill.bind("<Button-1>", lambda e, r=rv: on_risk_change(r))
+
+    # ── Name search bar – triggers only on Enter ──────────────────────────────
+    search_row = tk.Frame(pad, bg=_CARD_WHITE)
+    search_row.pack(fill="x", pady=(0, 6))
+
+    tk.Label(search_row, text="🔍", font=F(10),
+             fg=_NAVY_PALE, bg=_CARD_WHITE).pack(side="left", padx=(0, 4))
+
+    search_var = tk.StringVar(value=name_search)
+    entry_widget = ctk.CTkEntry(
+        search_row, textvariable=search_var,
+        placeholder_text="Search client name or ID…  then press Enter",
+        width=300, height=26, corner_radius=4,
+        fg_color=_WHITE, text_color=_TXT_NAVY,
+        border_color=_BORDER_MID, font=FF(9),
+    )
+    entry_widget.pack(side="left")
+    entry_widget.bind("<Return>",
+        lambda e: on_name_search(search_var.get().strip().lower()))
+
+    clr = tk.Label(search_row, text=" ✕ ", font=F(8, "bold"),
+                   fg=_ACCENT_RED, bg=_CARD_WHITE, cursor="hand2")
+    clr.pack(side="left", padx=(2, 0))
+    clr.bind("<Button-1>", lambda e: (search_var.set(""), on_name_search("")))
+
+    # ── Apply both filters ────────────────────────────────────────────────────
+    filtered = clients_sorted
+    if risk_filter:
+        filtered = [r for r in filtered
+                    if r.get("score_label", "N/A") == risk_filter]
+    if name_search:
+        filtered = [r for r in filtered
+                    if name_search in r.get("client", "").lower()
+                    or name_search in str(r.get("client_id", "")).lower()]
+
+    total_clients = len(filtered)
+    total_pages   = max(1, (total_clients + _LOANBAL_PAGE_SIZE - 1)
+                           // _LOANBAL_PAGE_SIZE)
+    page          = max(1, min(page, total_pages))
+    start         = (page - 1) * _LOANBAL_PAGE_SIZE
+    end           = start + _LOANBAL_PAGE_SIZE
+    page_clients  = filtered[start:end]
+
+    # ── Filter description ────────────────────────────────────────────────────
+    parts = []
+    if risk_filter:
+        parts.append(f"{risk_filter} risk")
+    if name_search:
+        parts.append(f'"{name_search}"')
+    filter_note = ("  ·  filter: " + ", ".join(parts)) if parts else ""
+    tk.Label(pad,
+             text=f"{total_clients} client{'s' if total_clients != 1 else ''}"
+                  f"{filter_note}  —  page {page} of {total_pages}",
+             font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE
+             ).pack(anchor="e", padx=4, pady=(0, 2))
+
+    # ── Table header ──────────────────────────────────────────────────────────
+    cl_tf = _make_table_frame(pad, _CLIENT_COLS)
+    _table_header(cl_tf, _CLIENT_COLS)
+    _table_divider(cl_tf, 1, len(_CLIENT_COLS), _NAVY_MID)
+
+    grid_row = 2
+    for idx, rec in enumerate(page_clients):
+        lb      = rec.get("loan_balance") or 0
+        pl      = rec.get("principal_loan") or 0
+        net     = rec.get("net_income") or 0
+        amrt    = rec.get("current_amort") or 0
+        pct     = (lb / grand_lb * 100) if grand_lb > 0 else 0.0
+        rl      = rec.get("score_label", "N/A")
+        sec     = rec.get("sector", "—")
+        row_bg  = _CARD_WHITE if idx % 2 == 0 else _OFF_WHITE
+        col_clr = _SECTOR_COLORS.get(sec, _NAVY_MID)
+        risk_fg = _RISK_COLOR.get(rl, _TXT_SOFT)
+        risk_bg = _RISK_BADGE_BG.get(rl, _OFF_WHITE)
+
+        stripe = tk.Frame(cl_tf, bg=row_bg)
+        stripe.grid(row=grid_row, column=0,
+                    columnspan=len(_CLIENT_COLS), sticky="nsew")
+        stripe.lower()
+
+        # Column 0: Client name (left-aligned)
+        tk.Label(cl_tf, text=f"  {rec['client'][:30]}", font=F(9, "bold"),
+                 fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=10
+                 ).grid(row=grid_row, column=0, sticky="nsew")
+        # Column 1: ID (center)
+        tk.Label(cl_tf, text=rec.get("client_id", "—"), font=F(8),
+                 fg=_TXT_SOFT, bg=row_bg, anchor="center", padx=4, pady=10
+                 ).grid(row=grid_row, column=1, sticky="nsew")
+        # Column 2: Sector (center)
+        tk.Label(cl_tf,
+                 text=f"{_SECTOR_ICON.get(sec, '')} {sec[:22]}",
+                 font=F(8), fg=col_clr, bg=row_bg, anchor="center", padx=6, pady=10
+                 ).grid(row=grid_row, column=2, sticky="nsew")
+        # Column 3: Principal Loan (center)
+        tk.Label(cl_tf, text=f"₱{pl:,.2f}" if pl else "—", font=F(9),
+                 fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=14, pady=10
+                 ).grid(row=grid_row, column=3, sticky="nsew")
+        # Column 4: Loan Balance (center)
+        tk.Label(cl_tf, text=f"₱{lb:,.2f}", font=F(9, "bold"),
+                 fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=14, pady=10
+                 ).grid(row=grid_row, column=4, sticky="nsew")
+
+        # Column 5: % of Total (center with bar)
+        pct_cell = tk.Frame(cl_tf, bg=row_bg)
+        pct_cell.grid(row=grid_row, column=5, sticky="nsew", padx=8, pady=5)
+        tk.Label(pct_cell, text=f"{pct:.2f}%", font=F(8, "bold"),
+                 fg=col_clr, bg=row_bg, anchor="center").pack(anchor="center", pady=(3, 1))
+        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=4)
+        bar_outer.pack(fill="x", pady=(0, 2))
+        bar_outer.pack_propagate(False)
+        bw = max(2, int(80 * pct / 100))
+        tk.Frame(bar_outer, bg=col_clr, height=4, width=bw).place(x=0, y=0, relheight=1)
+
+        # Column 6: Net Income (center)
+        tk.Label(cl_tf, text=f"₱{net:,.2f}" if net else "—",
+                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=14, pady=10
+                 ).grid(row=grid_row, column=6, sticky="nsew")
+        # Column 7: Current Amort (center)
+        tk.Label(cl_tf, text=f"₱{amrt:,.2f}" if amrt else "—",
+                 font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="center", padx=14, pady=10
+                 ).grid(row=grid_row, column=7, sticky="nsew")
+
+        # Column 8: Risk badge (center)
+        badge_cell = tk.Frame(cl_tf, bg=row_bg)
+        badge_cell.grid(row=grid_row, column=8, sticky="nsew", pady=9, padx=10)
+        tk.Label(badge_cell, text=rl, font=F(8, "bold"),
+                 fg=risk_fg, bg=risk_bg, padx=10, pady=4,
+                 highlightbackground=risk_fg, highlightthickness=1
+                 ).pack(anchor="center")
+
+        grid_row += 1
+        div = tk.Frame(cl_tf, bg=_BORDER_LIGHT, height=1)
+        div.grid(row=grid_row, column=0, columnspan=len(_CLIENT_COLS), sticky="ew")
+        grid_row += 1
+
+    if not page_clients:
+        msg = ("No clients match the current filter."
+               if (risk_filter or name_search) else "No clients to display.")
+        tk.Label(pad, text=msg, font=F(9), fg=_TXT_MUTED,
+                 bg=_CARD_WHITE).pack(pady=20)
+
+    # ── Pagination bar ────────────────────────────────────────────────────────
+    if total_pages > 1:
+        pg_bar = tk.Frame(pad, bg=_CARD_WHITE)
+        pg_bar.pack(pady=(10, 4))
+
+        def _page_btn(parent, text, cmd, enabled):
+            cfg = dict(text=text, font=F(8, "bold"), padx=10, pady=4,
+                       relief="flat", cursor="hand2" if enabled else "arrow")
+            if enabled:
+                lbl = tk.Label(parent, fg=_WHITE, bg=_NAVY_MID, **cfg)
+                lbl.bind("<Button-1>", lambda e: cmd())
+                lbl.bind("<Enter>",
+                         lambda e, l=lbl: l.config(bg=_LIME_DARK, fg=_TXT_ON_LIME))
+                lbl.bind("<Leave>",
+                         lambda e, l=lbl: l.config(bg=_NAVY_MID, fg=_WHITE))
+            else:
+                lbl = tk.Label(parent, fg=_TXT_MUTED, bg=_BORDER_LIGHT, **cfg)
+            lbl.pack(side="left", padx=2)
+
+        _page_btn(pg_bar, "◀◀ First", lambda: on_page_change(1),           page > 1)
+        _page_btn(pg_bar, "◀ Prev",   lambda: on_page_change(page - 1),    page > 1)
+
+        half    = 3
+        p_start = max(1, page - half)
+        p_end   = min(total_pages, page + half)
+        if p_start > 1:
+            tk.Label(pg_bar, text="…", font=F(8), fg=_TXT_MUTED,
+                     bg=_CARD_WHITE, padx=4).pack(side="left")
+        for pn in range(p_start, p_end + 1):
+            is_cur = (pn == page)
+            num_lbl = tk.Label(
+                pg_bar, text=str(pn),
+                font=F(8, "bold" if is_cur else "normal"),
+                fg=_TXT_ON_LIME if is_cur else _TXT_NAVY,
+                bg=_LIME_DARK   if is_cur else _BORDER_LIGHT,
+                padx=9, pady=4, relief="flat",
+                cursor="arrow" if is_cur else "hand2",
+            )
+            num_lbl.pack(side="left", padx=2)
+            if not is_cur:
+                num_lbl.bind("<Button-1>", lambda e, p=pn: on_page_change(p))
+                num_lbl.bind("<Enter>",
+                             lambda e, l=num_lbl: l.config(bg=_NAVY_GHOST))
+                num_lbl.bind("<Leave>",
+                             lambda e, l=num_lbl: l.config(bg=_BORDER_LIGHT))
+        if p_end < total_pages:
+            tk.Label(pg_bar, text="…", font=F(8), fg=_TXT_MUTED,
+                     bg=_CARD_WHITE, padx=4).pack(side="left")
+
+        _page_btn(pg_bar, "Next ▶",  lambda: on_page_change(page + 1),     page < total_pages)
+        _page_btn(pg_bar, "Last ▶▶", lambda: on_page_change(total_pages),   page < total_pages)
+
+        end_display = min(end, total_clients)
+        tk.Label(pg_bar,
+                 text=f"  rows {start + 1}–{end_display} of {total_clients}",
+                 font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE
+                 ).pack(side="left", padx=(8, 0))
+
+        # ── Scroll to top unconditionally ─────────────────────────────────────
+        canvas.after(50, lambda: canvas.yview_moveto(0))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  PATCHED _loanbal_render
-#  Identical to original plus it enables the Export button when data is present.
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _loanbal_render_patched(self):
@@ -223,26 +490,43 @@ def _loanbal_render_patched(self):
         w.destroy()
     plt.close("all")
 
-    all_data   = self._lu_all_data
+    all_data   = _lu_get_filtered_all_data(self)
     general    = all_data.get("general", [])
     sector_map = all_data.get("sector_map", {})
     totals     = all_data.get("totals", {})
     grand_lb   = totals.get("loan_balance", 0) or 0
 
-    # Enable / disable the export button based on data availability
+    active_sectors = _lu_get_active_sectors(self)
+    prev_sectors   = getattr(self, "_loanbal_prev_sectors", _LOANBAL_SENTINEL)
+    if prev_sectors is _LOANBAL_SENTINEL or prev_sectors != active_sectors:
+        self._loanbal_page        = 1
+        self._loanbal_risk        = None
+        self._loanbal_name_search = ""
+    self._loanbal_prev_sectors = active_sectors
+
+    if not hasattr(self, "_loanbal_page"):        self._loanbal_page        = 1
+    if not hasattr(self, "_loanbal_risk"):        self._loanbal_risk        = None
+    if not hasattr(self, "_loanbal_name_search"): self._loanbal_name_search = ""
+
+    if active_sectors:
+        sector_text = " · ".join(active_sectors)
+        self._loanbal_hdr_lbl.config(
+            text=f"📊  Loan Balance — Filtered: {sector_text}", fg=_LIME_MID)
+    else:
+        self._loanbal_hdr_lbl.config(
+            text="📊  Sector vs Total Loan Balance  —  Exposure Analysis",
+            fg=_WHITE)
+
     btn = getattr(self, "_loanbal_export_btn", None)
     if btn:
         btn.configure(state="normal" if general else "disabled")
 
     if not general:
-        tk.Label(
-            self._loanbal_body,
-            text="No data available.",
-            font=F(10), fg=_TXT_MUTED, bg=_CARD_WHITE,
-        ).pack(pady=60)
+        tk.Label(self._loanbal_body, text="No data available for this filter.",
+                 font=F(10), fg=_TXT_MUTED, bg=_CARD_WHITE).pack(pady=60)
         return
 
-    _, inner, _ = _make_scrollable(self._loanbal_body, _CARD_WHITE)
+    _, inner, canvas_scroll = _make_scrollable(self._loanbal_body, _CARD_WHITE)
     pad = tk.Frame(inner, bg=_CARD_WHITE)
     pad.pack(fill="both", expand=True, padx=24, pady=16)
 
@@ -251,34 +535,55 @@ def _loanbal_render_patched(self):
                           highlightbackground=_NAVY_MID, highlightthickness=1)
     grand_card.pack(fill="x", pady=(0, 16))
     gc_inner = tk.Frame(grand_card, bg=_NAVY_DEEP)
-    gc_inner.pack(fill="x", padx=24, pady=16)
-    tk.Label(gc_inner, text="💰  GRAND TOTAL LOAN BALANCE",
-             font=F(10, "bold"), fg=_TXT_MUTED, bg=_NAVY_DEEP).pack(anchor="w")
-    tk.Label(gc_inner, text=f"₱{grand_lb:,.2f}",
+    gc_inner.pack(fill="both", padx=22, pady=16)
+
+    # Left — main balance figure
+    left_gc = tk.Frame(gc_inner, bg=_NAVY_DEEP)
+    left_gc.pack(side="left", fill="y")
+
+    lbl_icon_text = (
+        f"💰  FILTERED LOAN BALANCE  ·  {' · '.join(active_sectors)}"
+        if active_sectors else "💰  GRAND TOTAL LOAN BALANCE"
+    )
+    lbl_icon_fg = _LIME_MID if active_sectors else _TXT_MUTED
+    tk.Label(left_gc, text=lbl_icon_text,
+             font=F(9, "bold"), fg=lbl_icon_fg, bg=_NAVY_DEEP).pack(anchor="w")
+
+    tk.Label(left_gc, text=f"₱{grand_lb:,.2f}",
              font=F(22, "bold"), fg=_LIME_MID, bg=_NAVY_DEEP).pack(anchor="w")
-    tk.Label(gc_inner,
+
+    tk.Label(left_gc,
              text=f"{len(general)} clients  ·  {len(sector_map)} sectors detected",
              font=F(9), fg=_TXT_SOFT, bg=_NAVY_DEEP).pack(anchor="w")
+
+    if active_sectors:
+        tk.Label(left_gc, text="⚠  Export uses the full unfiltered dataset",
+                 font=F(7), fg=_ACCENT_GOLD, bg=_NAVY_DEEP).pack(anchor="w", pady=(4, 0))
+
+    # Right — secondary stats
+    right_gc = tk.Frame(gc_inner, bg=_NAVY_DEEP)
+    right_gc.pack(side="right", anchor="e", pady=(4, 0))
+    total_net = sum(r.get("net_income") or 0 for r in general)
+    avg_loan  = (grand_lb / len(general)) if general else 0.0
+    for lbl_text, val_text in [
+        ("Total Net Income",    f"₱{total_net:,.2f}"),
+        ("Avg Loan per Client", f"₱{avg_loan:,.2f}"),
+    ]:
+        row_f = tk.Frame(right_gc, bg=_NAVY_DEEP)
+        row_f.pack(anchor="e", pady=3)
+        tk.Label(row_f, text=lbl_text, font=F(8),
+                 fg=_TXT_MUTED, bg=_NAVY_DEEP).pack(side="left", padx=(0, 12))
+        tk.Label(row_f, text=val_text, font=F(11, "bold"),
+                 fg=_WHITE, bg=_NAVY_DEEP).pack(side="left")
 
     # ── Per-sector breakdown table ────────────────────────────────────────────
     tk.Label(pad, text="Sector Loan Balance Breakdown",
              font=F(11, "bold"), fg=_TXT_NAVY, bg=_CARD_WHITE).pack(anchor="w", pady=(0, 8))
 
-    tbl_hdr = tk.Frame(pad, bg=_NAVY_MID)
-    tbl_hdr.pack(fill="x")
-    for col, lbl, w in [
-        (0, "Sector",              200),
-        (1, "# Clients",            80),
-        (2, "Total Loan Balance",  180),
-        (3, "% of Total",          100),
-        (4, "Avg Loan per Client", 180),
-        (5, "Avg Net Income",      160),
-        (6, "Risk Profile",        100),
-    ]:
-        tbl_hdr.columnconfigure(col, minsize=w)
-        tk.Label(tbl_hdr, text=lbl, font=F(8, "bold"), fg=_WHITE,
-                 bg=_NAVY_MID, padx=10, pady=8, anchor="w"
-                 ).grid(row=0, column=col, sticky="ew")
+    from lu_ui import _make_table_frame as _mtf, _table_header as _th, _table_divider as _td
+    sector_tf = _mtf(pad, _SECTOR_COLS)
+    _th(sector_tf, _SECTOR_COLS)
+    _td(sector_tf, 1, len(_SECTOR_COLS), _NAVY_MID)
 
     all_sectors = [s for s in _CHART_SECTORS if s in sector_map]
     if SECTOR_OTHER in sector_map:
@@ -299,49 +604,66 @@ def _loanbal_render_patched(self):
 
     sector_rows_data.sort(key=lambda x: -x[2])
 
-    for idx, (sector, n, s_lb, pct, avg_lb, avg_net, risk_label) in enumerate(sector_rows_data):
+    grid_row = 2
+    for idx, (sector, n, s_lb, pct, avg_lb, avg_net, risk_label) in \
+            enumerate(sector_rows_data):
         row_bg    = _CARD_WHITE if idx % 2 == 0 else _OFF_WHITE
         col_color = _SECTOR_COLORS.get(sector, _NAVY_MID)
         icon      = _SECTOR_ICON.get(sector, "📋")
-        row       = tk.Frame(pad, bg=row_bg,
-                             highlightbackground=_BORDER_LIGHT, highlightthickness=1)
-        row.pack(fill="x")
-        for col in range(7):
-            row.columnconfigure(col, minsize=[200, 80, 180, 100, 180, 160, 100][col])
+        risk_fg   = _RISK_COLOR.get(risk_label, _TXT_SOFT)
+        risk_bg   = _RISK_BADGE_BG.get(risk_label, _OFF_WHITE)
 
-        tk.Label(row, text=f"{icon}  {sector}", font=F(9, "bold"),
-                 fg=col_color, bg=row_bg, padx=10, pady=10, anchor="w"
-                 ).grid(row=0, column=0, sticky="ew")
-        tk.Label(row, text=str(n),
-                 font=F(9), fg=_TXT_NAVY, bg=row_bg, padx=10, pady=10, anchor="center"
-                 ).grid(row=0, column=1, sticky="ew")
-        tk.Label(row, text=f"₱{s_lb:,.2f}",
-                 font=F(9, "bold"), fg=_TXT_NAVY, bg=row_bg, padx=10, pady=10, anchor="e"
-                 ).grid(row=0, column=2, sticky="ew")
+        if active_sectors and sector in active_sectors:
+            row_bg = "#0E2040"
+        name_fg = _LIME_MID if (active_sectors and sector in active_sectors) else col_color
+        val_fg  = _WHITE    if (active_sectors and sector in active_sectors) else _TXT_NAVY
 
-        pct_cell = tk.Frame(row, bg=row_bg)
-        pct_cell.grid(row=0, column=3, sticky="ew", padx=4, pady=4)
+        stripe = tk.Frame(sector_tf, bg=row_bg)
+        stripe.grid(row=grid_row, column=0, columnspan=len(_SECTOR_COLS), sticky="nsew")
+        stripe.lower()
+
+        # Col 0: Sector name — left-aligned
+        tk.Label(sector_tf, text=f"  {icon}  {sector}", font=F(9, "bold"),
+                 fg=name_fg, bg=row_bg, anchor="w", padx=8, pady=11
+                 ).grid(row=grid_row, column=0, sticky="nsew")
+        # Col 1: # Clients — center
+        tk.Label(sector_tf, text=str(n), font=F(9),
+                 fg=val_fg, bg=row_bg, anchor="center", padx=6, pady=11
+                 ).grid(row=grid_row, column=1, sticky="nsew")
+        # Col 2: Total Loan Balance — center
+        tk.Label(sector_tf, text=f"₱{s_lb:,.2f}", font=F(9, "bold"),
+                 fg=val_fg, bg=row_bg, anchor="center", padx=14, pady=11
+                 ).grid(row=grid_row, column=2, sticky="nsew")
+        # Col 3: % with mini bar — center
+        pct_cell = tk.Frame(sector_tf, bg=row_bg)
+        pct_cell.grid(row=grid_row, column=3, sticky="nsew", padx=8, pady=6)
         tk.Label(pct_cell, text=f"{pct:.1f}%", font=F(9, "bold"),
-                 fg=col_color, bg=row_bg).pack(anchor="w", padx=6)
-        bar_frame = tk.Frame(pct_cell, bg=row_bg)
-        bar_frame.pack(fill="x", padx=6)
-        bar_w = max(4, int(80 * pct / 100))
-        tk.Frame(bar_frame, bg=col_color, height=6, width=bar_w).pack(side="left")
-        tk.Frame(bar_frame, bg=_BORDER_LIGHT, height=6,
-                 width=80 - bar_w).pack(side="left")
+                 fg=name_fg, bg=row_bg, anchor="center").pack(anchor="center", pady=(3, 1))
+        bar_outer = tk.Frame(pct_cell, bg=_BORDER_LIGHT, height=5)
+        bar_outer.pack(fill="x", pady=(0, 2))
+        bar_outer.pack_propagate(False)
+        fill_w = max(3, int(100 * pct / 100))
+        tk.Frame(bar_outer, bg=col_color, height=5, width=fill_w).place(x=0, y=0, relheight=1)
+        # Col 4: Avg Loan per Client — center
+        tk.Label(sector_tf, text=f"₱{avg_lb:,.2f}", font=F(9),
+                 fg=val_fg, bg=row_bg, anchor="center", padx=14, pady=11
+                 ).grid(row=grid_row, column=4, sticky="nsew")
+        # Col 5: Avg Net Income — center
+        tk.Label(sector_tf, text=f"₱{avg_net:,.2f}" if avg_net else "—",
+                 font=F(9), fg=val_fg, bg=row_bg, anchor="center", padx=14, pady=11
+                 ).grid(row=grid_row, column=5, sticky="nsew")
+        # Col 6: Risk badge — center
+        badge_cell = tk.Frame(sector_tf, bg=row_bg)
+        badge_cell.grid(row=grid_row, column=6, sticky="nsew", pady=9, padx=10)
+        tk.Label(badge_cell, text=risk_label, font=F(8, "bold"),
+                 fg=risk_fg, bg=risk_bg, padx=12, pady=5,
+                 highlightbackground=risk_fg, highlightthickness=1
+                 ).pack(anchor="center")
 
-        tk.Label(row, text=f"₱{avg_lb:,.2f}",
-                 font=F(9), fg=_TXT_NAVY, bg=row_bg, padx=10, pady=10, anchor="e"
-                 ).grid(row=0, column=4, sticky="ew")
-        tk.Label(row, text=f"₱{avg_net:,.2f}" if avg_net else "—",
-                 font=F(9), fg=_TXT_NAVY, bg=row_bg, padx=10, pady=10, anchor="e"
-                 ).grid(row=0, column=5, sticky="ew")
-
-        risk_fg = _RISK_COLOR.get(risk_label, _TXT_SOFT)
-        risk_bg = _RISK_BADGE_BG.get(risk_label, _OFF_WHITE)
-        tk.Label(row, text=risk_label, font=F(8, "bold"),
-                 fg=risk_fg, bg=risk_bg, padx=8, pady=4
-                 ).grid(row=0, column=6, sticky="w", padx=8, pady=8)
+        grid_row += 1
+        div = tk.Frame(sector_tf, bg=_BORDER_LIGHT, height=1)
+        div.grid(row=grid_row, column=0, columnspan=len(_SECTOR_COLS), sticky="ew")
+        grid_row += 1
 
     # ── Pie + Bar chart ───────────────────────────────────────────────────────
     if _HAS_MPL and sector_rows_data:
@@ -361,9 +683,8 @@ def _loanbal_render_patched(self):
                 svals   = [x[1] for x in valid]
                 spcts   = [x[2] for x in valid]
                 scolors = [_SECTOR_COLORS.get(s, _MPL_NAVY) for s in snames]
-                labels  = [f"{_SECTOR_ICON.get(s, '')}\n{s}\n{p:.1f}%"
+                labels = [f"{s}\n{p:.1f}%"
                            for s, p in zip(snames, spcts)]
-
                 wedges, _ = ax_pie.pie(
                     svals, colors=scolors, startangle=90,
                     wedgeprops=dict(width=0.55, edgecolor=_MPL_BG, linewidth=2))
@@ -377,8 +698,7 @@ def _loanbal_render_patched(self):
                             fontsize=8, color="#6B7FA3")
                 ax_pie.set_title("Loan Balance Share", fontsize=10,
                                  color=_MPL_NAVY, fontweight="bold", pad=8)
-
-                short_names = [f"{_SECTOR_ICON.get(s, '')} {s[:22]}" for s in snames]
+                short_names = [s[:22] for s in snames]
                 bars = ax_bar.barh(short_names, svals, color=scolors,
                                    edgecolor=_MPL_BG, linewidth=1.2, height=0.6)
                 ax_bar.invert_yaxis()
@@ -396,7 +716,6 @@ def _loanbal_render_patched(self):
                                 fontsize=8, fontweight="bold", color=_MPL_NAVY)
                 ax_bar.set_title("Loan Balance by Sector", fontsize=10,
                                  color=_MPL_NAVY, fontweight="bold", pad=8)
-
             fig_pie.tight_layout(pad=1.5)
             c_pie = tk.Frame(pad, bg=_WHITE,
                              highlightbackground=_BORDER_MID, highlightthickness=1)
@@ -409,81 +728,29 @@ def _loanbal_render_patched(self):
             if fig_pie:
                 plt.close(fig_pie)
 
-    # ── Per-client table ──────────────────────────────────────────────────────
-    tk.Label(pad, text="Individual Client Loan Balance",
-             font=F(11, "bold"), fg=_TXT_NAVY, bg=_CARD_WHITE
-             ).pack(anchor="w", pady=(16, 8))
-
-    cl_hdr = tk.Frame(pad, bg=_NAVY_MID)
-    cl_hdr.pack(fill="x")
-    for col, lbl, w in [
-        (0, "Client",         180),
-        (1, "ID",              60),
-        (2, "Sector",         160),
-        (3, "Loan Balance",   130),
-        (4, "% of Total",      90),
-        (5, "Net Income",     120),
-        (6, "Current Amort",  130),
-        (7, "Risk",            80),
-    ]:
-        cl_hdr.columnconfigure(col, minsize=w)
-        tk.Label(cl_hdr, text=lbl, font=F(8, "bold"), fg=_WHITE,
-                 bg=_NAVY_MID, padx=8, pady=8, anchor="w"
-                 ).grid(row=0, column=col, sticky="ew")
-
+    # ── Per-client table — paginated + risk-filtered + name-searched ──────────
     clients_sorted = sorted(general, key=lambda r: -(r.get("loan_balance") or 0))
-    for idx, rec in enumerate(clients_sorted):
-        row_bg    = _CARD_WHITE if idx % 2 == 0 else _OFF_WHITE
-        lb        = rec.get("loan_balance") or 0
-        net       = rec.get("net_income") or 0
-        amrt      = rec.get("current_amort") or 0
-        pct       = (lb / grand_lb * 100) if grand_lb > 0 else 0.0
-        rl        = rec.get("score_label", "N/A")
-        sec       = rec.get("sector", "—")
-        col_color = _SECTOR_COLORS.get(sec, _NAVY_MID)
-        row       = tk.Frame(pad, bg=row_bg,
-                             highlightbackground=_BORDER_LIGHT, highlightthickness=1)
-        row.pack(fill="x")
-        for c in range(8):
-            row.columnconfigure(c, minsize=[180, 60, 160, 130, 90, 120, 130, 80][c])
 
-        tk.Label(row, text=rec["client"][:28], font=F(9, "bold"),
-                 fg=_TXT_NAVY, bg=row_bg, padx=8, pady=8, anchor="w"
-                 ).grid(row=0, column=0, sticky="ew")
-        tk.Label(row, text=rec.get("client_id", "—"), font=F(8),
-                 fg=_TXT_SOFT, bg=row_bg, padx=8, pady=8, anchor="center"
-                 ).grid(row=0, column=1, sticky="ew")
-        tk.Label(row, text=f"{_SECTOR_ICON.get(sec, '')} {sec[:22]}", font=F(8),
-                 fg=col_color, bg=row_bg, padx=8, pady=8, anchor="w"
-                 ).grid(row=0, column=2, sticky="ew")
-        tk.Label(row, text=f"₱{lb:,.2f}", font=F(9, "bold"),
-                 fg=_TXT_NAVY, bg=row_bg, padx=8, pady=8, anchor="e"
-                 ).grid(row=0, column=3, sticky="ew")
+    client_section = tk.Frame(pad, bg=_CARD_WHITE)
+    client_section.pack(fill="x")
 
-        pct_f = tk.Frame(row, bg=row_bg)
-        pct_f.grid(row=0, column=4, sticky="ew", padx=4, pady=4)
-        tk.Label(pct_f, text=f"{pct:.2f}%", font=F(8, "bold"),
-                 fg=col_color, bg=row_bg).pack(anchor="w", padx=4)
-        bw = max(2, int(70 * pct / 100)) if grand_lb > 0 else 2
-        bf = tk.Frame(pct_f, bg=row_bg)
-        bf.pack(fill="x", padx=4)
-        tk.Frame(bf, bg=col_color, height=4, width=bw).pack(side="left")
-        tk.Frame(bf, bg=_BORDER_LIGHT, height=4,
-                 width=max(0, 70 - bw)).pack(side="left")
+    def _rebuild(new_page, new_risk, new_name):
+        self._loanbal_page        = new_page
+        self._loanbal_risk        = new_risk
+        self._loanbal_name_search = new_name
+        for w in client_section.winfo_children():
+            w.destroy()
+        _loanbal_render_client_table(
+            client_section, clients_sorted, grand_lb,
+            new_page, new_risk, new_name, canvas_scroll,
+            on_page_change=lambda p: _rebuild(p, self._loanbal_risk,
+                                              self._loanbal_name_search),
+            on_risk_change=lambda r: _rebuild(1, r,
+                                              self._loanbal_name_search),
+            on_name_search=lambda q: _rebuild(1, self._loanbal_risk, q),
+        )
 
-        tk.Label(row, text=f"₱{net:,.2f}" if net else "—", font=F(9),
-                 fg=_TXT_NAVY, bg=row_bg, padx=8, pady=8, anchor="e"
-                 ).grid(row=0, column=5, sticky="ew")
-        tk.Label(row, text=f"₱{amrt:,.2f}" if amrt else "—", font=F(9),
-                 fg=_TXT_NAVY, bg=row_bg, padx=8, pady=8, anchor="e"
-                 ).grid(row=0, column=6, sticky="ew")
-
-        risk_fg = _RISK_COLOR.get(rl, _TXT_SOFT)
-        risk_bg = _RISK_BADGE_BG.get(rl, _OFF_WHITE)
-        tk.Label(row, text=rl, font=F(7, "bold"),
-                 fg=risk_fg, bg=risk_bg, padx=6, pady=3
-                 ).grid(row=0, column=7, sticky="w", padx=6, pady=8)
-
+    _rebuild(self._loanbal_page, self._loanbal_risk, self._loanbal_name_search)
     plt.close("all")
 
 
@@ -492,7 +759,20 @@ def _loanbal_render_patched(self):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _loanbal_show_export_menu(self):
-    """Popup menu anchored to the Export button in the loanbal header."""
+    risk   = getattr(self, "_loanbal_risk", None)
+    name   = getattr(self, "_loanbal_name_search", "")
+    sector = _lu_get_active_sectors(self)
+
+    filter_parts = []
+    if sector:
+        filter_parts.append(" · ".join(sector))
+    if risk:
+        filter_parts.append(risk)
+    if name:
+        filter_parts.append(f'"{name}"')
+    has_filter = bool(filter_parts)
+    filter_desc = "  [" + ", ".join(filter_parts) + "]" if has_filter else ""
+
     menu = tk.Menu(
         self._loanbal_body, tearoff=0,
         font=F(9), bg=_WHITE, fg=_TXT_NAVY,
@@ -503,9 +783,15 @@ def _loanbal_show_export_menu(self):
         label="📄  Export PDF — Loan Balance Report",
         command=lambda: _loanbal_export_pdf(self),
     )
+    menu.add_separator()
+    if has_filter:
+        menu.add_command(
+            label=f"📊  Export Excel — Filtered{filter_desc}",
+            command=lambda: _loanbal_export_excel(self, filtered=True),
+        )
     menu.add_command(
-        label="📊  Export Excel — Loan Balance Workbook",
-        command=lambda: _loanbal_export_excel(self),
+        label="📊  Export Excel — Full Workbook (all clients)",
+        command=lambda: _loanbal_export_excel(self, filtered=False),
     )
     btn = self._loanbal_export_btn
     try:
@@ -518,7 +804,7 @@ def _loanbal_show_export_menu(self):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PDF EXPORT  (Loan Balance focused)
+#  PDF EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _loanbal_export_pdf(self):
@@ -611,7 +897,6 @@ def _generate_loanbal_pdf(all_data, out_path, filepath=""):
         Spacer(1, 0.3 * cm),
     ]
 
-    # ── Grand total ───────────────────────────────────────────────────────────
     grand_str = f"₱{grand_lb:,.2f}"
     story.append(Paragraph(
         f"<b>Grand Total Loan Balance: {grand_str}</b>   |   "
@@ -619,7 +904,6 @@ def _generate_loanbal_pdf(all_data, out_path, filepath=""):
         bold_s))
     story.append(Spacer(1, 0.4 * cm))
 
-    # ── Sector summary table ──────────────────────────────────────────────────
     story.append(Paragraph("<b>Sector Loan Balance Breakdown</b>", bold_s))
     story.append(Spacer(1, 0.15 * cm))
 
@@ -684,7 +968,6 @@ def _generate_loanbal_pdf(all_data, out_path, filepath=""):
     sec_tbl.setStyle(TableStyle(sec_tbl_style))
     story += [sec_tbl, Spacer(1, 0.5 * cm)]
 
-    # ── Per-client table (new page, landscape keeps it wide enough) ───────────
     story.append(PageBreak())
     story.append(Paragraph("<b>Individual Client Loan Balance</b>", bold_s))
     story.append(Spacer(1, 0.15 * cm))
@@ -741,7 +1024,6 @@ def _generate_loanbal_pdf(all_data, out_path, filepath=""):
 
 
 def _rl_hex(color) -> str:
-    """Convert a reportlab HexColor back to a 6-char hex string."""
     try:
         return f"{int(color.red*255):02X}{int(color.green*255):02X}{int(color.blue*255):02X}"
     except Exception:
@@ -749,10 +1031,10 @@ def _rl_hex(color) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  EXCEL EXPORT  (Loan Balance focused)
+#  EXCEL EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _loanbal_export_excel(self):
+def _loanbal_export_excel(self, filtered=False):
     if not self._lu_all_data:
         messagebox.showwarning("No Data", "Run an analysis first.")
         return
@@ -762,8 +1044,37 @@ def _loanbal_export_excel(self):
             "openpyxl is not installed.\nRun:  pip install openpyxl")
         return
 
-    default_name = (
-        f"LU_LoanBalance_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
+    if filtered:
+        risk        = getattr(self, "_loanbal_risk", None)
+        name_search = getattr(self, "_loanbal_name_search", "").lower()
+        base_data   = _lu_get_filtered_all_data(self)
+        general_all = base_data.get("general", [])
+
+        export_clients = sorted(general_all,
+                                key=lambda r: -(r.get("loan_balance") or 0))
+        if risk:
+            export_clients = [r for r in export_clients
+                              if r.get("score_label", "N/A") == risk]
+        if name_search:
+            export_clients = [r for r in export_clients
+                              if name_search in r.get("client", "").lower()
+                              or name_search in str(r.get("client_id", "")).lower()]
+
+        filter_parts = []
+        active_sec = _lu_get_active_sectors(self)
+        if active_sec:
+            filter_parts.append("Sector: " + " · ".join(active_sec))
+        if risk:
+            filter_parts.append(f"Risk: {risk}")
+        if name_search:
+            filter_parts.append(f'Name: "{name_search}"')
+        filter_label = "  |  Filter: " + ", ".join(filter_parts) if filter_parts else ""
+    else:
+        export_clients = None
+        filter_label   = ""
+
+    suffix = "_filtered" if filtered and export_clients is not None else "_full"
+    default_name = f"LU_LoanBalance{suffix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     path = filedialog.asksaveasfilename(
         title="Save Loan Balance Excel",
         defaultextension=".xlsx",
@@ -774,15 +1085,23 @@ def _loanbal_export_excel(self):
         return
 
     try:
-        _generate_loanbal_excel(self._lu_all_data,
-                                path,
-                                filepath=self._lu_filepath or "")
-        messagebox.showinfo("Export Complete", f"Excel saved to:\n{path}")
+        _generate_loanbal_excel(
+            self._lu_all_data,
+            path,
+            filepath=self._lu_filepath or "",
+            export_clients=export_clients,
+            filter_label=filter_label,
+        )
+        n = len(export_clients) if export_clients is not None else \
+            len(self._lu_all_data.get("general", []))
+        messagebox.showinfo("Export Complete",
+                            f"Excel saved to:\n{path}\n({n} client(s) exported)")
     except Exception as ex:
         messagebox.showerror("Excel Export Error", str(ex))
 
 
-def _generate_loanbal_excel(all_data, out_path, filepath=""):
+def _generate_loanbal_excel(all_data, out_path, filepath="",
+                            export_clients=None, filter_label=""):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -792,6 +1111,9 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
     grand_lb   = totals.get("loan_balance", 0) or 0
     fname      = Path(filepath).name if filepath else "—"
     now        = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    clients_to_export = (export_clients if export_clients is not None
+                         else sorted(general, key=lambda r: -(r.get("loan_balance") or 0)))
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -803,12 +1125,10 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         s = Side(style="thin", color="C5D0E8")
         return Border(left=s, right=s, top=s, bottom=s)
 
-    # ── Exact fills from reference Excel ─────────────────────────────────────
     FILLS = {
-        "navy":     fill("#1A3A6B"),   # header bg
-        "mist":     fill("#EEF3FB"),   # title row + alternating odd data rows
-        "white":    fill("#FFFFFF"),   # alternating even data rows
-        # Client Detail row fills (match reference: FFFBF0 for all data rows)
+        "navy":     fill("#1A3A6B"),
+        "mist":     fill("#EEF3FB"),
+        "white":    fill("#FFFFFF"),
         "cd_row":   fill("#FFFBF0"),
     }
     RISK_FC = {"HIGH": "E53E3E", "MODERATE": "D4A017", "LOW": "2E7D32", "N/A": "9AAACE"}
@@ -822,17 +1142,9 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
     }
     NUM_FMT = "#,##0.00"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    #  SHEET 1 — Sector Summary
-    #  Matches: A1:G1 merged title (mist bg, navy text, bold, sz13)
-    #           A2:G2 merged subtitle (no bg, soft grey text, sz8)
-    #           Row 3: navy header, white text, bold, sz9, centered, thin border
-    #           Data rows: alternating mist/white, sz9, thin border
-    #           Freeze at A2  (reference shows A2, not A4)
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 1: Sector Summary ───────────────────────────────────────────────
     ws1 = wb.create_sheet("Sector Summary")
 
-    # Row 1 — merged title
     ws1.merge_cells("A1:G1")
     c = ws1["A1"]
     c.value     = "LU Analysis — Sector vs Loan Balance"
@@ -841,17 +1153,15 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
     c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws1.row_dimensions[1].height = 22.05
 
-    # Row 2 — merged subtitle
     ws1.merge_cells("A2:G2")
     c = ws1["A2"]
     c.value     = (f"File: {fname}    Generated: {now}    "
                    f"Grand Total Loan Balance: ₱{grand_lb:,.2f}    "
-                   f"Clients: {len(general)}")
+                   f"Clients: {len(general)}{filter_label}")
     c.font      = Font(size=8, color="6B7FA3")
     c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws1.row_dimensions[2].height = 16.05
 
-    # Row 3 — column headers  (navy bg, white bold sz9, centered, thin border)
     hdr_cols_s = [
         ("Sector",             22),
         ("# Clients",          10),
@@ -869,11 +1179,8 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border    = thin_border()
     ws1.row_dimensions[3].height = 18.0
-
-    # Freeze below header row (reference: A2 — keeps title visible, header scrolls)
     ws1.freeze_panes = "A2"
 
-    # Build sector rows sorted by loan balance descending
     all_sectors = [s for s in _CHART_SECTORS if s in sector_map]
     if SECTOR_OTHER in sector_map and SECTOR_OTHER not in all_sectors:
         all_sectors.append(SECTOR_OTHER)
@@ -892,9 +1199,6 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         sector_rows_data.append((sector, n, s_lb, pct, avg_lb, avg_net, risk_label))
     sector_rows_data.sort(key=lambda x: -x[2])
 
-    # Data rows start at row 4
-    # Alternating: even index (0,2,4…) → mist; odd index (1,3,5…) → white
-    # (matches reference: row4=mist, row5=white, row6=mist, …)
     for idx, (sector, n, s_lb, pct, avg_lb, avg_net, risk_label) in \
             enumerate(sector_rows_data):
         ri      = 4 + idx
@@ -903,20 +1207,13 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         risk_fc = RISK_FC.get(risk_label, "9AAACE")
         row_fill = FILLS["mist"] if idx % 2 == 0 else FILLS["white"]
 
-        # Col A: sector name — sector color, bold, left
-        # Col B: # clients  — navy text, normal, center
-        # Col C: total lb   — navy text, bold, right, number format
-        # Col D: % of total — sector color, bold, center (stored as string "X.X%")
-        # Col E: avg lb     — navy text, normal, right, number format
-        # Col F: avg net    — navy text, normal, right, number format
-        # Col G: risk label — risk color, bold, center
         row_def = [
             (f"{icon} {sector}",            sec_fc,  True,  "left",   None),
             (n,                             "1A2B4A", False, "center", "0"),
-            (s_lb,                          "1A2B4A", True,  "right",  NUM_FMT),
+            (s_lb,                          "1A2B4A", True,  "center", NUM_FMT),
             (f"{pct:.1f}%",                 sec_fc,  True,  "center", None),
-            (avg_lb,                        "1A2B4A", False, "right",  NUM_FMT),
-            (avg_net if avg_net else "—",   "1A2B4A", False, "right",
+            (avg_lb,                        "1A2B4A", False, "center", NUM_FMT),
+            (avg_net if avg_net else "—",   "1A2B4A", False, "center",
              NUM_FMT if avg_net else None),
             (risk_label,                    risk_fc,  True,  "center", None),
         ]
@@ -930,16 +1227,7 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
                 c.number_format = fmt
         ws1.row_dimensions[ri].height = 16.05
 
-    # ══════════════════════════════════════════════════════════════════════════
-    #  SHEET 2 — Client Detail
-    #  Matches: Row 1 navy header, white bold sz9, centered, thin border
-    #           Data rows: FFFBF0 fill (warm cream — matches reference exactly)
-    #           Freeze at A2
-    #           Col widths from reference: A=28, B=14, C=12, D=22, E=20,
-    #                                      F=14, G=18, H=18(curr amort),
-    #                                      I=18(amort hist), J=18(total src),
-    #                                      K=14, L=12
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 2: Client Detail ────────────────────────────────────────────────
     ws2 = wb.create_sheet("Client Detail")
     ws2.freeze_panes = "A2"
 
@@ -966,8 +1254,7 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         c.border    = thin_border()
     ws2.row_dimensions[1].height = 18.0
 
-    clients_sorted = sorted(general, key=lambda r: -(r.get("loan_balance") or 0))
-    for ri, rec in enumerate(clients_sorted, start=2):
+    for ri, rec in enumerate(clients_to_export, start=2):
         lb   = rec.get("loan_balance") or 0
         net  = rec.get("net_income")   or 0
         amrt = rec.get("current_amort") or 0
@@ -979,39 +1266,25 @@ def _generate_loanbal_excel(all_data, out_path, filepath=""):
         icon = _SECTOR_ICON.get(sec, "")
         risk_fc = RISK_FC.get(rl, "9AAACE")
         sec_fc  = SEC_FC.get(sec, "1A2B4A")
-
-        # Reference uses FFFBF0 (warm cream) for ALL data rows uniformly
         row_fill = FILLS["cd_row"]
 
-        # Col A: client name   — navy text, normal, left
-        # Col B: client ID     — soft grey, normal, left
-        # Col C: PN            — soft grey, normal, left
-        # Col D: sector+icon   — sector color, normal, left
-        # Col E: loan balance  — navy text, bold, right, number
-        # Col F: % of total    — sector color, bold, center (string)
-        # Col G: net income    — navy text, normal, right, number / "—"
-        # Col H: current amort — navy text, normal, right, number / "—"
-        # Col I: amort history — navy text, normal, right, number / "—"
-        # Col J: total source  — navy text, normal, right, number / "—"
-        # Col K: risk label    — risk color, bold, center
-        # Col L: risk score    — navy text, normal, right, number
         row_def = [
             (rec.get("client", ""),          "1A2B4A", False, "left",   None),
-            (str(rec.get("client_id", "")),  "6B7FA3", False, "left",   None),
-            (str(rec.get("pn", "")),         "6B7FA3", False, "left",   None),
-            (f"{icon} {sec}",                sec_fc,  False, "left",   None),
-            (lb,                             "1A2B4A", True,  "right",  NUM_FMT),
+            (str(rec.get("client_id", "")),  "6B7FA3", False, "center", None),
+            (str(rec.get("pn", "")),         "6B7FA3", False, "center", None),
+            (f"{icon} {sec}",                sec_fc,  False, "center", None),
+            (lb,                             "1A2B4A", True,  "center", NUM_FMT),
             (f"{pct:.2f}%",                  sec_fc,  True,  "center", None),
-            (net  if net  else "—",          "1A2B4A", False, "right",
+            (net  if net  else "—",          "1A2B4A", False, "center",
              NUM_FMT if net  else None),
-            (amrt if amrt else "—",          "1A2B4A", False, "right",
+            (amrt if amrt else "—",          "1A2B4A", False, "center",
              NUM_FMT if amrt else None),
-            (hist if hist else "—",          "1A2B4A", False, "right",
+            (hist if hist else "—",          "1A2B4A", False, "center",
              NUM_FMT if hist else None),
-            (src  if src  else "—",          "1A2B4A", False, "right",
+            (src  if src  else "—",          "1A2B4A", False, "center",
              NUM_FMT if src  else None),
             (rl,                             risk_fc,  True,  "center", None),
-            (rec.get("score", 0),            "1A2B4A", False, "right",  "0.0"),
+            (rec.get("score", 0),            "1A2B4A", False, "center", "0.0"),
         ]
         for ci, (val, fc, bold, align, fmt) in enumerate(row_def, 1):
             c = ws2.cell(ri, ci, val)
@@ -1035,8 +1308,8 @@ def attach(cls):
     Call AFTER lu_analysis_tab.attach() and any other patch (including
     lu_client_search_patch if used).
     """
-    cls._build_loanbal_panel     = _build_loanbal_panel_patched
-    cls._loanbal_render          = _loanbal_render_patched
+    cls._build_loanbal_panel      = _build_loanbal_panel_patched
+    cls._loanbal_render           = _loanbal_render_patched
     cls._loanbal_show_export_menu = _loanbal_show_export_menu
-    cls._loanbal_export_pdf      = _loanbal_export_pdf
-    cls._loanbal_export_excel    = _loanbal_export_excel
+    cls._loanbal_export_pdf       = _loanbal_export_pdf
+    cls._loanbal_export_excel     = _loanbal_export_excel
