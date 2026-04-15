@@ -2695,7 +2695,7 @@ def _import_other_data_file(self):
 
 def _import_ploan_file(self):
     path = filedialog.askopenfilename(
-        title="Import Principal Loan (Client ID + Loan Amount + Maturity + Interest Rate)",
+        title="Import Principal Loan Data",
         filetypes=[("Excel & CSV files", "*.xlsx *.csv"),
                    ("Excel files", "*.xlsx"),
                    ("CSV files", "*.csv"),
@@ -2707,7 +2707,7 @@ def _import_ploan_file(self):
 
     def _worker():
         try:
-            # ── 1. Read file (Excel or CSV) ──────────────────────────────
+            # ── 1. Read file ─────────────────────────────────────────────
             if path.lower().endswith(".csv"):
                 import csv as _csv
                 with open(path, newline="", encoding="utf-8-sig") as f:
@@ -2738,212 +2738,127 @@ def _import_ploan_file(self):
             if not records:
                 raise ValueError("No data rows found in the file.")
 
-            # ── 2. Column detection helper ───────────────────────────────
+            # ── 2. Column detection helper (exact match first, partial second) ──
             def _find_col(cols, *keywords):
+                # Pass 1: exact match only
                 for kw in keywords:
                     kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
                     for c in cols:
                         c_norm = re.sub(r"[\s_\-]", "", c.lower())
-                        if kw_norm == c_norm or kw_norm in c_norm:
+                        if kw_norm == c_norm:
+                            return c
+                # Pass 2: partial match fallback
+                for kw in keywords:
+                    kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
+                    for c in cols:
+                        c_norm = re.sub(r"[\s_\-]", "", c.lower())
+                        if kw_norm in c_norm:
                             return c
                 return None
 
-            # ── 3. Detect all columns ────────────────────────────────────
-            # Required
+            # ── 3. Detect columns ────────────────────────────────────────
             col_clientname = _find_col(all_cols,
                                        "clientname", "client name", "client_name",
                                        "applicant", "applicantname", "name")
-            col_clientid   = _find_col(all_cols,
-                                       "clientid", "client id", "client_id", "cid")
-
-            # Financial — required
-            col_loanamount = _find_col(all_cols,
-                                       "loanamount", "loan amount", "loan_amount",
-                                       "principalloan", "principal loan",
-                                       "principal_loan", "amount", "loanamt")
-
-            # Optional descriptive fields
-            col_branch      = _find_col(all_cols, "branch", "branchname", "branch name")
-            col_loanclass   = _find_col(all_cols,
-                                        "loanclassname", "loan class name",
-                                        "loan class", "loanclass", "classname")
-            col_product     = _find_col(all_cols,
-                                        "productname", "product name",
-                                        "product_name", "product")
-            col_industry    = _find_col(all_cols,
-                                        "industryname", "industry name",
-                                        "industry_name", "industry")
-            col_loandate    = _find_col(all_cols,
-                                        "loandate", "loan date", "loan_date",
-                                        "dateofrelease", "releasedate", "release date")
-            col_termunit    = _find_col(all_cols,
-                                        "termunit", "term unit", "term_unit",
-                                        "paymentfrequency", "frequency")
-            col_term        = _find_col(all_cols,
-                                        "term", "loanterm", "loan term",
-                                        "numberofterms", "no of terms", "terms")
-            col_security    = _find_col(all_cols,
-                                        "security", "collateral",
-                                        "securitydescription", "securitydesc")
-            col_releasetag  = _find_col(all_cols,
-                                        "releasetag", "release tag", "release_tag",
-                                        "tag")
-            col_loanbalance = _find_col(all_cols,
-                                        "loanbalance", "loan balance", "loan_balance",
-                                        "outstanding", "outstandingbalance",
-                                        "outstanding balance", "balance")
-            col_amortization= _find_col(all_cols,
-                                        "amortization", "amort",
-                                        "monthlypayment", "monthly payment",
-                                        "monthlypaymentamount", "paymentamount")
-            col_loanstatus  = _find_col(all_cols,
-                                        "loanstatus", "loan status", "loan_status",
-                                        "status", "accountstatus")
-            col_aoname      = _find_col(all_cols,
-                                        "aoname", "ao name", "ao_name",
-                                        "accountofficer", "account officer",
-                                        "officername", "officer name", "ao")
-            # Legacy optional
-            col_maturity    = _find_col(all_cols,
-                                        "maturity", "maturitydate", "maturity date",
-                                        "maturity_date", "duedate", "due date",
-                                        "expirydate", "expiry date")
-            col_interest    = _find_col(all_cols,
-                                        "interestrate", "interest rate",
-                                        "interest_rate", "rate", "intrate",
-                                        "annualrate", "annual rate", "interest")
-
-            # Require at least a name or a client-id column + loan amount
-            if not col_clientname and not col_clientid:
+            if not col_clientname:
                 raise ValueError(
-                    "Could not detect a client name or client ID column.\n\n"
-                    f"File has: {', '.join(all_cols)}")
-            if not col_loanamount:
-                raise ValueError(
-                    "Could not detect a Loan Amount column  "
-                    "(loanamount / principalloan / amount).\n\n"
+                    f"Could not detect a client name column.\n\n"
                     f"File has: {', '.join(all_cols)}")
 
-            # ── 4. Parse every row into a per-client record ──────────────
-            # Key: upper-cased client_id (preferred) or normalised name
-            # Value: dict accumulating all fields (amounts summed; text
-            #        fields: first non-empty value wins).
+            # ── Column map: (db_col, is_monetary, keyword hints...) ──────
+            # is_monetary=True  → values are summed across multiple loans
+            # is_monetary=False → unique values are collected and joined with ", "
+            # NOTE: "term" uses only the exact column name to avoid matching "termunit"
+            COL_MAP_DEFS = [
+                ("client_id",           False, "clientid", "client id", "client_id", "cid"),
+                ("pn",                  False, "pnid", "pn id", "pn_id", "pn", "promissorynote"),
+                ("branch",              False, "branch", "branchname", "branch name"),
+                ("loan_class_name",     False, "loanclassname", "loan class name", "loan class", "loanclass"),
+                ("product_name",        False, "productname", "product name", "product_name", "product"),
+                ("industry_name",       False, "industryname", "industry name", "industry_name", "industry"),
+                ("loan_date",           False, "loandate", "loan date", "loan_date", "dateofrelease", "releasedate"),
+                ("maturity",            False, "maturity", "maturitydate", "maturity date", "duedate", "due date"),
+                ("interest_rate",       False, "interest", "interestrate", "interest rate", "interest_rate", "rate", "intrate"),
+                ("term_unit",           False, "termunit", "term unit", "term_unit", "paymentfrequency", "frequency"),
+                ("term",                False, "term"),  # exact match only — never partial to avoid hitting termunit
+                ("security",            False, "security", "collateral", "securitydescription"),
+                ("release_tag",         False, "releasetag", "release tag", "release_tag", "tag"),
+                ("loan_amount",         True,  "loanamount", "loan amount", "principalloan", "principal loan", "amount"),
+                ("loan_balance_ploan",  True,  "loanbalance", "loan balance", "outstanding", "outstandingbalance", "balance"),
+                ("amort_current_total", True,  "ammortization", "amortization", "amort",
+                                               "monthlypayment", "monthly payment",
+                                               "monthlypaymentamount", "paymentamount"),
+                ("loan_status",         False, "loanstatus", "loan status", "status", "accountstatus"),
+                ("ao_name",             False, "aoname", "ao name", "ao_name", "accountofficer", "account officer", "ao"),
+            ]
+
+            # Detect which file column maps to each db column
+            # detected: db_col -> (file_col, is_monetary)
+            detected: dict[str, tuple] = {}
+            for entry in COL_MAP_DEFS:
+                db_col      = entry[0]
+                is_monetary = entry[1]
+                keywords    = entry[2:]
+                file_col    = _find_col(all_cols, *keywords)
+                detected[db_col] = (file_col, is_monetary)
+
+            # ── 4. Aggregate all rows per client ─────────────────────────
             aggregated: dict[str, dict] = {}
-            bad_amounts: list[tuple]    = []
-
-            def _first_text(current, new_val):
-                """Return current if already set, else new_val."""
-                if current:
-                    return current
-                v = str(new_val or "").strip()
-                return v if v else current
-
-            def _parse_num(raw):
-                cleaned = re.sub(r"[^\d.]", "", str(raw or "").replace(",", ""))
-                return float(cleaned) if cleaned else None
+            bad_rows:   list[tuple]     = []
 
             for file_row in records:
-                # Determine the aggregation key
-                raw_cid  = str(file_row.get(col_clientid,   "") or "").strip() \
-                           if col_clientid   else ""
-                raw_name = str(file_row.get(col_clientname, "") or "").strip() \
-                           if col_clientname else ""
-
-                agg_key = raw_cid.upper() if raw_cid else \
-                          _normalise_for_sim(raw_name)
-                if not agg_key:
+                client_name = str(file_row.get(col_clientname) or "").strip()
+                if not client_name:
                     continue
 
-                # Parse numeric fields
-                raw_loan_amt  = str(file_row.get(col_loanamount,  "") or "").strip()
-                raw_loan_bal  = str(file_row.get(col_loanbalance, "") or "").strip() \
-                                if col_loanbalance  else ""
-                raw_amort     = str(file_row.get(col_amortization,"") or "").strip() \
-                                if col_amortization else ""
+                norm_key = _normalise_for_sim(client_name)
 
-                loan_amt_val  = _parse_num(raw_loan_amt)
-                loan_bal_val  = _parse_num(raw_loan_bal)  if raw_loan_bal  else None
-                amort_val     = _parse_num(raw_amort)      if raw_amort     else None
+                if norm_key not in aggregated:
+                    bucket: dict = {"_display_name": client_name}
+                    for db_col, (file_col, is_monetary) in detected.items():
+                        bucket[db_col] = 0.0 if is_monetary else []
+                    aggregated[norm_key] = bucket
 
-                if loan_amt_val is None:
-                    bad_amounts.append((agg_key, f"bad loanamount: '{raw_loan_amt}'"))
+                bucket = aggregated[norm_key]
 
-                if agg_key not in aggregated:
-                    aggregated[agg_key] = {
-                        "client_id":   raw_cid,
-                        "client_name": raw_name,
-                        # summed numerics
-                        "loan_amount":        0.0,
-                        "loan_balance_ploan": 0.0,
-                        "amort_ploan":        0.0,
-                        # text: first-wins
-                        "branch":             "",
-                        "loan_class_name":    "",
-                        "product_name":       "",
-                        "industry_name_ploan":"",
-                        "loan_date":          "",
-                        "term_unit":          "",
-                        "term":               "",
-                        "security":           "",
-                        "release_tag":        "",
-                        "loan_status":        "",
-                        "ao_name":            "",
-                        "maturity":           "",
-                        "interest_rate":      "",
-                    }
+                for db_col, (file_col, is_monetary) in detected.items():
+                    if file_col is None:
+                        continue
+                    raw = str(file_row.get(file_col) or "").strip()
 
-                e = aggregated[agg_key]
+                    if is_monetary:
+                        cleaned = re.sub(r"[^\d.]", "", raw.replace(",", ""))
+                        try:
+                            val = float(cleaned) if cleaned else None
+                        except ValueError:
+                            val = None
+                            if raw:
+                                bad_rows.append(
+                                    (norm_key, f"bad {db_col}: '{raw}'"))
+                        if val is not None:
+                            bucket[db_col] = (bucket[db_col] or 0.0) + val
+                    else:
+                        if raw and raw not in bucket[db_col]:
+                            bucket[db_col].append(raw)
 
-                # Accumulate numeric fields
-                if loan_amt_val is not None:
-                    e["loan_amount"]        += loan_amt_val
-                if loan_bal_val is not None:
-                    e["loan_balance_ploan"] += loan_bal_val
-                if amort_val is not None:
-                    e["amort_ploan"]        += amort_val
+            # ── 5. Flatten aggregated buckets into final write-ready dicts ─
+            write_ready: dict[str, dict] = {}
 
-                # First-wins text fields
-                if col_branch:
-                    e["branch"]              = _first_text(e["branch"],
-                        file_row.get(col_branch, ""))
-                if col_loanclass:
-                    e["loan_class_name"]     = _first_text(e["loan_class_name"],
-                        file_row.get(col_loanclass, ""))
-                if col_product:
-                    e["product_name"]        = _first_text(e["product_name"],
-                        file_row.get(col_product, ""))
-                if col_industry:
-                    e["industry_name_ploan"] = _first_text(e["industry_name_ploan"],
-                        file_row.get(col_industry, ""))
-                if col_loandate:
-                    e["loan_date"]           = _first_text(e["loan_date"],
-                        file_row.get(col_loandate, ""))
-                if col_termunit:
-                    e["term_unit"]           = _first_text(e["term_unit"],
-                        file_row.get(col_termunit, ""))
-                if col_term:
-                    e["term"]                = _first_text(e["term"],
-                        file_row.get(col_term, ""))
-                if col_security:
-                    e["security"]            = _first_text(e["security"],
-                        file_row.get(col_security, ""))
-                if col_releasetag:
-                    e["release_tag"]         = _first_text(e["release_tag"],
-                        file_row.get(col_releasetag, ""))
-                if col_loanstatus:
-                    e["loan_status"]         = _first_text(e["loan_status"],
-                        file_row.get(col_loanstatus, ""))
-                if col_aoname:
-                    e["ao_name"]             = _first_text(e["ao_name"],
-                        file_row.get(col_aoname, ""))
-                if col_maturity:
-                    e["maturity"]            = _first_text(e["maturity"],
-                        file_row.get(col_maturity, ""))
-                if col_interest:
-                    e["interest_rate"]       = _first_text(e["interest_rate"],
-                        file_row.get(col_interest, ""))
+            for norm_key, bucket in aggregated.items():
+                record: dict = {"_display_name": bucket["_display_name"]}
+                for db_col, (file_col, is_monetary) in detected.items():
+                    if file_col is None:
+                        record[db_col] = None
+                        continue
+                    raw_val = bucket[db_col]
+                    if is_monetary:
+                        record[db_col] = raw_val if raw_val != 0.0 else None
+                    else:
+                        joined = ", ".join(raw_val) if raw_val else None
+                        record[db_col] = joined
+                write_ready[norm_key] = record
 
-            # ── 5. Build client_id → db row id lookup ────────────────────
+            # ── 6. Build client_id → db row id lookup ────────────────────
             with _db_connect() as _conn:
                 cid_to_dbid: dict[str, int] = {
                     str(r[0]).strip().upper(): r[1]
@@ -2953,129 +2868,93 @@ def _import_ploan_file(self):
                     ).fetchall()
                 }
 
-            # ── 6. Match & write to DB ────────────────────────────────────
+            # ── 7. Match & write to DB ────────────────────────────────────
             updated_by_id   = []
             updated_by_name = []
             updated_relaxed = []
             not_found       = []
 
-            def _build_update(entry: dict) -> tuple[list, list]:
-                """Return (SET parts, values) for all non-empty fields."""
+            def _write_entry(conn, db_row_id: int, record: dict):
                 parts, vals = [], []
-                _NUMERIC = {
-                    "loan_amount", "loan_balance_ploan", "amort_ploan",
-                }
-                _TEXT = {
-                    "branch", "loan_class_name", "product_name",
-                    "industry_name_ploan", "loan_date", "term_unit", "term",
-                    "security", "release_tag", "loan_status", "ao_name",
-                    "maturity", "interest_rate",
-                }
-                for col in _NUMERIC:
-                    v = entry.get(col, 0.0)
-                    if v and v != 0.0:
-                        parts.append(f"{col}=?"); vals.append(v)
-                for col in _TEXT:
-                    v = entry.get(col, "")
-                    if v:
-                        parts.append(f"{col}=?"); vals.append(v)
-                # legacy principal_loan = loan_amount (keep backward compat)
-                if entry.get("loan_amount"):
+                for db_col in detected:
+                    val = record.get(db_col)
+                    if val is None:
+                        continue
+                    parts.append(f"{db_col}=?")
+                    vals.append(val)
+                if record.get("loan_amount") is not None:
                     parts.append("principal_loan=?")
-                    vals.append(entry["loan_amount"])
-                return parts, vals
+                    vals.append(record["loan_amount"])
+                if parts:
+                    conn.execute(
+                        f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+                        vals + [db_row_id])
 
             with _db_connect() as conn:
-                for agg_key, entry in aggregated.items():
-                    parts, vals = _build_update(entry)
-                    if not parts:
-                        continue
+                for norm_key, record in write_ready.items():
+                    display_name = record["_display_name"]
 
-                    # PRIMARY: match by client_id
-                    file_cid = entry["client_id"].upper()
+                    file_cid = str(record.get("client_id") or "").strip().upper()
                     if file_cid and file_cid in cid_to_dbid:
                         db_id = cid_to_dbid[file_cid]
-                        conn.execute(
-                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
-                            vals + [db_id])
-                        updated_by_id.append((agg_key, db_id))
+                        _write_entry(conn, db_id, record)
+                        updated_by_id.append((norm_key, db_id))
                         continue
 
-                    # SECONDARY: name similarity
-                    display_name = entry["client_name"] or agg_key
                     hits, sim_label = _resolve_name_similarity(display_name)
                     if not hits:
-                        not_found.append(agg_key)
+                        not_found.append(norm_key)
                         continue
+
                     for hit_id, _ in hits:
-                        conn.execute(
-                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
-                            vals + [hit_id])
+                        _write_entry(conn, hit_id, record)
+
                     if sim_label in ("exact", "high"):
-                        updated_by_name.append((agg_key, hits[0][1]))
+                        updated_by_name.append((norm_key, hits[0][1]))
                     else:
-                        updated_relaxed.append((agg_key, hits[0][1]))
+                        updated_relaxed.append((norm_key, hits[0][1]))
 
             self.after(0, lambda: _refresh_summary(self))
 
-            # ── 7. Build result message ───────────────────────────────────
-            detected_cols = ", ".join(filter(None, [
-                f"clientname='{col_clientname}'" if col_clientname else "",
-                f"clientid='{col_clientid}'"     if col_clientid   else "",
-                f"loanamount='{col_loanamount}'"  if col_loanamount else "",
-                f"branch='{col_branch}'"          if col_branch     else "",
-                f"loanclass='{col_loanclass}'"    if col_loanclass  else "",
-                f"product='{col_product}'"        if col_product    else "",
-                f"industry='{col_industry}'"      if col_industry   else "",
-                f"loandate='{col_loandate}'"      if col_loandate   else "",
-                f"termunit='{col_termunit}'"      if col_termunit   else "",
-                f"term='{col_term}'"              if col_term       else "",
-                f"security='{col_security}'"      if col_security   else "",
-                f"releasetag='{col_releasetag}'"  if col_releasetag else "",
-                f"loanbalance='{col_loanbalance}'"if col_loanbalance else "",
-                f"amortization='{col_amortization}'" if col_amortization else "",
-                f"loanstatus='{col_loanstatus}'"  if col_loanstatus else "",
-                f"aoname='{col_aoname}'"          if col_aoname     else "",
-                f"maturity='{col_maturity}'"      if col_maturity   else "",
-                f"interest='{col_interest}'"      if col_interest   else "",
-            ]))
-
+            # ── 8. Build result message ───────────────────────────────────
+            detected_display = ", ".join(
+                f"{db_col}='{fc}'" for db_col, (fc, _) in detected.items() if fc
+            )
+            total_updated = len(updated_by_id) + len(updated_by_name) + len(updated_relaxed)
             msg  = "Principal Loan import complete.\n\n"
-            msg += f"Columns detected      : {detected_cols}\n\n"
+            msg += f"Columns detected      : {detected_display}\n\n"
             msg += f"✓  Matched by ID      : {len(updated_by_id):,} record(s)\n"
             msg += f"✓  Matched by name    : {len(updated_by_name):,} record(s)\n"
-            msg += f"–  Not found          : {len(not_found):,} key(s)\n"
-            if bad_amounts:
-                msg += f"⚠  Bad amount values  : {len(bad_amounts):,} row(s)\n"
-            if not col_clientid:
-                msg += "\nℹ  No Client ID column — used name matching only.\n"
-            if not col_maturity:
-                msg += "ℹ  Maturity column not detected — skipped.\n"
-            if not col_interest:
-                msg += "ℹ  Interest Rate column not detected — skipped.\n"
+            msg += f"Total updated         : {total_updated:,} record(s)\n"
+            msg += f"–  Not found          : {len(not_found):,} name(s)\n"
+            if bad_rows:
+                msg += f"⚠  Bad numeric values : {len(bad_rows):,} row(s)\n"
+            if not detected.get("client_id") or not detected["client_id"][0]:
+                msg += "\nℹ  No Client ID column found — used name matching only.\n"
             if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed similarity — verify:\n"
+                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed similarity — please verify:\n"
                 for file_n, db_id in updated_relaxed[:10]:
                     msg += f"  • {file_n}  →  DB id: {db_id}\n"
                 if len(updated_relaxed) > 10:
                     msg += f"  … and {len(updated_relaxed) - 10} more\n"
             if not_found:
-                msg += "\nKeys with no DB match:\n"
+                msg += "\nNames with no DB match:\n"
                 for k in not_found[:15]:
                     msg += f"  • {k}\n"
                 if len(not_found) > 15:
                     msg += f"  … and {len(not_found) - 15} more\n"
-            if bad_amounts:
-                msg += "\nRows with unparseable amounts:\n"
-                for k, reason in bad_amounts[:10]:
+            if bad_rows:
+                msg += "\nRows with unparseable numeric values:\n"
+                for k, reason in bad_rows[:10]:
                     msg += f"  • {k}  ({reason})\n"
-                if len(bad_amounts) > 10:
-                    msg += f"  … and {len(bad_amounts) - 10} more\n"
+                if len(bad_rows) > 10:
+                    msg += f"  … and {len(bad_rows) - 10} more\n"
 
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
                 messagebox.showinfo("P.Loan Import Result", msg)
             ))
+
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: (
