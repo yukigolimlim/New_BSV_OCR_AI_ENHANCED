@@ -828,7 +828,6 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 principal_loan, maturity, interest_rate,
                 branch, loan_class_name, product_name,
                 loan_date, term_unit, term, security, release_tag,
-                loan_balance_ploan, amort_ploan,
                 loan_status, ao_name
             ) VALUES (
                 :session_id, :processed_at, :source_file, :status,
@@ -845,7 +844,6 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 :principal_loan, :maturity, :interest_rate,
                 :branch, :loan_class_name, :product_name,
                 :loan_date, :term_unit, :term, :security, :release_tag,
-                :loan_balance_ploan, :amort_ploan,
                 :loan_status, :ao_name
             )
         """, row_data)
@@ -4034,7 +4032,7 @@ def _validate_clients(self):
                     "loan_balance, amortized_cost, "
                     "principal_loan, maturity, interest_rate, "
                     "branch, loan_class_name, product_name, loan_date, security, loan_status, ao_name, "
-                    "loan_amount"
+                    "loan_amount "
                     "FROM applicants"
                 ).fetchall()
             db_rows = [dict(r) for r in db_rows]
