@@ -127,8 +127,6 @@ TABLE_COLS = [
     ("term",                "Term",                                80,  False, False),
     ("security",            "Security",                            160, False, True ),
     ("release_tag",         "Release Tag",                         120, False, False),
-    ("loan_balance_ploan",  "Loan Balance (PLoan)",                150, True,  False),
-    ("amort_ploan",         "Amort. (PLoan)",                      130, True,  False),
     ("loan_status",         "Loan Status",                         120, False, False),
     ("ao_name",             "AO Name",                             160, False, False),
 ]
@@ -246,8 +244,6 @@ _CHECKLIST_PREVIEW_COLS = [
     ("Term Unit",                                80,  False),
     ("Term",                                     70,  False),
     ("Loan Amount",                              120, True ),
-    ("Loan Balance (PLoan)",                     130, True ),
-    ("Amort. (PLoan)",                           110, True ),
     ("Loan Status",                              100, False),
     ("AO Name",                                  140, False),
 ]
@@ -281,15 +277,12 @@ _ALL_EXPORT_COLS = [
     ("Branch",                                   120, False),
     ("Loan Class",                               130, False),
     ("Product Name",                             150, False),
-    ("Industry (PLoan)",                         150, False),
     ("Loan Date",                                110, False),
     ("Term Unit",                                90,  False),
     ("Term",                                     80,  False),
     ("Security",                                 160, False),
     ("Release Tag",                              110, False),
     ("Loan Amount",                              130, True ),
-    ("Loan Balance (PLoan)",                     140, True ),
-    ("Amort. (PLoan)",                           120, True ),
     ("Loan Status",                              110, False),
     ("AO Name",                                  150, False),
 ]
@@ -603,10 +596,9 @@ _PATCHABLE_COLS = [
     "amort_current_total",
     # ── Set by P.Loan import ─────────────────────────────────────────
     "principal_loan", "maturity", "interest_rate",
-    "branch", "loan_class_name", "product_name", "industry_name_ploan",
+    "branch", "loan_class_name", "product_name",
     "loan_date", "term_unit", "term", "security", "release_tag",
-    "loan_amount", "loan_balance_ploan", "amort_ploan",
-    "loan_status", "ao_name",
+    "loan_amount", "loan_status", "ao_name",
 ]
 
 
@@ -671,15 +663,12 @@ def _db_init():
             branch              TEXT,
             loan_class_name     TEXT,
             product_name        TEXT,
-            industry_name_ploan TEXT,
             loan_date           TEXT,
             term_unit           TEXT,
             term                TEXT,
             security            TEXT,
             release_tag         TEXT,
             loan_amount         REAL,
-            loan_balance_ploan  REAL,
-            amort_ploan         REAL,
             loan_status         TEXT,
             ao_name             TEXT
         );
@@ -873,7 +862,8 @@ _SORTABLE_COLS = (
 
 def _db_query(search: str = "", session_id: str = "",
               sort_col: str = "processed_at", sort_asc: bool = False,
-              offset: int = 0, limit: int = PAGE_SIZE) -> tuple:
+              offset: int = 0, limit: int = PAGE_SIZE,
+              adv_filters: dict = None) -> tuple:
     order_col = sort_col if sort_col in _SORTABLE_COLS else "processed_at"
     direction = "ASC" if sort_asc else "DESC"
     where_parts, params = [], []
@@ -893,6 +883,26 @@ def _db_query(search: str = "", session_id: str = "",
         where_parts.append("session_id = ?")
         params.append(session_id)
 
+    # ── Advanced per-column filters ───────────────────────────────────
+    # client_id uses exact match (TRIM + case-insensitive equality).
+    # All other columns use partial LIKE matching.
+    _EXACT_MATCH_COLS = {"client_id"}
+
+    if adv_filters:
+        for col, values in adv_filters.items():
+            if col not in _SORTABLE_COLS or not values:
+                continue
+            if col in _EXACT_MATCH_COLS:
+                # OR across each supplied value, but each is an exact match
+                placeholders = " OR ".join(
+                    [f"TRIM(UPPER({col})) = TRIM(UPPER(?))" for _ in values])
+                where_parts.append(f"({placeholders})")
+                params.extend(values)
+            else:
+                placeholders = " OR ".join([f"{col} LIKE ?" for _ in values])
+                where_parts.append(f"({placeholders})")
+                params.extend([f"%{v}%" for v in values])
+
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
         total = conn.execute(
@@ -904,7 +914,8 @@ def _db_query(search: str = "", session_id: str = "",
     return rows, total
 
 
-def _db_totals(session_id: str = "", search: str = "") -> dict:
+def _db_totals(session_id: str = "", search: str = "",
+               adv_filters: dict = None) -> dict:
     where_parts, params = [], []
 
     terms = [t.strip() for t in search.split(",") if t.strip()] if search else []
@@ -921,6 +932,23 @@ def _db_totals(session_id: str = "", search: str = "") -> dict:
     if session_id:
         where_parts.append("session_id = ?")
         params.append(session_id)
+
+    # ── Same exact-match rule for client_id ───────────────────────────
+    _EXACT_MATCH_COLS = {"client_id"}
+
+    if adv_filters:
+        for col, values in adv_filters.items():
+            if col not in _SORTABLE_COLS or not values:
+                continue
+            if col in _EXACT_MATCH_COLS:
+                placeholders = " OR ".join(
+                    [f"TRIM(UPPER({col})) = TRIM(UPPER(?))" for _ in values])
+                where_parts.append(f"({placeholders})")
+                params.extend(values)
+            else:
+                placeholders = " OR ".join([f"{col} LIKE ?" for _ in values])
+                where_parts.append(f"({placeholders})")
+                params.extend([f"%{v}%" for v in values])
 
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
@@ -1006,10 +1034,9 @@ _EDITABLE_COLS = {
     "amort_history_total", "amort_current_total",
     "loan_balance", "amortized_cost",
     "principal_loan", "maturity", "interest_rate",
-    "branch", "loan_class_name", "product_name", "industry_name_ploan",
+    "branch", "loan_class_name", "product_name",
     "loan_date", "term_unit", "term", "security", "release_tag",
-    "loan_amount", "loan_balance_ploan", "amort_ploan",
-    "loan_status", "ao_name",
+    "loan_amount", "loan_status", "ao_name",
 }
 
 # Subset of _EDITABLE_COLS that must be stored as REAL in SQLite.
@@ -1017,7 +1044,7 @@ _MONETARY_COLS = {
     "income_total", "business_total", "household_total", "net_income",
     "amort_history_total", "amort_current_total",
     "loan_balance", "amortized_cost", "principal_loan",
-    "loan_amount", "loan_balance_ploan", "amort_ploan",
+    "loan_amount",
 }
 
 
@@ -1373,8 +1400,6 @@ def db_save_applicant(session_id: str, results: dict):
         "term":                "",
         "security":            "",
         "release_tag":         "",
-        "loan_balance_ploan":  None,
-        "amort_ploan":         None,
         "loan_status":         "",
         "ao_name":             "",
     }
@@ -1403,6 +1428,212 @@ def _apply_tree_style():
 # ═══════════════════════════════════════════════════════════════════════
 #  PANEL BUILDER
 # ═══════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ADVANCED FILTER DIALOG
+# ═══════════════════════════════════════════════════════════════════════
+
+# Columns available in the advanced filter (real DB cols only, user-facing)
+_ADV_FILTER_COLS = [
+    ("applicant_name",   "Applicant Name"),
+    ("client_id",        "Client ID"),
+    ("pn",               "PN"),
+    ("industry_name",    "Industry Name"),
+    ("residence_address","Residence Address"),
+    ("office_address",   "Office Address"),
+    ("loan_status",      "Loan Status"),
+    ("ao_name",          "AO Name"),
+    ("branch",           "Branch"),
+    ("loan_class_name",  "Loan Class"),
+    ("product_name",     "Product Name"),
+    ("maturity",         "Maturity"),
+    ("interest_rate",    "Interest Rate"),
+    ("term_unit",        "Term Unit"),
+    ("release_tag",      "Release Tag"),
+]
+
+
+def _open_advanced_filter(self):
+    win = tk.Toplevel(self)
+    win.title("Advanced Column Filter")
+    win.configure(bg=CARD_WHITE)
+    win.resizable(True, True)
+    win.grab_set()
+
+    p_x = self.winfo_rootx(); p_y = self.winfo_rooty()
+    p_w = self.winfo_width(); p_h = self.winfo_height()
+    w_w, w_h = 680, 560
+    win.geometry(f"{w_w}x{w_h}+{p_x + (p_w-w_w)//2}+{p_y + (p_h-w_h)//2}")
+    win.minsize(500, 400)
+
+    # ── Header ────────────────────────────────────────────────────────
+    hdr = tk.Frame(win, bg=NAVY_DEEP)
+    hdr.pack(fill="x")
+    tk.Label(hdr, text="⧉  Advanced Column Filter",
+             font=("Segoe UI", 12, "bold"), fg=WHITE, bg=NAVY_DEEP,
+             padx=16, pady=10).pack(side="left")
+    tk.Label(hdr,
+             text="Each row = one column filter. Values in a column are OR-matched.\nDifferent columns are AND-matched.",
+             font=("Segoe UI", 8), fg="#8DA8C8", bg=NAVY_DEEP,
+             padx=16, justify="left").pack(side="left", pady=8)
+
+    # ── Scrollable body ───────────────────────────────────────────────
+    body_outer = tk.Frame(win, bg=CARD_WHITE)
+    body_outer.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+
+    canvas  = tk.Canvas(body_outer, bg=CARD_WHITE, highlightthickness=0)
+    vscroll = tk.Scrollbar(body_outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vscroll.set)
+    vscroll.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    rows_frame = tk.Frame(canvas, bg=CARD_WHITE)
+    cwin = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+    def _on_cfg(e):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.itemconfig(cwin, width=canvas.winfo_width())
+    rows_frame.bind("<Configure>", _on_cfg)
+    canvas.bind("<Configure>", _on_cfg)
+    canvas.bind_all("<MouseWheel>",
+        lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+    # ── Column header labels ───────────────────────────────────────────
+    col_hdr = tk.Frame(rows_frame, bg="#E8EEF8")
+    col_hdr.pack(fill="x", pady=(0, 4))
+    tk.Label(col_hdr, text="Column", font=("Segoe UI", 8, "bold"),
+             fg=NAVY_MID, bg="#E8EEF8", width=22, anchor="w",
+             padx=8, pady=4).grid(row=0, column=0, sticky="w")
+    tk.Label(col_hdr, text="Filter Values  (comma-separated, OR logic)",
+             font=("Segoe UI", 8, "bold"),
+             fg=NAVY_MID, bg="#E8EEF8", padx=8, pady=4).grid(row=0, column=1, sticky="w")
+    tk.Label(col_hdr, text="", bg="#E8EEF8", width=4).grid(row=0, column=2)
+
+    # ── Filter rows (one per column) ──────────────────────────────────
+    filter_vars: dict[str, tk.StringVar] = {}
+
+    current = getattr(self, "_sum_adv_filters", {})
+
+    for i, (db_col, label) in enumerate(_ADV_FILTER_COLS):
+        row_bg = ROW_BG_EVEN if i % 2 == 0 else ROW_BG_ODD
+        row_f  = tk.Frame(rows_frame, bg=row_bg,
+                          highlightbackground=BORDER_LIGHT, highlightthickness=1)
+        row_f.pack(fill="x", pady=1)
+        row_f.columnconfigure(1, weight=1)
+
+        tk.Label(row_f, text=label, font=("Segoe UI", 8, "bold"),
+                 fg=NAVY_DEEP, bg=row_bg, width=22, anchor="w",
+                 padx=8, pady=6).grid(row=0, column=0, sticky="w")
+
+        # Pre-populate from existing active filters
+        existing = ", ".join(current.get(db_col, []))
+        var = tk.StringVar(value=existing)
+        filter_vars[db_col] = var
+
+        entry = tk.Entry(row_f, textvariable=var, font=("Segoe UI", 9),
+                         fg=TXT_NAVY, bg=WHITE if not existing else "#FFFDE7",
+                         relief="solid", bd=1,
+                         insertbackground=NAVY_MID)
+        entry.grid(row=0, column=1, sticky="ew", padx=(0, 4), pady=5)
+
+        # Yellow bg when typed, white when empty
+        def _on_var_change(v=var, e=entry):
+            e.config(bg="#FFFDE7" if v.get().strip() else WHITE)
+        var.trace_add("write", lambda *_, v=var, e=entry: _on_var_change(v, e))
+
+        # Clear button per row
+        def _clear_row(v=var):
+            v.set("")
+        tk.Button(row_f, text="✕", font=("Segoe UI", 7),
+                  fg=TXT_MUTED, bg=row_bg, activebackground=ACCENT_RED,
+                  activeforeground=WHITE, relief="flat", bd=0,
+                  padx=6, pady=4, cursor="hand2",
+                  command=_clear_row).grid(row=0, column=2, padx=(0, 4))
+
+    # ── Hint label ────────────────────────────────────────────────────
+    hint = tk.Frame(win, bg="#F0F4FA",
+                    highlightbackground=BORDER_MID, highlightthickness=1)
+    hint.pack(fill="x", padx=16, pady=(6, 0))
+    tk.Label(hint,
+             text='💡  Example: Industry Name → "Agriculture, Wholesale"  '
+                  'shows rows where industry contains Agriculture OR Wholesale.',
+             font=("Segoe UI", 8), fg=TXT_MUTED, bg="#F0F4FA",
+             pady=5, padx=10, anchor="w").pack(fill="x")
+
+    # ── Button bar ────────────────────────────────────────────────────
+    btn_bar = tk.Frame(win, bg=CARD_WHITE,
+                       highlightbackground=BORDER_MID, highlightthickness=1)
+    btn_bar.pack(fill="x", padx=16, pady=(6, 12))
+
+    active_count_var = tk.StringVar()
+
+    def _count_active():
+        n = sum(1 for v in filter_vars.values() if v.get().strip())
+        active_count_var.set(
+            f"{n} column filter(s) active" if n else "No filters active")
+
+    for v in filter_vars.values():
+        v.trace_add("write", lambda *_: _count_active())
+    _count_active()
+
+    tk.Label(btn_bar, textvariable=active_count_var,
+             font=("Segoe UI", 8), fg=LIME_DARK, bg=CARD_WHITE,
+             padx=10).pack(side="left", pady=8)
+
+    def _clear_all_filters():
+        for v in filter_vars.values():
+            v.set("")
+
+    def _apply():
+        new_filters = {}
+        for db_col, var in filter_vars.items():
+            raw = var.get().strip()
+            if raw:
+                # Split on comma, strip each, drop empties
+                values = [t.strip() for t in raw.split(",") if t.strip()]
+                if values:
+                    new_filters[db_col] = values
+        self._sum_adv_filters = new_filters
+        self._sum_page        = 0
+
+        # Update the indicator label on the main panel
+        n = len(new_filters)
+        if n:
+            cols_used = ", ".join(
+                label for db_col, label in _ADV_FILTER_COLS
+                if db_col in new_filters)
+            self._sum_adv_filter_lbl.config(
+                text=f"⧉ {n} filter(s): {cols_used}")
+            self._sum_adv_filter_btn.configure(
+                fg_color=LIME_MID, text_color=TXT_ON_LIME)
+        else:
+            self._sum_adv_filter_lbl.config(text="")
+            self._sum_adv_filter_btn.configure(
+                fg_color="#2A3A6C", text_color=WHITE)
+
+        _load_and_render(self)
+        canvas.unbind_all("<MouseWheel>")
+        win.destroy()
+
+    def _on_cancel():
+        canvas.unbind_all("<MouseWheel>")
+        win.destroy()
+
+    tk.Button(btn_bar, text="Clear All", font=("Segoe UI", 8),
+              fg=TXT_SOFT, bg="#F0F0F0", activebackground="#E0E0E0",
+              relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+              command=_clear_all_filters).pack(side="right", padx=(4, 8), pady=6)
+    tk.Button(btn_bar, text="✕  Cancel", font=("Segoe UI", 8),
+              fg=TXT_SOFT, bg="#F0F0F0", activebackground="#E0E0E0",
+              relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+              command=_on_cancel).pack(side="right", padx=(0, 4), pady=6)
+    ctk.CTkButton(btn_bar, text="✔  Apply Filters", command=_apply,
+                  width=120, height=30, corner_radius=6,
+                  fg_color=LIME_MID, hover_color=LIME_BRIGHT,
+                  text_color=TXT_ON_LIME,
+                  font=FF(8, "bold")).pack(side="right", padx=(0, 4), pady=6)
+
+    win.protocol("WM_DELETE_WINDOW", _on_cancel)
 
 def _build_lookup_summary_panel(self, parent):
     _db_init()
@@ -1558,6 +1789,18 @@ def _build_lookup_summary_panel(self, parent):
     _se.bind("<FocusIn>",  _se_focus_in)
     _se.bind("<FocusOut>", _se_focus_out)
 
+    self._sum_adv_filter_btn = ctk.CTkButton(
+        controls_row, text="⧉  Filter",
+        command=lambda: _open_advanced_filter(self),
+        width=74, height=30, corner_radius=6,
+        fg_color="#2A3A6C", hover_color="#3A4A8C",
+        text_color=WHITE, font=FF(8, "bold"), border_width=0)
+    self._sum_adv_filter_btn.pack(side="left", padx=(4, 0), pady=8)
+
+    self._sum_adv_filter_lbl = tk.Label(
+        controls_row, text="", font=F(7), fg=LIME_MID, bg="#F0F4FA")
+    self._sum_adv_filter_lbl.pack(side="left", padx=(2, 0), pady=8)
+
     right_ctrl = tk.Frame(controls_row, bg="#F0F4FA")
     right_ctrl.pack(side="right", padx=10, pady=8)
     self._sum_count_lbl = tk.Label(right_ctrl, text="",
@@ -1631,6 +1874,7 @@ def _build_lookup_summary_panel(self, parent):
     self._sum_session_filter = ""
     self._sum_search_after   = None
     self._sum_row_data       = {}
+    self._sum_adv_filters    = {}
     _refresh_summary(self)
 
 
@@ -1657,7 +1901,8 @@ def _load_and_render(self):
     rows, total = _db_query(
         search=search, session_id=self._sum_session_filter,
         sort_col=self._sum_sort_col, sort_asc=self._sum_sort_asc,
-        offset=offset, limit=PAGE_SIZE)
+        offset=offset, limit=PAGE_SIZE,
+        adv_filters=getattr(self, "_sum_adv_filters", {}))
     self._sum_total_rows = total
     _update_stats(self)
     _update_pagination(self, total)
@@ -1671,7 +1916,8 @@ def _load_and_render(self):
 def _update_stats(self):
     raw    = self._sum_search_var.get().strip()
     search = "" if "separate terms with commas" in raw else raw
-    tots   = _db_totals(session_id=self._sum_session_filter, search=search)
+    tots   = _db_totals(session_id=self._sum_session_filter, search=search,
+                        adv_filters=getattr(self, "_sum_adv_filters", {}))
 
     def _fmt(val):
         if val is None:
@@ -2056,15 +2302,12 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
         ("Branch",               row.get("branch",            "—") or "—"),
         ("Loan Class",           row.get("loan_class_name",   "—") or "—"),
         ("Product Name",         row.get("product_name",      "—") or "—"),
-        ("Industry (PLoan)",     row.get("industry_name_ploan","—") or "—"),
         ("Loan Date",            row.get("loan_date",         "—") or "—"),
         ("Term Unit",            row.get("term_unit",         "—") or "—"),
         ("Term",                 row.get("term",              "—") or "—"),
         ("Security",             row.get("security",          "—") or "—"),
         ("Release Tag",          row.get("release_tag",       "—") or "—"),
         ("Loan Amount",          _fmt_money(row.get("loan_amount"))         or "—"),
-        ("Loan Balance (PLoan)", _fmt_money(row.get("loan_balance_ploan"))  or "—"),
-        ("Amort. (PLoan)",       _fmt_money(row.get("amort_ploan"))         or "—"),
         ("Loan Status",          row.get("loan_status",       "—") or "—"),
         ("AO Name",              row.get("ao_name",           "—") or "—"),
         ("Amort. History",       _fmt_money(row.get("amort_history_total")) or "—"),
@@ -2770,27 +3013,25 @@ def _import_ploan_file(self):
             # is_monetary=False → unique values are collected and joined with ", "
             # NOTE: "term" uses only the exact column name to avoid matching "termunit"
             COL_MAP_DEFS = [
-                ("client_id",           False, "clientid", "client id", "client_id", "cid"),
-                ("pn",                  False, "pnid", "pn id", "pn_id", "pn", "promissorynote"),
-                ("branch",              False, "branch", "branchname", "branch name"),
-                ("loan_class_name",     False, "loanclassname", "loan class name", "loan class", "loanclass"),
-                ("product_name",        False, "productname", "product name", "product_name", "product"),
-                ("industry_name",       False, "industryname", "industry name", "industry_name", "industry"),
-                ("loan_date",           False, "loandate", "loan date", "loan_date", "dateofrelease", "releasedate"),
-                ("maturity",            False, "maturity", "maturitydate", "maturity date", "duedate", "due date"),
-                ("interest_rate",       False, "interest", "interestrate", "interest rate", "interest_rate", "rate", "intrate"),
-                ("term_unit",           False, "termunit", "term unit", "term_unit", "paymentfrequency", "frequency"),
-                ("term",                False, "term"),  # exact match only — never partial to avoid hitting termunit
-                ("security",            False, "security", "collateral", "securitydescription"),
-                ("release_tag",         False, "releasetag", "release tag", "release_tag", "tag"),
-                ("loan_amount",         True,  "loanamount", "loan amount", "principalloan", "principal loan", "amount"),
-                ("loan_balance_ploan",  True,  "loanbalance", "loan balance", "outstanding", "outstandingbalance", "balance"),
-                ("amort_current_total", True,  "ammortization", "amortization", "amort",
-                                               "monthlypayment", "monthly payment",
-                                               "monthlypaymentamount", "paymentamount"),
-                ("loan_status",         False, "loanstatus", "loan status", "status", "accountstatus"),
-                ("ao_name",             False, "aoname", "ao name", "ao_name", "accountofficer", "account officer", "ao"),
-            ]
+            ("client_id",           False, "clientid", "client id", "client_id", "cid"),
+            ("pn",                  False, "pnid", "pn id", "pn_id", "pn", "promissorynote"),
+            ("branch",              False, "branch", "branchname", "branch name"),
+            ("loan_class_name",     False, "loanclassname", "loan class name", "loan class", "loanclass"),
+            ("product_name",        False, "productname", "product name", "product_name", "product"),
+            ("industry_name",       False, "industryname", "industry name", "industry_name", "industry"),
+            ("loan_date",           False, "loandate", "loan date", "loan_date", "dateofrelease", "releasedate"),
+            ("maturity",            False, "maturity", "maturitydate", "maturity date", "duedate", "due date"),
+            ("interest_rate",       False, "interest", "interestrate", "interest rate", "interest_rate", "rate", "intrate"),
+            ("term_unit",           False, "termunit", "term unit", "term_unit", "paymentfrequency", "frequency"),
+            ("term",                False, "term"),
+            ("security",            False, "security", "collateral", "securitydescription"),
+            ("release_tag",         False, "releasetag", "release tag", "release_tag", "tag"),
+            ("loan_amount",         True,  "loanamount", "loan amount", "principalloan", "principal loan", "amount"),
+            ("loan_balance",        True,  "loanbalance", "loan balance"),
+            ("amort_current_total", True,  "ammortization", "amortization"),
+            ("loan_status",         False, "loanstatus", "loan status", "status", "accountstatus"),
+            ("ao_name",             False, "aoname", "ao name", "ao_name", "accountofficer", "account officer", "ao"),
+        ]
 
             # Detect which file column maps to each db column
             # detected: db_col -> (file_col, is_monetary)
@@ -2998,9 +3239,9 @@ def _merge_db_files(self):
         "client_id", "pn", "industry_name",
         "loan_balance", "amortized_cost",
         "principal_loan", "maturity", "interest_rate",
-        "branch", "loan_class_name", "product_name", "industry_name_ploan",
+        "branch", "loan_class_name", "product_name",
         "loan_date", "term_unit", "term", "security", "release_tag",
-        "loan_amount", "loan_balance_ploan", "amort_ploan",
+        "loan_amount",
         "loan_status", "ao_name",
     ]
     _INSERT = (
@@ -3028,15 +3269,12 @@ def _merge_db_files(self):
         ("branch",              "TEXT"),
         ("loan_class_name",     "TEXT"),
         ("product_name",        "TEXT"),
-        ("industry_name_ploan", "TEXT"),
         ("loan_date",           "TEXT"),
         ("term_unit",           "TEXT"),
         ("term",                "TEXT"),
         ("security",            "TEXT"),
         ("release_tag",         "TEXT"),
         ("loan_amount",         "REAL"),
-        ("loan_balance_ploan",  "REAL"),
-        ("amort_ploan",         "REAL"),
         ("loan_status",         "TEXT"),
         ("ao_name",             "TEXT"),
     ]
@@ -3176,9 +3414,9 @@ def _merge_excel_files(self):
             "Loan Balance", "Total Amortized Cost", "Principal Loan",
             "Maturity", "Interest Rate",
             # P.Loan expanded
-            "Branch", "Loan Class", "Product Name", "Industry (PLoan)",
+            "Branch", "Loan Class", "Product Name",
             "Loan Date", "Term Unit", "Term", "Security", "Release Tag",
-            "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
+            "Loan Amount",
             "Loan Status", "AO Name",
         ]
         _MONETARY = {
@@ -3417,7 +3655,8 @@ def _get_all_filtered_rows(self) -> list:
     rows, _ = _db_query(
         search=search, session_id=self._sum_session_filter,
         sort_col=self._sum_sort_col, sort_asc=self._sum_sort_asc,
-        offset=0, limit=100_000)
+        offset=0, limit=100_000,
+        adv_filters=getattr(self, "_sum_adv_filters", {}))
     return [dict(r) for r in rows]
 
 
@@ -3473,15 +3712,12 @@ def _row_to_export_dict(row: dict) -> dict:
         "Branch":                              row.get("branch",             "") or "",
         "Loan Class":                          row.get("loan_class_name",    "") or "",
         "Product Name":                        row.get("product_name",       "") or "",
-        "Industry (PLoan)":                    row.get("industry_name_ploan","") or "",
         "Loan Date":                           row.get("loan_date",          "") or "",
         "Term Unit":                           row.get("term_unit",          "") or "",
         "Term":                                row.get("term",               "") or "",
         "Security":                            row.get("security",           "") or "",
         "Release Tag":                         row.get("release_tag",        "") or "",
         "Loan Amount":                         _fmt(row.get("loan_amount")),
-        "Loan Balance (PLoan)":                _fmt(row.get("loan_balance_ploan")),
-        "Amort. (PLoan)":                      _fmt(row.get("amort_ploan")),
         "Loan Status":                         row.get("loan_status",        "") or "",
         "AO Name":                             row.get("ao_name",            "") or "",
     }
@@ -3581,7 +3817,7 @@ def _export_excel(self):
                 "Total Household / Personal Expenses",
                 "Total Amortization History", "Total Current Amortization",
                 "Loan Balance", "Total Amortized Cost", "Principal Loan",
-                "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
+                "Loan Amount",
             }
             NET_COL  = "Total Net Income"
             SUM_COLS = TOTAL_COLS | {NET_COL}
@@ -3602,10 +3838,10 @@ def _export_excel(self):
                 "Loan Balance": 22, "Total Amortized Cost": 24,
                 "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
                 "Branch": 18, "Loan Class": 20, "Product Name": 22,
-                "Industry (PLoan)": 22, "Loan Date": 16, "Term Unit": 14,
+                "Loan Date": 16, "Term Unit": 14,
                 "Term": 10, "Security": 24, "Release Tag": 16,
-                "Loan Amount": 20, "Loan Balance (PLoan)": 22,
-                "Amort. (PLoan)": 18, "Loan Status": 16, "AO Name": 22,
+                "Loan Amount": 20,
+                "Loan Status": 16, "AO Name": 22,
             }
 
             for ci, h in enumerate(headers, 1):
@@ -3798,7 +4034,7 @@ def _validate_clients(self):
                     "loan_balance, amortized_cost, "
                     "principal_loan, maturity, interest_rate, "
                     "branch, loan_class_name, product_name, loan_date, security, loan_status, ao_name, "
-                    "loan_amount, loan_balance_ploan, amort_ploan "
+                    "loan_amount"
                     "FROM applicants"
                 ).fetchall()
             db_rows = [dict(r) for r in db_rows]
@@ -3857,8 +4093,6 @@ def _validate_clients(self):
                 ("loan_status",         "Loan Status"),
                 ("ao_name",             "AO Name"),
                 ("loan_amount",         "Loan Amount"),
-                ("loan_balance_ploan",  "Loan Balance (PLoan)"),
-                ("amort_ploan",         "Amort. (PLoan)"),
             ]
 
             missing_info_rows: list[dict] = []
