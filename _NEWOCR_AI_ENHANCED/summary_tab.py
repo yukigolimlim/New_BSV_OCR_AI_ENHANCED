@@ -1733,6 +1733,13 @@ def _build_lookup_summary_panel(self, parent):
         font=FF(8, "bold"), border_width=0)
     self._sum_validate_btn.pack(side="left", padx=(4, 0))
 
+    self._sum_adv_delete_btn = ctk.CTkButton(
+    btn_block, text="🗑  Adv. Delete", command=lambda: _advanced_delete(self),
+    width=90, height=30, corner_radius=6, fg_color="#5C1A1A",
+    hover_color="#7A2020", text_color="#FF8A80",
+    font=FF(8, "bold"), border_width=0)
+    self._sum_adv_delete_btn.pack(side="left", padx=(4, 0))
+
     # ── Controls row ──────────────────────────────────────────────────
     controls_row = tk.Frame(main, bg="#F0F4FA",
                             highlightbackground=BORDER_MID, highlightthickness=1)
@@ -2393,6 +2400,236 @@ def _delete_row(self, row_id: int):
     _db_delete_row(row_id)
     _refresh_summary(self)
 
+def _advanced_delete(self):
+    DELETE_COLS = [
+        ("applicant_name",   "Applicant Name"),
+        ("client_id",        "Client ID"),
+        ("pn",               "PN"),
+        ("industry_name",    "Industry Name"),
+        ("residence_address","Residence Address"),
+        ("office_address",   "Office Address"),
+        ("loan_status",      "Loan Status"),
+        ("ao_name",          "AO Name"),
+        ("branch",           "Branch"),
+        ("loan_class_name",  "Loan Class"),
+        ("product_name",     "Product Name"),
+        ("maturity",         "Maturity"),
+        ("interest_rate",    "Interest Rate"),
+        ("term_unit",        "Term Unit"),
+        ("release_tag",      "Release Tag"),
+        ("source_file",      "Source File"),
+        ("session_id",       "Session ID"),
+        ("status",           "Status"),
+    ]
+
+    win = tk.Toplevel(self)
+    win.title("Advanced Delete (Clear Column Data)")
+    win.configure(bg=CARD_WHITE)
+    win.resizable(False, False)
+    win.grab_set()
+
+    p_x = self.winfo_rootx(); p_y = self.winfo_rooty()
+    p_w = self.winfo_width(); p_h = self.winfo_height()
+    w_w, w_h = 580, 380
+    win.geometry(f"{w_w}x{w_h}+{p_x + (p_w - w_w)//2}+{p_y + (p_h - w_h)//2}")
+
+    hdr = tk.Frame(win, bg=NAVY_DEEP)
+    hdr.pack(fill="x")
+    tk.Label(hdr, text="🗑  Advanced Delete — Clear Column Data",
+             font=("Segoe UI", 12, "bold"), fg=WHITE, bg=NAVY_DEEP,
+             padx=16, pady=10).pack(side="left")
+    tk.Label(hdr,
+             text="Clears (sets to blank) the chosen column\n"
+                  "only for rows whose value matches the supplied filter.",
+             font=("Segoe UI", 8), fg="#8DA8C8", bg=NAVY_DEEP,
+             padx=16, justify="left").pack(side="left", pady=8)
+
+    body = tk.Frame(win, bg=CARD_WHITE)
+    body.pack(fill="both", expand=True, padx=20, pady=16)
+
+    # ── Column to CLEAR ───────────────────────────────────────────────
+    tk.Label(body, text="Column to clear:",
+             font=("Segoe UI", 9, "bold"), fg=TXT_NAVY, bg=CARD_WHITE,
+             anchor="w").pack(fill="x", pady=(0, 4))
+
+    col_var = tk.StringVar(value=DELETE_COLS[0][0])
+    col_labels = {db_col: label for db_col, label in DELETE_COLS}
+    display_to_db = {
+        f"{label}  ({db_col})": db_col
+        for db_col, label in DELETE_COLS
+    }
+
+    col_menu = ttk.Combobox(
+        body,
+        textvariable=col_var,
+        values=[f"{label}  ({db_col})" for db_col, label in DELETE_COLS],
+        state="readonly",
+        font=("Segoe UI", 9),
+        width=48,
+    )
+    col_menu.current(0)
+    col_menu.pack(fill="x", pady=(0, 12))
+
+    # ── Filter value(s) ───────────────────────────────────────────────
+    tk.Label(body,
+             text="Clear only rows where that column matches  "
+                  "(comma-separated, OR logic).\n"
+                  "Leave blank to clear ALL rows for that column.",
+             font=("Segoe UI", 8), fg=TXT_MUTED, bg=CARD_WHITE,
+             anchor="w", justify="left").pack(fill="x", pady=(0, 4))
+
+    val_var = tk.StringVar()
+    val_entry = tk.Entry(body, textvariable=val_var,
+                         font=("Segoe UI", 10), fg=TXT_NAVY, bg=WHITE,
+                         relief="solid", bd=1, insertbackground=NAVY_MID)
+    val_entry.pack(fill="x", ipady=5, pady=(0, 6))
+    val_entry.focus_set()
+
+    # ── Match mode + All button ───────────────────────────────────────
+    match_mode = tk.StringVar(value="partial")
+    mode_row = tk.Frame(body, bg=CARD_WHITE)
+    mode_row.pack(fill="x", pady=(0, 10))
+    tk.Label(mode_row, text="Match mode:",
+             font=("Segoe UI", 8), fg=TXT_MUTED, bg=CARD_WHITE).pack(side="left")
+    tk.Radiobutton(mode_row, text="Partial (LIKE)", variable=match_mode,
+                   value="partial", font=("Segoe UI", 8),
+                   fg=TXT_NAVY, bg=CARD_WHITE, activebackground=CARD_WHITE,
+                   selectcolor=WHITE).pack(side="left", padx=(8, 0))
+    tk.Radiobutton(mode_row, text="Exact", variable=match_mode,
+                   value="exact", font=("Segoe UI", 8),
+                   fg=TXT_NAVY, bg=CARD_WHITE, activebackground=CARD_WHITE,
+                   selectcolor=WHITE).pack(side="left", padx=(8, 0))
+
+    def _fill_all():
+        db_col = display_to_db.get(col_menu.get(), col_var.get())
+        try:
+            with _db_connect() as conn:
+                rows = conn.execute(
+                    f"SELECT DISTINCT {db_col} FROM applicants "
+                    f"WHERE {db_col} IS NOT NULL AND TRIM({db_col}) != '' "
+                    f"ORDER BY {db_col}"
+                ).fetchall()
+            all_vals = [str(r[0]).strip() for r in rows if r[0]]
+            val_var.set(", ".join(all_vals))
+        except Exception as exc:
+            preview_var.set(f"Error: {exc}")
+
+    tk.Button(mode_row, text="All", font=("Segoe UI", 7, "bold"),
+              fg=TXT_ON_LIME, bg=LIME_MID, activebackground=LIME_BRIGHT,
+              activeforeground=TXT_ON_LIME, relief="flat", bd=0,
+              padx=8, pady=2, cursor="hand2",
+              command=_fill_all).pack(side="left", padx=(12, 0))
+
+    # ── Live preview ──────────────────────────────────────────────────
+    preview_var = tk.StringVar(value="")
+    tk.Label(body, textvariable=preview_var,
+             font=("Segoe UI", 9, "bold"),
+             fg=ACCENT_RED, bg=CARD_WHITE, anchor="w").pack(fill="x")
+
+    def _update_preview(*_):
+        db_col = display_to_db.get(col_menu.get(), col_var.get())
+        raw    = val_var.get().strip()
+        try:
+            count = _count_col_matches(db_col, raw, match_mode.get())
+            preview_var.set(
+                f"⚠  {count} row(s) will have [{col_labels.get(db_col, db_col)}] cleared."
+                if count > 0 else "✓  No matching rows found.")
+        except Exception as exc:
+            preview_var.set(f"Error: {exc}")
+
+    val_var.trace_add("write",   _update_preview)
+    match_mode.trace_add("write", _update_preview)
+    col_menu.bind("<<ComboboxSelected>>",
+                  lambda e: (_update_preview(), _update_preview()))  # refresh twice so col updates
+
+    # ── Buttons ───────────────────────────────────────────────────────
+    btn_bar = tk.Frame(win, bg=CARD_WHITE,
+                       highlightbackground=BORDER_MID, highlightthickness=1)
+    btn_bar.pack(fill="x", padx=20, pady=(4, 14))
+
+    def _on_clear():
+        db_col = display_to_db.get(col_menu.get(), col_var.get())
+        raw    = val_var.get().strip()
+        count  = _count_col_matches(db_col, raw, match_mode.get())
+        if count == 0:
+            messagebox.showinfo("Advanced Delete", "No rows match — nothing changed.")
+            return
+        col_display = col_labels.get(db_col, db_col)
+        filter_desc = f'where value matches:  "{raw}"' if raw else "in ALL rows"
+        if not messagebox.askyesno(
+                "Confirm Clear",
+                f"This will blank out the [{col_display}] column\n"
+                f"{filter_desc}\n\n"
+                f"Affects {count} row(s).  This cannot be undone.  Continue?",
+                icon="warning"):
+            return
+        cleared = _db_clear_column(db_col, raw, match_mode.get())
+        win.destroy()
+        _refresh_summary(self)
+        messagebox.showinfo("Advanced Delete",
+                            f"✓  [{col_display}] cleared on {cleared} row(s).")
+
+    tk.Button(btn_bar, text="✕  Cancel",
+              font=("Segoe UI", 9, "bold"), fg=TXT_SOFT, bg="#F0F0F0",
+              activebackground="#E0E0E0", relief="flat", bd=0,
+              padx=14, pady=7, cursor="hand2",
+              command=win.destroy).pack(side="right", padx=(4, 8), pady=8)
+
+    ctk.CTkButton(btn_bar, text="🗑  Clear Column Data",
+                  command=_on_clear,
+                  width=160, height=32, corner_radius=6,
+                  fg_color="#7A2020", hover_color="#9B2226",
+                  text_color=WHITE,
+                  font=FF(9, "bold")).pack(side="right", padx=(0, 4), pady=8)
+
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+
+def _count_col_matches(db_col: str, raw_filter: str, mode: str) -> int:
+    """Count rows that would be affected by the clear operation."""
+    with _db_connect() as conn:
+        if not raw_filter:
+            # No filter = all non-null rows
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM applicants "
+                f"WHERE {db_col} IS NOT NULL AND TRIM(CAST({db_col} AS TEXT)) != ''"
+            ).fetchone()
+        else:
+            values = [v.strip() for v in raw_filter.split(",") if v.strip()]
+            if mode == "exact":
+                placeholders = " OR ".join(
+                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(?))"
+                     for _ in values])
+            else:
+                placeholders = " OR ".join(
+                    [f"CAST({db_col} AS TEXT) LIKE ?" for _ in values])
+                values = [f"%{v}%" for v in values]
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM applicants WHERE {placeholders}",
+                values).fetchone()
+        return row[0] if row else 0
+
+
+def _db_clear_column(db_col: str, raw_filter: str, mode: str) -> int:
+    """Set the column to NULL for all matching rows. Returns rows affected."""
+    with _db_connect() as conn:
+        if not raw_filter:
+            conn.execute(f"UPDATE applicants SET {db_col} = NULL")
+        else:
+            values = [v.strip() for v in raw_filter.split(",") if v.strip()]
+            if mode == "exact":
+                placeholders = " OR ".join(
+                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(?))"
+                     for _ in values])
+            else:
+                placeholders = " OR ".join(
+                    [f"CAST({db_col} AS TEXT) LIKE ?" for _ in values])
+                values = [f"%{v}%" for v in values]
+            conn.execute(
+                f"UPDATE applicants SET {db_col} = NULL WHERE {placeholders}",
+                values)
+        return conn.execute("SELECT changes()").fetchone()[0]
+
 
 def _clear_all(self):
     totals = _db_totals()
@@ -2934,6 +3171,19 @@ def _import_other_data_file(self):
 #  PRINCIPAL LOAN IMPORT
 # ═══════════════════════════════════════════════════════════════════════
 
+def _normalize_name_for_matching(name: str) -> str:
+    """Normalize name for matching by removing suffixes and extra spaces."""
+    if not name:
+        return ""
+    normalized = name.upper().strip()
+    suffixes = [" JR", " SR", " II", " III", " IV", " JR.", " SR.", " JR", " SR"]
+    for suffix in suffixes:
+        if normalized.endswith(suffix):
+            normalized = normalized[:-len(suffix)]
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
 def _import_ploan_file(self):
     path = filedialog.askopenfilename(
         title="Import Principal Loan Data",
@@ -2979,16 +3229,14 @@ def _import_ploan_file(self):
             if not records:
                 raise ValueError("No data rows found in the file.")
 
-            # ── 2. Column detection helper (exact match first, partial second) ──
+            # ── 2. Column detection ──────────────────────────────────────
             def _find_col(cols, *keywords):
-                # Pass 1: exact match only
                 for kw in keywords:
                     kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
                     for c in cols:
                         c_norm = re.sub(r"[\s_\-]", "", c.lower())
                         if kw_norm == c_norm:
                             return c
-                # Pass 2: partial match fallback
                 for kw in keywords:
                     kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
                     for c in cols:
@@ -2997,7 +3245,6 @@ def _import_ploan_file(self):
                             return c
                 return None
 
-            # ── 3. Detect columns ────────────────────────────────────────
             col_clientname = _find_col(all_cols,
                                        "clientname", "client name", "client_name",
                                        "applicant", "applicantname", "name")
@@ -3006,33 +3253,30 @@ def _import_ploan_file(self):
                     f"Could not detect a client name column.\n\n"
                     f"File has: {', '.join(all_cols)}")
 
-            # ── Column map: (db_col, is_monetary, keyword hints...) ──────
-            # is_monetary=True  → values are summed across multiple loans
-            # is_monetary=False → unique values are collected and joined with ", "
-            # NOTE: "term" uses only the exact column name to avoid matching "termunit"
-            COL_MAP_DEFS = [
-            ("client_id",           False, "clientid", "client id", "client_id", "cid"),
-            ("pn",                  False, "pnid", "pn id", "pn_id", "pn", "promissorynote"),
-            ("branch",              False, "branch", "branchname", "branch name"),
-            ("loan_class_name",     False, "loanclassname", "loan class name", "loan class", "loanclass"),
-            ("product_name",        False, "productname", "product name", "product_name", "product"),
-            ("industry_name",       False, "industryname", "industry name", "industry_name", "industry"),
-            ("loan_date",           False, "loandate", "loan date", "loan_date", "dateofrelease", "releasedate"),
-            ("maturity",            False, "maturity", "maturitydate", "maturity date", "duedate", "due date"),
-            ("interest_rate",       False, "interest", "interestrate", "interest rate", "interest_rate", "rate", "intrate"),
-            ("term_unit",           False, "termunit", "term unit", "term_unit", "paymentfrequency", "frequency"),
-            ("term",                False, "term"),
-            ("security",            False, "security", "collateral", "securitydescription"),
-            ("release_tag",         False, "releasetag", "release tag", "release_tag", "tag"),
-            ("loan_amount",         True,  "loanamount", "loan amount", "principalloan", "principal loan", "amount"),
-            ("loan_balance",        True,  "loanbalance", "loan balance"),
-            ("amort_current_total", True,  "ammortization", "amortization"),
-            ("loan_status",         False, "loanstatus", "loan status", "status", "accountstatus"),
-            ("ao_name",             False, "aoname", "ao name", "ao_name", "accountofficer", "account officer", "ao"),
-        ]
+            col_clientid_file = _find_col(all_cols,
+                                          "clientid", "client id", "client_id", "cid")
 
-            # Detect which file column maps to each db column
-            # detected: db_col -> (file_col, is_monetary)
+            COL_MAP_DEFS = [
+                ("client_id",           False, "clientid", "client id", "client_id", "cid"),
+                ("pn",                  False, "pnid", "pn id", "pn_id", "pn", "promissorynote"),
+                ("branch",              False, "branch", "branchname", "branch name"),
+                ("loan_class_name",     False, "loanclassname", "loan class name", "loan class", "loanclass"),
+                ("product_name",        False, "productname", "product name", "product_name", "product"),
+                ("industry_name",       False, "industryname", "industry name", "industry_name", "industry"),
+                ("loan_date",           False, "loandate", "loan date", "loan_date", "dateofrelease", "releasedate"),
+                ("maturity",            False, "maturity", "maturitydate", "maturity date", "duedate", "due date"),
+                ("interest_rate",       False, "interest", "interestrate", "interest rate", "interest_rate", "rate", "intrate"),
+                ("term_unit",           False, "termunit", "term unit", "term_unit", "paymentfrequency", "frequency"),
+                ("term",                False, "term"),
+                ("security",            False, "security", "collateral", "securitydescription"),
+                ("release_tag",         False, "releasetag", "release tag", "release_tag", "tag"),
+                ("loan_amount",         True,  "loanamount", "loan amount", "principalloan", "principal loan", "amount"),
+                ("loan_balance",        True,  "loanbalance", "loan balance"),
+                ("amort_current_total", True,  "ammortization", "amortization"),
+                ("loan_status",         False, "loanstatus", "loan status", "status", "accountstatus"),
+                ("ao_name",             False, "aoname", "ao name", "ao_name", "accountofficer", "account officer", "ao"),
+            ]
+
             detected: dict[str, tuple] = {}
             for entry in COL_MAP_DEFS:
                 db_col      = entry[0]
@@ -3041,24 +3285,23 @@ def _import_ploan_file(self):
                 file_col    = _find_col(all_cols, *keywords)
                 detected[db_col] = (file_col, is_monetary)
 
-            # ── 4. Aggregate all rows per client ─────────────────────────
+            # ── 3. Aggregate all rows per client ─────────────────────────
             aggregated: dict[str, dict] = {}
-            bad_rows:   list[tuple]     = []
 
             for file_row in records:
                 client_name = str(file_row.get(col_clientname) or "").strip()
                 if not client_name:
                     continue
 
-                norm_key = _normalise_for_sim(client_name)
+                original_key = client_name.upper()
 
-                if norm_key not in aggregated:
-                    bucket: dict = {"_display_name": client_name}
+                if original_key not in aggregated:
+                    bucket: dict = {"_display_name": client_name, "_original_key": original_key}
                     for db_col, (file_col, is_monetary) in detected.items():
                         bucket[db_col] = 0.0 if is_monetary else []
-                    aggregated[norm_key] = bucket
+                    aggregated[original_key] = bucket
 
-                bucket = aggregated[norm_key]
+                bucket = aggregated[original_key]
 
                 for db_col, (file_col, is_monetary) in detected.items():
                     if file_col is None:
@@ -3071,20 +3314,20 @@ def _import_ploan_file(self):
                             val = float(cleaned) if cleaned else None
                         except ValueError:
                             val = None
-                            if raw:
-                                bad_rows.append(
-                                    (norm_key, f"bad {db_col}: '{raw}'"))
                         if val is not None:
                             bucket[db_col] = (bucket[db_col] or 0.0) + val
                     else:
                         if raw and raw not in bucket[db_col]:
                             bucket[db_col].append(raw)
 
-            # ── 5. Flatten aggregated buckets into final write-ready dicts ─
+            # ── 4. Flatten aggregated buckets ────────────────────────────
             write_ready: dict[str, dict] = {}
 
-            for norm_key, bucket in aggregated.items():
-                record: dict = {"_display_name": bucket["_display_name"]}
+            for key, bucket in aggregated.items():
+                record: dict = {
+                    "_display_name": bucket["_display_name"],
+                    "_original_key": bucket["_original_key"]
+                }
                 for db_col, (file_col, is_monetary) in detected.items():
                     if file_col is None:
                         record[db_col] = None
@@ -3095,9 +3338,350 @@ def _import_ploan_file(self):
                     else:
                         joined = ", ".join(raw_val) if raw_val else None
                         record[db_col] = joined
-                write_ready[norm_key] = record
+                write_ready[key] = record
 
-            # ── 6. Build client_id → db row id lookup ────────────────────
+            # ══════════════════════════════════════════════════════════════
+            #  LOCAL NAME-MATCHING HELPERS
+            #
+            #  _abbreviate_middle(norm_name)
+            #  ──────────────────────────────
+            #  Collapses every middle token to its first letter while
+            #  keeping compound surnames (DELA CRUZ, DE LOS SANTOS, SAN
+            #  PEDRO, etc.) fully intact.
+            #
+            #  Examples:
+            #    "JUAN CARLOS DELA CRUZ"   → "JUAN C DELA CRUZ"
+            #    "MARIA THERESA SAN PEDRO" → "MARIA T SAN PEDRO"
+            #    "JUAN DELA CRUZ"          → "JUAN DELA CRUZ"  (no middle)
+            #    "JOSE P RIZAL"            → "JOSE P RIZAL"    (already initial)
+            #
+            #  _middle_aware_score(a, b)
+            #  ──────────────────────────
+            #  Returns the BEST similarity across four representations:
+            #    (a_full vs b_full), (a_abbr vs b_abbr),
+            #    (a_full vs b_abbr), (a_abbr vs b_full)
+            #
+            #  Taking the MAX ensures we never penalise a pair just because
+            #  one source stored "CARLOS" and the other stored "C".
+            # ══════════════════════════════════════════════════════════════
+
+            _COMPOUND_PREFIXES = {
+                "DELA", "DE", "DEL", "LOS", "LAS", "SAN", "SANTA",
+                "SANTO", "NG", "NGA",
+            }
+
+            def _abbreviate_middle(norm_name: str) -> str:
+                tokens = norm_name.split()
+                if len(tokens) <= 2:
+                    return norm_name
+
+                # Walk from the right to find where the surname starts,
+                # absorbing compound-prefix tokens (DELA, DE, SAN, etc.)
+                surname_tokens: list[str] = []
+                i = len(tokens) - 1
+                surname_tokens.insert(0, tokens[i])
+                i -= 1
+                while i > 0 and tokens[i] in _COMPOUND_PREFIXES:
+                    surname_tokens.insert(0, tokens[i])
+                    i -= 1
+
+                # tokens[0]       = first name
+                # tokens[1 .. i]  = middle name(s) / initials  (may be empty)
+                # surname_tokens  = last name (compound-safe)
+                first      = tokens[0]
+                middle     = tokens[1: i + 1]
+                abbreviated = [t[0] for t in middle if t]
+
+                return " ".join([first] + abbreviated + surname_tokens)
+
+            def _middle_aware_score(name_a: str, name_b: str) -> float:
+                a_full = name_a
+                b_full = name_b
+                a_abbr = _abbreviate_middle(name_a)
+                b_abbr = _abbreviate_middle(name_b)
+                return max(
+                    _similarity(a_full, b_full),
+                    _similarity(a_abbr, b_abbr),
+                    _similarity(a_full, b_abbr),
+                    _similarity(a_abbr, b_full),
+                )
+
+            # ══════════════════════════════════════════════════════════════
+            #  PHASE A — CLIENT ID ASSIGNMENT
+            #
+            #  Strategy (in priority order):
+            #    1. File has a Client ID AND it already exists in DB
+            #       → direct match, confirm name similarity (loose check)
+            #    2. File has a Client ID but it's NOT yet in DB
+            #       → find best DB row by name, assign if confident
+            #    3. File has NO Client ID
+            #       → name-only matching via _resolve_name_similarity
+            #
+            #  _best_db_match pipeline (best score among all three wins):
+            #    1. _first_last_match  → compound-surname aware, middle-
+            #                            agnostic → score floored at 0.90
+            #    2. _middle_aware_score ≥ 0.82 → full / abbreviated middle
+            #                            compared in all four combinations
+            #    3. raw _similarity ≥ 0.80 → plain token-sort fuzzy fallback
+            # ══════════════════════════════════════════════════════════════
+
+            # Fetch ALL current DB rows once
+            with _db_connect() as _conn:
+                db_all_rows = [dict(r) for r in _conn.execute(
+                    "SELECT id, applicant_name, client_id FROM applicants "
+                    "WHERE applicant_name IS NOT NULL"
+                ).fetchall()]
+
+            # Pre-build normalised-name → db row list for fast iteration
+            db_norm_index: list[tuple[str, dict]] = [
+                (_normalise_for_sim(r["applicant_name"]), r)
+                for r in db_all_rows
+                if r.get("applicant_name")
+            ]
+
+            # client_id → db_id map
+            existing_cid_map: dict[str, int] = {
+                str(r["client_id"]).strip().upper(): r["id"]
+                for r in db_all_rows
+                if r.get("client_id") and str(r["client_id"]).strip()
+            }
+
+            def _best_db_match(file_display_name: str) -> tuple[dict | None, float, str]:
+                """
+                Find the single best-matching DB row for *file_display_name*.
+                Returns (db_row | None, score, reason_str).
+
+                Pipeline:
+                  1. _first_last_match       → floored at 0.90
+                  2. _middle_aware_score ≥ 0.82
+                  3. raw _similarity    ≥ 0.80
+                """
+                file_norm = _normalise_for_sim(file_display_name)
+                if not file_norm:
+                    return None, 0.0, "empty_name"
+
+                best_row    = None
+                best_score  = 0.0
+                best_reason = "no_match"
+
+                for db_norm, db_row in db_norm_index:
+                    if not db_norm:
+                        continue
+
+                    if _first_last_match(file_norm, db_norm):
+                        raw_fuzzy = _similarity(file_norm, db_norm)
+                        score     = max(raw_fuzzy, 0.90)
+                        reason    = "first_last_match"
+                    else:
+                        ma_score = _middle_aware_score(file_norm, db_norm)
+                        if ma_score >= 0.82:
+                            score  = ma_score
+                            reason = "middle_aware_match"
+                        else:
+                            raw_fuzzy = _similarity(file_norm, db_norm)
+                            if raw_fuzzy >= 0.80:
+                                score  = raw_fuzzy
+                                reason = "fuzzy_match"
+                            else:
+                                continue
+
+                    if score > best_score or (
+                            score == best_score
+                            and reason == "first_last_match"
+                            and best_reason != "first_last_match"):
+                        best_score  = score
+                        best_row    = db_row
+                        best_reason = reason
+
+                return best_row, best_score, best_reason
+
+            # Tracking counters / logs
+            cid_assigned_count = 0
+            cid_updated_count  = 0
+            no_match_count     = 0
+            match_details      = []
+            conflict_details   = []
+
+            for key, record in write_ready.items():
+                display_name   = record["_display_name"]
+                file_cid       = str(record.get("client_id") or "").strip()
+                file_cid_upper = file_cid.upper() if file_cid else ""
+
+                # ── Case 1: file has a CID that already exists in DB ──────
+                if file_cid_upper and file_cid_upper in existing_cid_map:
+                    existing_db_id = existing_cid_map[file_cid_upper]
+                    existing_row   = next(
+                        (r for r in db_all_rows if r["id"] == existing_db_id), None)
+                    if existing_row:
+                        existing_name = existing_row.get("applicant_name") or ""
+                        file_norm = _normalise_for_sim(display_name)
+                        db_norm   = _normalise_for_sim(existing_name)
+                        if _first_last_match(file_norm, db_norm):
+                            score  = max(_similarity(file_norm, db_norm), 0.90)
+                            reason = "first_last_match"
+                        else:
+                            ma = _middle_aware_score(file_norm, db_norm)
+                            score  = ma
+                            reason = "middle_aware_match" if ma >= 0.82 else "fuzzy"
+
+                        if score >= 0.75:
+                            with _db_connect() as _conn:
+                                _conn.execute(
+                                    "UPDATE applicants SET client_id=? WHERE id=?",
+                                    (file_cid, existing_db_id))
+                            cid_updated_count += 1
+                            match_details.append(
+                                f"✓ Confirmed: '{display_name}' → CID {file_cid} "
+                                f"(DB: '{existing_name}', {reason}, {score:.0%})")
+                        else:
+                            conflict_details.append(
+                                f"⚠ Conflict: file '{display_name}' CID {file_cid} "
+                                f"already owned by DB '{existing_name}' ({score:.0%})")
+                    continue
+
+                # ── Case 2: file has a CID, but it's not yet in the DB ────
+                if file_cid_upper:
+                    best_row, best_score, best_reason = _best_db_match(display_name)
+                    if best_row and best_score >= 0.80:
+                        db_id = best_row["id"]
+                        with _db_connect() as _conn:
+                            _conn.execute(
+                                "UPDATE applicants SET client_id=? WHERE id=?",
+                                (file_cid, db_id))
+                        existing_cid_map[file_cid_upper] = db_id
+                        for r in db_all_rows:
+                            if r["id"] == db_id:
+                                r["client_id"] = file_cid
+                                break
+                        cid_assigned_count += 1
+                        match_details.append(
+                            f"✓ Assigned: '{display_name}' → CID {file_cid} "
+                            f"(DB: '{best_row['applicant_name']}', "
+                            f"{best_reason}, {best_score:.0%})")
+                    else:
+                        no_match_count += 1
+                        best_name = best_row["applicant_name"] if best_row else "—"
+                        match_details.append(
+                            f"✗ No match: '{display_name}' CID {file_cid} "
+                            f"(best DB: '{best_name}', {best_score:.0%})")
+                    continue
+
+                # ── Case 3: file has NO CID — use module-level resolver ───
+                hits, sim_label = _resolve_name_similarity(display_name)
+                if hits:
+                    match_details.append(
+                        f"ℹ  No CID in file for '{display_name}' "
+                        f"({sim_label} name match found, no CID assigned)")
+                else:
+                    no_match_count += 1
+                    match_details.append(
+                        f"✗ No match: '{display_name}' (no CID in file, "
+                        f"no name match found)")
+
+            # ══════════════════════════════════════════════════════════════
+            #  PHASE A.5 — BACKFILL CIDs FOR DB ROWS STILL WITHOUT ONE
+            #
+            #  For every DB row still missing a client_id after Phase A,
+            #  we search all file rows that carry a CID and use the same
+            #  three-tier matching pipeline (first_last → middle_aware →
+            #  fuzzy) with the same 0.80 threshold.
+            #
+            #  _middle_aware_score is especially valuable here: a DB record
+            #  with "JUAN CARLOS DELA CRUZ" will now correctly match a file
+            #  row for "JUAN C DELA CRUZ" (and vice-versa).
+            #
+            #  CID collision guard: if the best CID is already owned by
+            #  another DB row, we skip and log it as a conflict.
+            # ══════════════════════════════════════════════════════════════
+
+            file_cid_name_pairs: list[tuple[str, str]] = []
+            for key, record in write_ready.items():
+                fcid = str(record.get("client_id") or "").strip()
+                if fcid:
+                    file_cid_name_pairs.append(
+                        (_normalise_for_sim(record["_display_name"]), fcid)
+                    )
+
+            backfill_assigned = 0
+            backfill_log      = []
+
+            if file_cid_name_pairs:
+                with _db_connect() as _conn:
+                    no_cid_rows = [dict(r) for r in _conn.execute(
+                        "SELECT id, applicant_name FROM applicants "
+                        "WHERE (client_id IS NULL OR TRIM(client_id) = '') "
+                        "AND applicant_name IS NOT NULL"
+                    ).fetchall()]
+
+                for db_row in no_cid_rows:
+                    db_norm = _normalise_for_sim(db_row["applicant_name"])
+                    if not db_norm:
+                        continue
+
+                    best_cid       = None
+                    best_score     = 0.0
+                    best_reason    = ""
+                    best_file_name = ""
+
+                    for file_norm, fcid in file_cid_name_pairs:
+                        # Three-tier match (same as _best_db_match)
+                        if _first_last_match(file_norm, db_norm):
+                            raw_fuzzy = _similarity(file_norm, db_norm)
+                            score     = max(raw_fuzzy, 0.90)
+                            reason    = "first_last_match"
+                        else:
+                            ma_score = _middle_aware_score(file_norm, db_norm)
+                            if ma_score >= 0.82:
+                                score  = ma_score
+                                reason = "middle_aware_match"
+                            else:
+                                raw_fuzzy = _similarity(file_norm, db_norm)
+                                if raw_fuzzy >= 0.80:
+                                    score  = raw_fuzzy
+                                    reason = "fuzzy_match"
+                                else:
+                                    continue
+
+                        if score > best_score:
+                            best_score     = score
+                            best_cid       = fcid
+                            best_reason    = reason
+                            best_file_name = file_norm
+
+                    if best_cid and best_score >= 0.80:
+                        best_cid_upper = best_cid.upper()
+                        if best_cid_upper not in existing_cid_map:
+                            with _db_connect() as _conn:
+                                _conn.execute(
+                                    "UPDATE applicants SET client_id=? WHERE id=?",
+                                    (best_cid, db_row["id"])
+                                )
+                            existing_cid_map[best_cid_upper] = db_row["id"]
+                            for r in db_all_rows:
+                                if r["id"] == db_row["id"]:
+                                    r["client_id"] = best_cid
+                                    break
+                            backfill_assigned += 1
+                            backfill_log.append(
+                                f"✓ Backfilled: DB '{db_row['applicant_name']}' "
+                                f"← CID {best_cid} "
+                                f"(file: '{best_file_name}', "
+                                f"{best_reason}, {best_score:.0%})")
+                        else:
+                            owner_id   = existing_cid_map[best_cid_upper]
+                            owner_name = next(
+                                (r["applicant_name"] for r in db_all_rows
+                                 if r["id"] == owner_id), "unknown")
+                            backfill_log.append(
+                                f"⚠ Skip backfill: CID {best_cid} already owned by "
+                                f"DB '{owner_name}' — skipped for "
+                                f"'{db_row['applicant_name']}' ({best_score:.0%})")
+
+            # ══════════════════════════════════════════════════════════════
+            #  PHASE B — WRITE LOAN DATA (all other columns)
+            #  Keyed on Client ID wherever possible, name-match fallback.
+            # ══════════════════════════════════════════════════════════════
+
             with _db_connect() as _conn:
                 cid_to_dbid: dict[str, int] = {
                     str(r[0]).strip().upper(): r[1]
@@ -3107,87 +3691,93 @@ def _import_ploan_file(self):
                     ).fetchall()
                 }
 
-            # ── 7. Match & write to DB ────────────────────────────────────
-            updated_by_id   = []
-            updated_by_name = []
-            updated_relaxed = []
-            not_found       = []
+            loan_balance_updated = 0
+            other_data_updated   = 0
+            write_log            = []
 
-            def _write_entry(conn, db_row_id: int, record: dict):
+            for key, record in write_ready.items():
+                display_name = record["_display_name"]
+                file_cid     = str(record.get("client_id") or "").strip().upper()
+
+                db_id = None
+                if file_cid and file_cid in cid_to_dbid:
+                    db_id = cid_to_dbid[file_cid]
+                else:
+                    best_row, best_score, best_reason = _best_db_match(display_name)
+                    if best_row and best_score >= 0.80:
+                        db_id = best_row["id"]
+                        write_log.append(
+                            f"ℹ  Data write via name match: '{display_name}' "
+                            f"→ DB id {db_id} ({best_reason}, {best_score:.0%})")
+
+                if db_id is None:
+                    write_log.append(
+                        f"✗ Cannot write data — no DB row found for '{display_name}'")
+                    continue
+
                 parts, vals = [], []
-                for db_col in detected:
+                for db_col, (file_col, is_monetary) in detected.items():
+                    if db_col == "client_id":
+                        continue
                     val = record.get(db_col)
                     if val is None:
                         continue
                     parts.append(f"{db_col}=?")
                     vals.append(val)
+
                 if record.get("loan_amount") is not None:
                     parts.append("principal_loan=?")
                     vals.append(record["loan_amount"])
+
                 if parts:
-                    conn.execute(
-                        f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
-                        vals + [db_row_id])
-
-            with _db_connect() as conn:
-                for norm_key, record in write_ready.items():
-                    display_name = record["_display_name"]
-
-                    file_cid = str(record.get("client_id") or "").strip().upper()
-                    if file_cid and file_cid in cid_to_dbid:
-                        db_id = cid_to_dbid[file_cid]
-                        _write_entry(conn, db_id, record)
-                        updated_by_id.append((norm_key, db_id))
-                        continue
-
-                    hits, sim_label = _resolve_name_similarity(display_name)
-                    if not hits:
-                        not_found.append(norm_key)
-                        continue
-
-                    for hit_id, _ in hits:
-                        _write_entry(conn, hit_id, record)
-
-                    if sim_label in ("exact", "high"):
-                        updated_by_name.append((norm_key, hits[0][1]))
-                    else:
-                        updated_relaxed.append((norm_key, hits[0][1]))
+                    with _db_connect() as _conn:
+                        _conn.execute(
+                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+                            vals + [db_id])
+                    if record.get("loan_balance") is not None:
+                        loan_balance_updated += 1
+                    other_data_updated += 1
 
             self.after(0, lambda: _refresh_summary(self))
 
-            # ── 8. Build result message ───────────────────────────────────
-            detected_display = ", ".join(
-                f"{db_col}='{fc}'" for db_col, (fc, _) in detected.items() if fc
-            )
-            total_updated = len(updated_by_id) + len(updated_by_name) + len(updated_relaxed)
-            msg  = "Principal Loan import complete.\n\n"
-            msg += f"Columns detected      : {detected_display}\n\n"
-            msg += f"✓  Matched by ID      : {len(updated_by_id):,} record(s)\n"
-            msg += f"✓  Matched by name    : {len(updated_by_name):,} record(s)\n"
-            msg += f"Total updated         : {total_updated:,} record(s)\n"
-            msg += f"–  Not found          : {len(not_found):,} name(s)\n"
-            if bad_rows:
-                msg += f"⚠  Bad numeric values : {len(bad_rows):,} row(s)\n"
-            if not detected.get("client_id") or not detected["client_id"][0]:
-                msg += "\nℹ  No Client ID column found — used name matching only.\n"
-            if updated_relaxed:
-                msg += f"\n⚠  {len(updated_relaxed)} matched via relaxed similarity — please verify:\n"
-                for file_n, db_id in updated_relaxed[:10]:
-                    msg += f"  • {file_n}  →  DB id: {db_id}\n"
-                if len(updated_relaxed) > 10:
-                    msg += f"  … and {len(updated_relaxed) - 10} more\n"
-            if not_found:
-                msg += "\nNames with no DB match:\n"
-                for k in not_found[:15]:
-                    msg += f"  • {k}\n"
-                if len(not_found) > 15:
-                    msg += f"  … and {len(not_found) - 15} more\n"
-            if bad_rows:
-                msg += "\nRows with unparseable numeric values:\n"
-                for k, reason in bad_rows[:10]:
-                    msg += f"  • {k}  ({reason})\n"
-                if len(bad_rows) > 10:
-                    msg += f"  … and {len(bad_rows) - 10} more\n"
+            # ── Result message ────────────────────────────────────────────
+            msg  = "=" * 60 + "\n"
+            msg += "PRINCIPAL LOAN IMPORT — RESULTS\n"
+            msg += "=" * 60 + "\n\n"
+            msg += f"✓  Client IDs assigned   : {cid_assigned_count}\n"
+            msg += f"✓  Client IDs confirmed  : {cid_updated_count}\n"
+            msg += f"✓  Client IDs backfilled : {backfill_assigned}\n"
+            msg += f"✓  Loan data rows written: {other_data_updated}\n"
+            msg += f"✓  Loan balances updated : {loan_balance_updated}\n"
+            msg += f"✗  No match found        : {no_match_count}\n"
+
+            if conflict_details:
+                msg += f"\n⚠  CID conflicts ({len(conflict_details)}):\n"
+                for d in conflict_details[:10]:
+                    msg += f"  {d}\n"
+                if len(conflict_details) > 10:
+                    msg += f"  … and {len(conflict_details) - 10} more\n"
+
+            if backfill_log:
+                msg += f"\n--- BACKFILL LOG ({len(backfill_log)} entries) ---\n"
+                for entry in backfill_log[:20]:
+                    msg += f"  {entry}\n"
+                if len(backfill_log) > 20:
+                    msg += f"  … and {len(backfill_log) - 20} more\n"
+
+            if write_log:
+                msg += f"\n--- DATA WRITE LOG ({len(write_log)} entries) ---\n"
+                for entry in write_log[:15]:
+                    msg += f"  {entry}\n"
+                if len(write_log) > 15:
+                    msg += f"  … and {len(write_log) - 15} more\n"
+
+            if match_details:
+                msg += f"\n--- CLIENT ID MATCH DETAILS ---\n"
+                for detail in match_details[:25]:
+                    msg += f"  {detail}\n"
+                if len(match_details) > 25:
+                    msg += f"  … and {len(match_details) - 25} more\n"
 
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
@@ -4292,6 +4882,45 @@ def _validate_clients(self):
                 ws3.merge_cells("A2:D2")
                 ws3.row_dimensions[2].height = 22
             ws3.freeze_panes = "A2"
+
+            # ── Sheet 4: Matched Comparison ────────────────────────────────────
+            ws4 = wb_out.create_sheet("Matched Comparison")
+            ws4.column_dimensions["A"].width = 20
+            ws4.column_dimensions["B"].width = 32
+            ws4.column_dimensions["C"].width = 32
+            ws4.column_dimensions["D"].width = 14
+
+            _hc(ws4, 1, 1, "Client ID",          fill_hdr_green)
+            _hc(ws4, 1, 2, "DB Applicant Name",   fill_hdr_green)
+            _hc(ws4, 1, 3, "Ref Client Name",     fill_hdr_green)
+            _hc(ws4, 1, 4, "Name Similarity %",   fill_hdr_green)
+            ws4.row_dimensions[1].height = 24
+
+            if matched:
+                for ri4, (db_cid, db_name, ref_name) in enumerate(matched, 2):
+                    # Re-compute score for display
+                    score_pct = round(
+                        _similarity(
+                            _normalise_for_sim(db_name.upper()),
+                            _normalise_for_sim(ref_name.upper())
+                        ) * 100, 1
+                    )
+                    # Highlight rows where names differ slightly (< 100% match)
+                    fill_row = (fill_match if score_pct == 100
+                                else PatternFill("solid", fgColor="C7F9CC"))  # lighter green
+
+                    _bc(ws4, ri4, 1, db_cid,           fill_row, bold_f)
+                    _bc(ws4, ri4, 2, db_name,           fill_row)
+                    _bc(ws4, ri4, 3, ref_name,           fill_row)
+                    _bc(ws4, ri4, 4, f"{score_pct}%",   fill_row, bold_f, ctr_al)
+                    ws4.row_dimensions[ri4].height = 18
+            else:
+                c = ws4.cell(row=2, column=1, value="No matched records found.")
+                c.font = Font(name="Segoe UI", bold=True, size=10, color="888888")
+                ws4.merge_cells("A2:D2")
+                ws4.row_dimensions[2].height = 22
+
+            ws4.freeze_panes = "A2"
 
             wb_out.save(out_path)
 
