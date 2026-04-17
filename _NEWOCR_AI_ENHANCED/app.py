@@ -84,6 +84,7 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
 
         self.overrideredirect(True)
         self._drag_x = self._drag_y = 0
+        self._is_closing = False
 
         # ── Core state ────────────────────────────────────────────────────
         self._selected_file  = None
@@ -125,6 +126,7 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
 
         # ── Build UI ──────────────────────────────────────────────────────
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._safe_close)
         self.after(100, self._fix_windows_taskbar)
 
     # ── Font helpers (used by SamplesTabMixin + DocClassifierTabMixin) ────
@@ -187,6 +189,40 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
 
     def _drag_move(self, e):
         self.geometry(f"+{e.x_root - self._drag_x}+{e.y_root - self._drag_y}")
+
+    def _safe_close(self):
+        """Best-effort shutdown: cancel pending UI jobs, then destroy once."""
+        if getattr(self, "_is_closing", False):
+            return
+        self._is_closing = True
+
+        # Known recurring after() jobs across tabs/mixins.
+        job_attrs = (
+            "_sim_build_job",
+            "_sum_search_after",
+            "_gen_sum_search_after",
+            "_job",
+        )
+        for attr in job_attrs:
+            job = getattr(self, attr, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+
+        try:
+            self.destroy()
+        except Exception:
+            # Last fallback to avoid hanging when widgets are half-destroyed.
+            try:
+                self.quit()
+            except Exception:
+                pass
 
     # ── UI build ──────────────────────────────────────────────────────────
     def _build_ui(self):

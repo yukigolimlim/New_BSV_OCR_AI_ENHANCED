@@ -1,0 +1,8 @@
+{
+  "high_risk_industries": [],
+  "product_risk_overrides": {},
+  "expense_risk_overrides": {
+    "utilities – electricity": "HIGH",
+    "utilities – electricity & water": "HIGH"
+  }
+}

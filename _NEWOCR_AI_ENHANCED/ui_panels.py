@@ -72,7 +72,7 @@ def _build_topbar(self):
                          width=3, anchor="center")
     close_btn.bind("<Enter>",    lambda e: close_btn.config(fg=WHITE, bg=ACCENT_RED))
     close_btn.bind("<Leave>",    lambda e: close_btn.config(fg="#7A94B0", bg=_SB_BG))
-    close_btn.bind("<Button-1>", lambda e: self.destroy())
+    close_btn.bind("<Button-1>", lambda e: self._safe_close() if hasattr(self, "_safe_close") else self.destroy())
     close_btn.pack(side="right", padx=(4, 2), fill="y")
 
     min_btn = tk.Label(ctrl, text="─", font=F(10, "bold"),
