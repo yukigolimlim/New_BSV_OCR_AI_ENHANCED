@@ -10,8 +10,10 @@ Public functions:
   add_high_risk_industry(industry)
   remove_high_risk_industry(industry)
   get_high_risk_industries() -> list
-  set_product_risk_overrides(mapping)   # product display name -> "HIGH"|"LOW"
+  set_product_risk_overrides(mapping)   # atomic product name (lower) -> "HIGH"|"LOW"
   get_product_risk_overrides() -> dict
+  split_product_name_tokens(s) -> list[str]   # "A, B" -> ["A","B"]
+  lookup_product_risk_override(s) -> ("HIGH"|None, matched_part)
 """
 
 import re
@@ -461,10 +463,46 @@ def _build_expense_keyword_groups() -> tuple[tuple[str, tuple[str, ...]], ...]:
 _EXPENSE_KEYWORD_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = _build_expense_keyword_groups()
 
 
+# Split Excel "Product Name" cells into atomic products (same separators as industry tags).
+_PRODUCT_NAME_SPLIT_RE = re.compile(r"\s*(?:,|/|;|&|\band\b)\s*", re.I)
+
+
+def split_product_name_tokens(product_name: str) -> list[str]:
+    """
+    Split one Product Name cell into atomic labels, e.g.
+    'CHATTEL LOAN, MOTORCYCLE LOAN' -> ['CHATTEL LOAN', 'MOTORCYCLE LOAN'].
+    """
+    raw = str(product_name or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in _PRODUCT_NAME_SPLIT_RE.split(raw) if p.strip()]
+    return parts if parts else [raw]
+
+
+def lookup_product_risk_override(product_name: str) -> tuple[str | None, str]:
+    """
+    Match HIGH overrides against each atomic product in the cell.
+    Returns ('HIGH' or None, matched_atomic_name for messaging).
+    Also accepts legacy keys where the entire cell was stored as one string.
+    """
+    raw = str(product_name or "").strip()
+    if not raw:
+        return (None, "")
+    keys = _PRODUCT_RISK_OVERRIDES
+    for tok in split_product_name_tokens(raw):
+        k = tok.strip().lower()
+        if k and keys.get(k) == "HIGH":
+            return ("HIGH", tok.strip())
+    if keys.get(raw.lower()) == "HIGH":
+        return ("HIGH", raw)
+    return (None, "")
+
+
 def set_product_risk_overrides(mapping: dict) -> None:
     """
     Replace product overrides.
 
+    Keys should be atomic product names (comma-separated cells are split for matching).
     Product settings are HIGH-only flags:
     - HIGH entries are stored
     - LOW entries are treated as "not set"
@@ -472,12 +510,16 @@ def set_product_risk_overrides(mapping: dict) -> None:
     global _PRODUCT_RISK_OVERRIDES
     out: dict[str, str] = {}
     for k, v in (mapping or {}).items():
-        ks = str(k or "").strip().lower()
-        if not ks:
-            continue
         val = str(v or "").strip().upper()
-        if val == "HIGH":
-            out[ks] = "HIGH"
+        if val != "HIGH":
+            continue
+        raw = str(k or "").strip()
+        if not raw:
+            continue
+        for part in split_product_name_tokens(raw):
+            ks = part.strip().lower()
+            if ks:
+                out[ks] = "HIGH"
     _PRODUCT_RISK_OVERRIDES = out
     _save_risk_settings()
 
@@ -1164,10 +1206,15 @@ def _compute_risk_reasoning(
     product_override: str | None,
     expense_high_name: str,
     is_high_industry: bool,
+    product_matched_token: str = "",
 ) -> str:
     """Human-readable explanation for why final risk is HIGH/LOW."""
     if product_override == "HIGH":
-        return f"This client is HIGH RISK because they are under the '{product_name}' loan product."
+        detail = (product_matched_token or product_name).strip()
+        return (
+            f"This client is HIGH RISK because the loan product includes '{detail}' "
+            "(HIGH product override)."
+        )
     if product_override == "LOW":
         return (
             f"This client is LOW RISK because product override for '{product_name}' is set to LOW, "
@@ -1255,7 +1302,10 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
         return row[idx] if idx is not None and idx < len(row) else None
 
     applicant = str(get("applicant") or "").strip()
-    if not applicant or applicant.upper() in ("TOTAL", "SUBTOTAL", "GRAND TOTAL", ""):
+    # Skip summary/footer rows commonly present in portfolio exports.
+    # These are not real clients but often appear under the Applicant column.
+    au = applicant.upper()
+    if (not applicant) or re.match(r"^(TOTAL|SUBTOTAL|GRAND\s+TOTAL|AVERAGE|AVG|MEAN)\b", au):
         return None
 
     client_id = str(get("client_id") or "").strip()
@@ -1296,9 +1346,8 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
     industry_tags = _extract_industry_tags(industry)
     high_risk_norm = {str(i).strip().lower() for i in _HIGH_RISK_INDUSTRIES}
     is_high_ind = any(tag.lower() in high_risk_norm for tag in industry_tags)
-    # Product Name override wins when set (non-empty product + known key).
-    pk = product_name.strip().lower()
-    pr = _PRODUCT_RISK_OVERRIDES.get(pk) if pk else None
+    # Product Name override: any atomic product in the cell may match HIGH.
+    pr, pr_matched = lookup_product_risk_override(product_name)
     risk_label = "HIGH" if is_high_ind else "LOW"
     score = 1.8 if risk_label == "HIGH" else 0.0
     score_fg = "#E53E3E" if risk_label == "HIGH" else "#2E7D32"
@@ -1378,6 +1427,7 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
         product_override=pr,
         expense_high_name=expense_high_name,
         is_high_industry=is_high_ind,
+        product_matched_token=pr_matched,
     )
     return rec
 
@@ -1407,7 +1457,7 @@ def run_lu_analysis(filepath: str) -> dict:
         "totals":     {"loan_balance": float, "total_source": float,
                        "total_net": float, "current_amort": float},
         "unique_industries": [str, ...],   # distinct industry tags
-        "unique_product_names": [str, ...] # distinct Product Name values
+        "unique_product_names": [str, ...] # distinct atomic product labels (split on comma / etc.)
         "unique_expense_names": [str, ...] # distinct Business/Household expense names
     }
     """
@@ -1421,7 +1471,7 @@ def run_lu_analysis(filepath: str) -> dict:
         sector_map: dict[str, list] = {}
         income_map: dict[str, dict] = {}
         unique_industries: set[str] = set()
-        unique_product_names: set[str] = set()
+        unique_product_tokens: dict[str, str] = {}
         unique_expense_names: set[str] = set()
 
         for sheet_name in wb.sheetnames:
@@ -1459,7 +1509,10 @@ def run_lu_analysis(filepath: str) -> dict:
                     unique_industries.add(tag)
                 pn = (rec.get("product_name") or "").strip()
                 if pn:
-                    unique_product_names.add(pn)
+                    for tok in split_product_name_tokens(pn):
+                        lk = tok.strip().lower()
+                        if lk and lk not in unique_product_tokens:
+                            unique_product_tokens[lk] = tok.strip()
                 for exp in rec.get("expenses", []):
                     nm = str((exp or {}).get("name") or "").strip()
                     if nm:
@@ -1482,6 +1535,6 @@ def run_lu_analysis(filepath: str) -> dict:
         "income_map": income_map,
         "totals":     totals,
         "unique_industries": sorted(unique_industries, key=lambda s: s.lower()),
-        "unique_product_names": sorted(unique_product_names, key=lambda s: s.lower()),
+        "unique_product_names": sorted(unique_product_tokens.values(), key=lambda s: s.lower()),
         "unique_expense_names": sorted(unique_expense_names, key=lambda s: s.lower()),
     }

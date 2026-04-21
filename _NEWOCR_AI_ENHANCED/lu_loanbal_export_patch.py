@@ -115,26 +115,10 @@ def _risk_label_from_recs(recs: list[dict]) -> str:
     return "LOW"
 
 
-_LOANBAL_SEARCH_DEBOUNCE_MS = 300
-
-
-def _loanbal_schedule_render(self):
-    """Debounce search typing — full rebuild + matplotlib is expensive."""
-    jid = getattr(self, "_loanbal_render_job", None)
-    if jid is not None:
-        try:
-            self.after_cancel(jid)
-        except Exception:
-            pass
-    self._loanbal_render_job = self.after(
-        _LOANBAL_SEARCH_DEBOUNCE_MS,
-        lambda: _loanbal_run_render_job(self),
-    )
-
-
-def _loanbal_run_render_job(self):
-    self._loanbal_render_job = None
-    _loanbal_render(self)
+def _loanbal_on_search_enter(self, _event=None):
+    """Rebuild the loan-balance view when the user presses Enter (not each keystroke)."""
+    if getattr(self, "_lu_all_data", None):
+        _loanbal_render(self)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -152,15 +136,15 @@ def _build_loanbal_panel(self, parent):
     self._loanbal_hdr_lbl.pack(side="left", padx=20, pady=12)
     tk.Label(hdr, text="🔎", font=F(9), fg=_WHITE, bg=_NAVY_MID).pack(side="left", padx=(8, 4))
     self._loanbal_search_var = tk.StringVar()
-    self._loanbal_search_var.trace_add(
-        "write",
-        lambda *_: (_loanbal_schedule_render(self)
-                    if getattr(self, "_lu_all_data", None) else None))
-    tk.Entry(
+    self._loanbal_search_entry = tk.Entry(
         hdr, textvariable=self._loanbal_search_var,
         font=F(8), relief="flat", bg=_WHITE, fg=_TXT_NAVY,
-        insertbackground=_TXT_NAVY, highlightbackground=_NAVY_LIGHT, highlightthickness=1
-    ).pack(side="left", padx=(0, 8), ipady=3)
+        insertbackground=_TXT_NAVY, highlightbackground=_NAVY_LIGHT, highlightthickness=1)
+    self._loanbal_search_entry.pack(side="left", padx=(0, 4), ipady=3)
+    self._loanbal_search_entry.bind("<Return>", lambda _e: _loanbal_on_search_enter(self))
+    tk.Label(
+        hdr, text="Enter to filter", font=F(7), fg="#B8C8E8", bg=_NAVY_MID,
+    ).pack(side="left", padx=(0, 8))
     self._loanbal_match_lbl = tk.Label(
         hdr, text="", font=F(8, "bold"), fg=_WHITE, bg=_NAVY_MID, padx=8, pady=3)
     self._loanbal_match_lbl.pack(side="left", padx=(0, 8), pady=8)
@@ -516,7 +500,6 @@ def _loanbal_render(self):
 
     lb_cols = tuple(c[0] for c in LU_CLIENT_TREE_SPEC)
     tstyle = ttk.Style()
-    tstyle.theme_use("default")
     tstyle.configure(
         "LB.Treeview",
         background=_WHITE,
@@ -1237,7 +1220,7 @@ def attach(cls):
     Call AFTER lu_tab_analysis.attach(cls).
     """
     cls._build_loanbal_panel         = _build_loanbal_panel
-    cls._loanbal_schedule_render     = _loanbal_schedule_render
+    cls._loanbal_on_search_enter     = _loanbal_on_search_enter
     cls._loanbal_render              = _loanbal_render
     cls._loanbal_show_export_menu    = _loanbal_show_export_menu
     cls._loanbal_export_pdf       = _loanbal_export_pdf

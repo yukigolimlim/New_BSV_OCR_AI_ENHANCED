@@ -45,6 +45,19 @@ SIDEBAR_BG="#0D1E3A"; SIDEBAR_ITEM="#142B52"; SIDEBAR_HVR="#1B3A6B"
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 _FONT_FAMILY: str | None = None
+_UI_ZOOM: float = 1.0
+
+def get_ui_zoom() -> float:
+    return float(_UI_ZOOM)
+
+def set_ui_zoom(v: float) -> float:
+    global _UI_ZOOM
+    try:
+        z = float(v)
+    except Exception:
+        z = 1.0
+    _UI_ZOOM = max(0.8, min(1.6, z))
+    return _UI_ZOOM
 
 def best_font() -> str:
     import tkinter.font as tkfont
@@ -63,14 +76,14 @@ def register_fonts() -> None:
 def F(size: int, weight: str = "normal") -> tuple:
     global _FONT_FAMILY
     if _FONT_FAMILY is None: _FONT_FAMILY = best_font()
-    return (_FONT_FAMILY, size, weight)
+    return (_FONT_FAMILY, max(6, int(round(size * _UI_ZOOM))), weight)
 
 def FMONO(size: int, weight: str = "normal") -> tuple:
     import tkinter.font as tkfont
     available = set(tkfont.families())
     for f in ("JetBrains Mono","Cascadia Code","Consolas","Courier New"):
-        if f in available: return (f, size, weight)
-    return ("Courier New", size, weight)
+        if f in available: return (f, max(6, int(round(size * _UI_ZOOM))), weight)
+    return ("Courier New", max(6, int(round(size * _UI_ZOOM))), weight)
 
 def hex_blend(c1: str, c2: str, t: float) -> str:
     r1,g1,b1 = int(c1[1:3],16),int(c1[3:5],16),int(c1[5:7],16)

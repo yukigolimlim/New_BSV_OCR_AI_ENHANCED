@@ -39,6 +39,7 @@ from lu_core import (
     set_product_risk_overrides,
     get_expense_risk_overrides,
     set_expense_risk_overrides,
+    lookup_product_risk_override,
 )
 import lu_core as _lu_core
 
@@ -121,13 +122,8 @@ def _build_lu_analysis_panel(self, parent):
                   command=lambda v=view: _lu_switch_view(self, v)
                   ).pack(side="left", padx=2, pady=12, ipady=4)
 
-    self._lu_export_btn = ctk.CTkButton(
-        hdr_bar, text="💾  Export",
-        command=lambda: _lu_show_export_menu(self),
-        width=100, height=34, corner_radius=6,
-        fg_color=_LIME_DARK, hover_color=_LIME_MID,
-        text_color=_TXT_ON_LIME, font=FF(9, "bold"), state="disabled")
-    self._lu_export_btn.pack(side="right", padx=(0, 8), pady=11)
+    # Export button intentionally removed per request.
+    self._lu_export_btn = None
 
     self._lu_load_btn = ctk.CTkButton(
         hdr_bar, text="📂  Load Excel File",
@@ -314,7 +310,8 @@ def _lu_run_analysis(self):
     self._lu_status_lbl.config(text="⏳  Scanning…", fg=_ACCENT_GOLD)
     self._lu_load_btn.configure(state="disabled")
     self._lu_rescan_btn.configure(state="disabled")
-    self._lu_export_btn.configure(state="disabled")
+    if getattr(self, "_lu_export_btn", None) is not None:
+        self._lu_export_btn.configure(state="disabled")
     self.update_idletasks()
     try:
         all_data = run_lu_analysis(self._lu_filepath)
@@ -342,7 +339,8 @@ def _lu_run_analysis(self):
             text=(f"✅  {n_clients} client(s) · {n_industries} industries · "
                   f"₱{totals.get('loan_balance', 0):,.0f} total loan balance"),
             fg=_LIME_DARK)
-        self._lu_export_btn.configure(state="normal")
+        if getattr(self, "_lu_export_btn", None) is not None:
+            self._lu_export_btn.configure(state="normal")
         if getattr(self, "_loanbal_export_btn", None) is not None:
             self._loanbal_export_btn.configure(state="normal")
         _sim_populate(self)
@@ -369,9 +367,8 @@ def _lu_rescore_all(self):
         expenses = rec.get("expenses", [])
         product_name = str(rec.get("product_name") or "")
 
-        # Determine product override
-        pk = product_name.strip().lower()
-        pr = get_product_risk_overrides().get(pk) if pk else None
+        # Determine product override (any atomic product in the cell may match)
+        pr, _pr_matched = lookup_product_risk_override(product_name)
 
         # Determine industry high
         high_ind_set = {str(x).strip().lower() for x in get_high_risk_industries()}
@@ -418,6 +415,7 @@ def _lu_rescore_all(self):
             product_override=pr,
             expense_high_name=high_exp_name,
             is_high_industry=high_ind,
+            product_matched_token=_pr_matched,
         )
     # Keep the clients dict in sync
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}
@@ -650,7 +648,8 @@ def _open_product_risk_dialog(self):
     tk.Label(
         note,
         text=(
-            "Set Product Name overrides. HIGH forces HIGH risk. "
+            "Set overrides per atomic product (comma-separated names in Excel are split). "
+            "HIGH forces HIGH risk if any listed product appears in a client's Product Name cell. "
             "LOW means no product override (falls back to Expense/Industry rules). "
             "Applies to all LU tabs after saving (re-scan)."
         ),

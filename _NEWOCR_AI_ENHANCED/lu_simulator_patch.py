@@ -12,7 +12,7 @@ Attached to app class via attach(cls).
 
 Key improvements over original lu_ui
 --------------------------------------
-  • Fixed canvas height (no resize loop — see FIX 1 in patch_v8).
+  • Expense mix shown as a matplotlib pie (% of total simulated spend).
   • Chunked row construction via after() to keep UI responsive.
   • SIM_MAX_ROWS cap (50) to prevent widget explosion.
   • Respects active sector filter from lu_shared.
@@ -30,7 +30,6 @@ from lu_shared import (
     _LIME_MID, _LIME_DARK, _LIME_PALE,
     _ACCENT_RED, _ACCENT_GOLD, _ACCENT_SUCCESS,
     _RISK_COLOR, _RISK_BG, _RISK_BADGE_BG,
-    _SIM_BAR_BASE, _SIM_BAR_SIM,
     _lu_filter_data_by_query,
     _lu_get_active_sectors, _lu_get_filtered_all_data,
 )
@@ -38,8 +37,26 @@ from lu_shared import (
 # ── Tuneable constants ──────────────────────────────────────────────
 SIM_MAX_ROWS       = 50   # max expense rows shown
 SIM_CHUNK_SIZE     = 10   # rows built per after() tick
-SIM_CHART_MAX_BARS = 20   # bars drawn in mini chart
-SIM_BAR_ROW_H      = 34   # px per bar pair in chart
+SIM_CHART_MAX_BARS = 20   # max expense rows considered for chart
+PIE_MAX_SLICES     = 10   # pie slices before aggregating to "Other"
+SIM_TABLE_COLUMNS = (
+    # (title, min_width_px, weight)
+    ("Expense Item", 220, 5),
+    ("Risk", 72, 1),
+    ("Base Amount", 120, 2),
+    ("Inflation Rate (%)", 100, 2),
+    ("Extra Cost", 120, 2),
+    ("Simulated", 120, 2),
+)
+
+try:
+    import matplotlib
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    _HAS_MPL = True
+except ImportError:
+    _HAS_MPL = False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -78,13 +95,16 @@ def _build_simulator_panel(self, parent):
     tk.Label(ctrl, text="Filter:", font=F(8, "bold"),
              fg=_NAVY_MID, bg=_OFF_WHITE).pack(side="left", padx=(14, 4), pady=12)
     self._sim_search_var = tk.StringVar()
-    self._sim_search_var.trace_add(
-        "write", lambda *_: _sim_populate(self) if getattr(self, "_lu_all_data", None) else None)
-    ctk.CTkEntry(
+    sim_search_entry = ctk.CTkEntry(
         ctrl, textvariable=self._sim_search_var, width=230, height=26, corner_radius=4,
         fg_color=_WHITE, text_color=_TXT_NAVY, border_color=_BORDER_MID, font=FF(8),
         placeholder_text="client, ID, PN, industry, sector..."
-    ).pack(side="left", pady=10)
+    )
+    sim_search_entry.pack(side="left", pady=10)
+    sim_search_entry.bind(
+        "<Return>",
+        lambda _e: _sim_populate(self) if getattr(self, "_lu_all_data", None) else None,
+    )
     self._sim_match_lbl = tk.Label(
         ctrl, text="", font=F(8, "bold"), fg=_WHITE, bg=_OFF_WHITE, padx=8, pady=3)
     self._sim_match_lbl.pack(side="left", padx=(8, 0), pady=10)
@@ -131,29 +151,21 @@ def _build_simulator_panel(self, parent):
         lambda e: self._sim_canvas.itemconfig(self._sim_canvas_win, width=e.width))
     _bind_mousewheel(self._sim_canvas)
 
-    # Fixed-height chart panel (FIX 1: never resized at draw time)
+    # Pie chart panel (matplotlib) — shares use simulated amounts after slider %
     right_frame = tk.Frame(split, bg=_CARD_WHITE,
                            highlightbackground=_BORDER_MID, highlightthickness=1,
-                           width=280)
+                           width=390)
     right_frame.pack(side="right", fill="y")
     right_frame.pack_propagate(False)
-    tk.Label(right_frame, text="Expense Chart", font=F(8, "bold"),
+    tk.Label(right_frame, text="Expense mix (pie)", font=F(9, "bold"),
              fg=_TXT_SOFT, bg=_CARD_WHITE).pack(pady=(8, 0))
-
-    fixed_chart_h = SIM_CHART_MAX_BARS * SIM_BAR_ROW_H + 20
-    self._sim_chart_canvas = tk.Canvas(right_frame, bg=_CARD_WHITE,
-                                       highlightthickness=0,
-                                       width=268, height=fixed_chart_h)
-    self._sim_chart_canvas.pack(fill="x", padx=6, pady=(0, 8))
-
-    leg = tk.Frame(right_frame, bg=_CARD_WHITE)
-    leg.pack(pady=(0, 8))
-    for color, label in [(_SIM_BAR_BASE, "Base"), (_SIM_BAR_SIM, "Simulated")]:
-        f = tk.Frame(leg, bg=_CARD_WHITE)
-        f.pack(side="left", padx=8)
-        tk.Label(f, bg=color, width=2, height=1).pack(side="left")
-        tk.Label(f, text=label, font=F(8), fg=_TXT_SOFT, bg=_CARD_WHITE
-                 ).pack(side="left", padx=3)
+    tk.Label(
+        right_frame,
+        text="% of total simulated expenses",
+        font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE,
+    ).pack(pady=(0, 4))
+    self._sim_chart_holder = tk.Frame(right_frame, bg=_CARD_WHITE)
+    self._sim_chart_holder.pack(fill="both", expand=True, padx=4, pady=(0, 8))
 
     self._sim_sliders    = {}
     self._sim_expenses   = []
@@ -232,9 +244,33 @@ def _sim_populate(self):
     is_general     = (client == GENERAL_CLIENT)
     all_clients    = filtered_data.get("clients", {})
 
-    recs = (list(all_clients.values())
-            if (is_general or active_sectors)
-            else ([all_clients[client]] if client in all_clients else []))
+    # If the search narrows to a single client (or exact client key match),
+    # treat it as a per-client simulator view so expenses always show.
+    chosen_client = None
+    if q:
+        ql = q.strip().lower()
+        exact = next((name for name in all_clients.keys() if str(name).strip().lower() == ql), None)
+        if exact:
+            chosen_client = exact
+        else:
+            client_names = sorted({
+                (r.get("client") or "").strip()
+                for r in filtered_data.get("general", [])
+                if r.get("client")
+            })
+            if len(client_names) == 1:
+                chosen_client = client_names[0]
+
+    if chosen_client and chosen_client in all_clients:
+        try:
+            self._lu_active_client = chosen_client
+        except Exception:
+            pass
+        recs = [all_clients[chosen_client]]
+    else:
+        recs = (list(all_clients.values())
+                if (is_general or active_sectors)
+                else ([all_clients[client]] if client in all_clients else []))
 
     # Update header
     if q:
@@ -298,16 +334,11 @@ def _sim_populate(self):
 
     hdr = tk.Frame(self._sim_scroll_frame, bg=_OFF_WHITE)
     hdr.pack(fill="x", pady=(8, 0))
-    for col, text, w in [
-        (0, "Expense Item",      220),
-        (1, "Risk",               60),
-        (2, "Base Amount",       120),
-        (3, "Inflation Rate (%)", 80),
-        (4, "Extra Cost",        120),
-        (5, "Simulated",         120),
-    ]:
+    for col, (_title, min_px, wt) in enumerate(SIM_TABLE_COLUMNS):
+        hdr.grid_columnconfigure(col, weight=wt, minsize=min_px)
+    for col, (text, _min_px, _wt) in enumerate(SIM_TABLE_COLUMNS):
         tk.Label(hdr, text=text, font=F(8, "bold"), fg=_NAVY_PALE, bg=_OFF_WHITE,
-                 width=w//8, anchor="w", padx=6, pady=5
+                 anchor="w", padx=6, pady=5
                  ).grid(row=0, column=col, sticky="ew", padx=(0, 2))
     tk.Frame(self._sim_scroll_frame, bg=_BORDER_MID, height=1).pack(fill="x")
 
@@ -345,16 +376,18 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
     row_bg = _RISK_BG.get(risk, _WHITE) if idx % 2 == 0 else _WHITE
     row    = tk.Frame(parent, bg=row_bg)
     row.pack(fill="x")
+    for ci, (_title, min_px, wt) in enumerate(SIM_TABLE_COLUMNS):
+        row.grid_columnconfigure(ci, weight=wt, minsize=min_px)
 
     tk.Label(row, text=exp["name"], font=F(9, "bold"),
-             fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=6, width=26
+             fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=6
              ).grid(row=0, column=0, sticky="ew")
-    tk.Label(row, text=risk[:3], font=F(7, "bold"),
+    tk.Label(row, text=risk, font=F(7, "bold"),
              fg=_RISK_COLOR.get(risk, _TXT_SOFT),
              bg=_RISK_BADGE_BG.get(risk, _OFF_WHITE),
-             padx=4, pady=3).grid(row=0, column=1, padx=4, pady=6)
+             padx=4, pady=3).grid(row=0, column=1, padx=4, pady=6, sticky="w")
     tk.Label(row, text=f"₱{exp['total']:,.2f}" if exp["total"] > 0 else "—",
-             font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6, width=14
+             font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6
              ).grid(row=0, column=2, sticky="ew")
 
     rate_entry = ctk.CTkEntry(row, textvariable=var, width=80, height=26, corner_radius=4,
@@ -366,10 +399,10 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
     rate_entry.bind("<FocusOut>", lambda e, ex=exp: _sim_on_slide(self, ex, var.get()))
 
     extra_lbl = tk.Label(row, text="—", font=F(9), fg=_ACCENT_RED,
-                         bg=row_bg, anchor="e", padx=6, width=14)
+                         bg=row_bg, anchor="e", padx=6)
     extra_lbl.grid(row=0, column=4, sticky="ew")
     sim_lbl = tk.Label(row, text="—", font=F(9, "bold"), fg=_TXT_NAVY,
-                       bg=row_bg, anchor="e", padx=6, width=14)
+                       bg=row_bg, anchor="e", padx=6)
     sim_lbl.grid(row=0, column=5, sticky="ew")
 
     var._extra_lbl = extra_lbl
@@ -489,87 +522,140 @@ def _sim_refresh(self):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  MINI CHART  (fixed height — FIX 1)
+#  PIE CHART  (simulated expense mix — % of total)
 # ══════════════════════════════════════════════════════════════════════
 
 def _sim_draw_chart(self):
-    c = getattr(self, "_sim_chart_canvas", None)
-    if c is None:
+    holder = getattr(self, "_sim_chart_holder", None)
+    if holder is None:
         return
     try:
-        if not c.winfo_exists():
+        if not holder.winfo_exists():
             return
-        c.delete("all")
     except Exception:
         return
+
+    for w in holder.winfo_children():
+        w.destroy()
 
     expenses = [e for e in getattr(self, "_sim_expenses", []) if e["total"] > 0]
     if not expenses:
-        try:
-            c.create_text(134, 100, text="No numeric data\nto chart.",
-                          fill=_TXT_MUTED, font=F(9), justify="center")
-        except Exception:
-            pass
+        tk.Label(
+            holder,
+            text="No numeric data\nto chart.",
+            font=F(9),
+            fg=_TXT_MUTED,
+            bg=_CARD_WHITE,
+            justify="center",
+        ).pack(pady=40)
         return
 
     expenses = expenses[:SIM_CHART_MAX_BARS]
-    try:
-        c.update_idletasks()
-        W = c.winfo_width()
-    except Exception:
-        W = 268
-    if W < 10:
-        W = 268
 
-    bar_h, gap, label_h = 14, 8, 12
-    n          = len(expenses)
-    margin_top = 10
-    # NOTE: do NOT call c.config(height=…) here — canvas is fixed size
-    margin_left = margin_right = 10
-    bar_area_w  = max(W - margin_left - margin_right, 50)
-    row_h  = bar_h * 2 + gap + label_h
-    half_h = bar_h
-
-    try:
-        max_val = max(
-            e["total"] + e["total"] * (
-                float(self._sim_sliders.get(e["name"], tk.StringVar(value="0")).get() or 0) / 100)
-            for e in expenses)
-    except Exception:
-        max_val = 1
-    if not max_val or max_val <= 0:
-        max_val = 1
-
-    for i, exp in enumerate(expenses):
+    def _sim_amount(exp):
         pct = 0.0
         var = self._sim_sliders.get(exp["name"])
         if var:
             try:
-                pct = float(var.get())
+                pct = float(var.get() or 0)
             except Exception:
                 pass
-        base  = exp["total"]
-        sim   = base + base * pct / 100.0
-        y_mid = margin_top + i * row_h + row_h // 2
-        try:
-            bw = int(bar_area_w * (base / max_val))
-            c.create_rectangle(margin_left, y_mid - half_h,
-                               margin_left + bw, y_mid,
-                               fill=_SIM_BAR_BASE, outline="")
-            sw = int(bar_area_w * (sim / max_val))
-            c.create_rectangle(margin_left, y_mid,
-                               margin_left + sw, y_mid + half_h,
-                               fill=_SIM_BAR_SIM, outline="")
-            short = exp["name"] if len(exp["name"]) <= 16 else exp["name"][:15] + "…"
-            c.create_text(margin_left + 4, y_mid - half_h - 1,
-                          text=short, anchor="sw",
-                          font=("Segoe UI", 7), fill=_TXT_MUTED)
-        except Exception:
-            continue
+        base = float(exp["total"] or 0)
+        return max(0.0, base + base * (pct / 100.0))
+
+    pairs = [(e["name"], _sim_amount(e)) for e in expenses]
+    pairs.sort(key=lambda x: -x[1])
+    names = [p[0] for p in pairs]
+    vals = [p[1] for p in pairs]
+
+    if sum(vals) <= 0:
+        tk.Label(
+            holder,
+            text="No simulated amounts\nto chart.",
+            font=F(9),
+            fg=_TXT_MUTED,
+            bg=_CARD_WHITE,
+            justify="center",
+        ).pack(pady=40)
+        return
+
+    if len(pairs) > PIE_MAX_SLICES:
+        top = pairs[: PIE_MAX_SLICES - 1]
+        other_sum = sum(p[1] for p in pairs[PIE_MAX_SLICES - 1 :])
+        names = [p[0] for p in top] + (["Other"] if other_sum > 0 else [])
+        vals = [p[1] for p in top] + ([other_sum] if other_sum > 0 else [])
+
+    if not _HAS_MPL:
+        lines = [f"{n[:22]}{'…' if len(n) > 22 else ''}: {v/sum(vals)*100:.1f}%"
+                 for n, v in zip(names, vals)]
+        tk.Label(
+            holder,
+            text="matplotlib unavailable.\n\n" + "\n".join(lines[:12]),
+            font=F(7),
+            fg=_TXT_SOFT,
+            bg=_CARD_WHITE,
+            justify="left",
+        ).pack(padx=6, pady=8)
+        return
+
+    def _short(n: str, w: int = 18) -> str:
+        n = str(n or "").strip()
+        return n if len(n) <= w else n[: w - 1] + "…"
+
     try:
-        c.update_idletasks()
+        fig, ax = plt.subplots(figsize=(4.7, 4.9))
+        fig.patch.set_facecolor(_CARD_WHITE)
+        ax.set_facecolor(_CARD_WHITE)
+
+        colors = [plt.cm.Pastel2(i % 8) for i in range(len(vals))]
+        wedges, _texts, autotexts = ax.pie(
+            vals,
+            labels=None,
+            colors=colors,
+            startangle=90,
+            counterclock=False,
+            autopct=lambda p: f"{p:.1f}%" if p >= 4.5 else "",
+            pctdistance=0.80,
+            textprops={"fontsize": 8, "color": "#243B64", "fontweight": "bold"},
+            wedgeprops={"width": 0.44, "linewidth": 1.0, "edgecolor": _CARD_WHITE},
+        )
+        for t in autotexts:
+            t.set_fontsize(8)
+        total_sim = sum(vals)
+        ax.text(
+            0, 0,
+            f"Total\nP{total_sim:,.0f}",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#365B8C",
+            fontweight="bold",
+        )
+        ax.set_title("Share of total (simulated)", fontsize=9, color="#4A6FA5", pad=6)
+
+        leg_labels = [_short(n, 22) for n in names]
+        ax.legend(
+            wedges,
+            leg_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.07),
+            ncol=2,
+            fontsize=6.5,
+            frameon=False,
+        )
+        fig.subplots_adjust(left=0.06, right=0.94, top=0.88, bottom=0.30)
+
+        canvas = FigureCanvasTkAgg(fig, master=holder)
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        plt.close(fig)
     except Exception:
-        pass
+        tk.Label(
+            holder,
+            text="Could not draw chart.",
+            font=F(9),
+            fg=_TXT_MUTED,
+            bg=_CARD_WHITE,
+        ).pack(pady=24)
 
 
 # ══════════════════════════════════════════════════════════════════════

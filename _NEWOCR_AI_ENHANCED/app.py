@@ -30,7 +30,7 @@ import customtkinter as ctk
 
 from app_constants import (
     SIDEBAR_BG, OFF_WHITE, GEMINI_API_KEY, GEMINI_MODEL, FALLBACK_MODEL,
-    _FONT_FAMILY, best_font, register_fonts, F, FMONO, hex_blend,
+    _FONT_FAMILY, best_font, register_fonts, F, FMONO, hex_blend, set_ui_zoom,
     gemini_chat, _ai_check_stage1,
     _rule_fuzzy_ncd, _rule_assess_text, _rule_extract_cic_tier,
     SCRIPT_DIR,
@@ -85,6 +85,12 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         self.overrideredirect(True)
         self._drag_x = self._drag_y = 0
         self._is_closing = False
+        self._ui_zoom = 1.0
+        try:
+            self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
+        except Exception:
+            self._base_tk_scaling = 1.0
+        self._apply_ui_zoom(1.0)
 
         # ── Core state ────────────────────────────────────────────────────
         self._selected_file  = None
@@ -128,21 +134,111 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._safe_close)
         self.after(100, self._fix_windows_taskbar)
+        self.bind_all("<Control-plus>", lambda _e: self._zoom_in())
+        self.bind_all("<Control-equal>", lambda _e: self._zoom_in())   # Ctrl+= is + on many layouts
+        self.bind_all("<Control-minus>", lambda _e: self._zoom_out())
+        self.bind_all("<Control-0>", lambda _e: self._zoom_reset())
+        self.bind_all("<Control-KP_Add>", lambda _e: self._zoom_in())
+        self.bind_all("<Control-KP_Subtract>", lambda _e: self._zoom_out())
 
     # ── Font helpers (used by SamplesTabMixin + DocClassifierTabMixin) ────
     def F(self, size: int, weight: str = "normal") -> tuple:
         import app_constants as _ac
         if _ac._FONT_FAMILY is None:
             _ac._FONT_FAMILY = best_font()
-        return (_ac._FONT_FAMILY, size, weight)
+        return (_ac._FONT_FAMILY, max(6, int(round(size * self._ui_zoom))), weight)
 
     def FMONO(self, size: int, weight: str = "normal") -> tuple:
         import tkinter.font as tkfont
         available = set(tkfont.families())
         for f in ("JetBrains Mono", "Cascadia Code", "Consolas", "Courier New"):
             if f in available:
-                return (f, size, weight)
-        return ("Courier New", size, weight)
+                return (f, max(6, int(round(size * self._ui_zoom))), weight)
+        return ("Courier New", max(6, int(round(size * self._ui_zoom))), weight)
+
+    # ── Global UI zoom ─────────────────────────────────────────────────────
+    def _apply_ui_zoom(self, value: float):
+        z = max(0.8, min(1.6, float(value)))
+        self._ui_zoom = z
+        set_ui_zoom(z)
+        try:
+            self.tk.call("tk", "scaling", self._base_tk_scaling * z)
+        except Exception:
+            pass
+        lbl = getattr(self, "_zoom_lbl", None)
+        if lbl is not None:
+            try:
+                lbl.config(text=f"{int(round(z * 100))}%")
+            except Exception:
+                pass
+
+    def _zoom_in(self):
+        self._apply_ui_zoom(round(self._ui_zoom + 0.1, 2))
+        return "break"
+
+    def _zoom_out(self):
+        self._apply_ui_zoom(round(self._ui_zoom - 0.1, 2))
+        return "break"
+
+    def _zoom_reset(self):
+        self._apply_ui_zoom(1.0)
+        return "break"
+
+    def _ui_refresh(self):
+        """
+        Best-effort "re-render" of the active screen after zoom/theme changes.
+        Avoids destroying global state; just re-calls the active view renderer(s).
+        """
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
+        tab = getattr(self, "_current_tab", "") or ""
+        # Summary tab: refresh table/views
+        if tab == "lookup_summary":
+            try:
+                from summary_tab import _refresh_summary
+                _refresh_summary(self)
+                return
+            except Exception:
+                pass
+
+        # LU Analysis container: refresh the active LU sub-view if present
+        if tab == "lu_analysis":
+            try:
+                # If LU panel exists, re-render whichever subtab is active
+                if getattr(self, "_lu_all_data", None):
+                    view_var = getattr(self, "_lu_active_view", None)
+                    view = view_var.get() if view_var is not None else "analysis"
+                    try:
+                        from lu_ui import _lu_switch_view
+                        _lu_switch_view(self, view)
+                        return
+                    except Exception:
+                        pass
+                    # Fallbacks (older attach paths)
+                    if view == "charts" and hasattr(self, "_charts_render"):
+                        self._charts_render()
+                        return
+                    if view == "loanbal" and hasattr(self, "_loanbal_render"):
+                        self._loanbal_render()
+                        return
+                    if view == "report" and hasattr(self, "_report_render"):
+                        self._report_render()
+                        return
+                    if view == "simulator" and hasattr(self, "_sim_populate"):
+                        self._sim_populate()
+                        return
+            except Exception:
+                pass
+
+        # Generic fallback: re-pack current tab (no-op but safe)
+        try:
+            if hasattr(self, "_switch_tab"):
+                self._switch_tab(tab)
+        except Exception:
+            pass
 
     # ── Window management ─────────────────────────────────────────────────
     def _fix_windows_taskbar(self):

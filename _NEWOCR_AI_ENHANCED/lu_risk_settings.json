@@ -1,8 +1,14 @@
 {
-  "high_risk_industries": [],
-  "product_risk_overrides": {},
+  "high_risk_industries": [
+    "Electricity, Gas, Steam and Air Conditioning Supply"
+  ],
+  "product_risk_overrides": {
+    "business loan": "HIGH",
+    "purchase order loan": "HIGH",
+    "truck loan": "HIGH"
+  },
   "expense_risk_overrides": {
-    "utilities – electricity": "HIGH",
-    "utilities – electricity & water": "HIGH"
+    "utilities – gas / lpg": "HIGH",
+    "fuel & transportation": "HIGH"
   }
 }

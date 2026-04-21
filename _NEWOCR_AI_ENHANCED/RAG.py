@@ -135,13 +135,30 @@ class RAGEngine:
         self._collection = None
         self._embedder   = None
         self._ready      = False
+        # After any failed init, do not retry — avoids repeated heavy imports (torch/transformers)
+        # on every is_ready / KB status refresh.
+        self._init_failed = False
 
     def _ensure_ready(self):
-        if not self._ready:
-            self._init()    
+        if self._ready or self._init_failed:
+            return
+        self._init()
 
     # ── Initialisation ────────────────────────────────────────────────────
     def _init(self):
+        # Import torch first so a broken install fails before loading transformers/sentence_transformers.
+        try:
+            import torch  # noqa: F401
+        except Exception as e:
+            self._init_failed = True
+            logger.warning(
+                "RAG disabled: PyTorch failed to load (%s). "
+                "Knowledge base retrieval is off; reinstall torch (CPU) or MSVC runtime. "
+                "See log for details.",
+                e,
+            )
+            return
+
         try:
             import chromadb
             from chromadb.config import Settings
@@ -172,12 +189,14 @@ class RAGEngine:
             )
 
         except ImportError as e:
+            self._init_failed = True
             logger.error(
                 "RAG dependencies missing: %s\n"
                 "Run:  pip install chromadb sentence-transformers",
                 e,
             )
         except Exception as e:
+            self._init_failed = True
             logger.exception("RAG engine failed to initialise: %s", e)
 
     @property

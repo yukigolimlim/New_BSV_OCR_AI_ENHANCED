@@ -1,10 +1,11 @@
 """
 lu_tab_charts.py — Charts Tab
 ================================
-Renders three matplotlib charts:
-  1. Client count per sector (bar)
-  2. Risk distribution per sector (doughnut)
-  3. Total loan balance per sector (bar)
+Renders matplotlib charts:
+  1. Client risk mix — HIGH / MODERATE / LOW / other (donut, % of clients in view)
+  2. Client count per sector (bar)
+  3. Risk distribution per sector (stacked horizontal bar)
+  4. Total loan balance per sector (bar)
 
 Also shows a detailed expense breakdown bar chart for per‑client view.
 
@@ -26,7 +27,7 @@ import textwrap
 from lu_shared import (
     F,
     _NAVY_MID, _NAVY_LIGHT, _WHITE, _CARD_WHITE, _BORDER_MID, _TXT_MUTED,
-    _LIME_MID, _ACCENT_RED,
+    _LIME_MID, _ACCENT_RED, _ACCENT_GOLD, _ACCENT_SUCCESS,
     _MPL_BG, _MPL_NAVY, _MPL_HIGH, _MPL_MOD, _MPL_LOW,
     _RISK_COLOR,
     _make_scrollable,
@@ -222,6 +223,119 @@ def _charts_render(self):
               "are split and counted under each individual industry."),
         font=F(8), fg=_TXT_MUTED, bg=_CARD_WHITE
     ).pack(anchor="w", pady=(0, 10))
+
+    # ── Chart 0: Client risk mix (same filtered dataset as search bar) ─
+    tk.Label(
+        pad,
+        text="Client risk mix (% of clients in this view)",
+        font=F(11, "bold"),
+        fg="#1A2B4A",
+        bg=_CARD_WHITE,
+    ).pack(anchor="w", pady=(0, 8))
+
+    risk_counts = {"HIGH": 0, "MODERATE": 0, "LOW": 0, "OTHER": 0}
+    for r in general:
+        lab = str(r.get("score_label") or "N/A").strip().upper()
+        if lab == "HIGH":
+            risk_counts["HIGH"] += 1
+        elif lab == "LOW":
+            risk_counts["LOW"] += 1
+        elif lab == "MODERATE":
+            risk_counts["MODERATE"] += 1
+        else:
+            risk_counts["OTHER"] += 1
+    n_clients_view = len(general)
+
+    _risk_order = (
+        ("HIGH", _ACCENT_RED),
+        ("MODERATE", _ACCENT_GOLD),
+        ("LOW", _ACCENT_SUCCESS),
+        ("OTHER", "#9AAACE"),
+    )
+    fig0 = None
+    c0 = tk.Frame(pad, bg=_WHITE, highlightbackground=_BORDER_MID, highlightthickness=1)
+    c0.pack(fill="x", pady=(0, 16))
+    try:
+        xs = []
+        ys = []
+        tick_labels = []
+        point_colors = []
+        for key, col in _risk_order:
+            c = risk_counts[key]
+            pct = 100.0 * c / n_clients_view if n_clients_view else 0.0
+            xs.append(len(xs))
+            ys.append(pct)
+            tick_labels.append(key)
+            point_colors.append(col)
+
+        if any(v > 0 for v in ys):
+            fig0, ax0 = plt.subplots(figsize=(10.5, 3.5))
+            fig0.patch.set_facecolor(_MPL_BG)
+            ax0.set_facecolor(_MPL_BG)
+
+            # Bar chart per risk bucket
+            bars = ax0.bar(
+                xs,
+                ys,
+                color=point_colors,
+                edgecolor=_MPL_BG,
+                linewidth=1.5,
+                width=0.58,
+            )
+            for bar, y, key in zip(bars, ys, tick_labels):
+                c = risk_counts[key]
+                ax0.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    y + (2.0 if y < 96 else -4.0),
+                    f"{c} ({y:.1f}%)",
+                    ha="center",
+                    va="bottom" if y < 96 else "top",
+                    fontsize=9,
+                    fontweight="bold",
+                    color=_MPL_NAVY,
+                )
+
+            ax0.set_xticks(xs, tick_labels, fontsize=9)
+            ax0.set_ylim(0, 100)
+            ax0.set_ylabel("% of clients", fontsize=9, color=_MPL_NAVY)
+            ax0.grid(axis="y", linestyle="--", alpha=0.25)
+            ax0.spines[["top", "right"]].set_visible(False)
+
+            ax0.set_title(
+                "Risk mix — share of clients",
+                fontsize=10,
+                color="#1A2B4A",
+                pad=10,
+            )
+            fig0.tight_layout(pad=1.1)
+            _embed(fig0, c0)
+        else:
+            tk.Label(
+                c0,
+                text="No risk labels to chart.",
+                font=F(9),
+                fg=_TXT_MUTED,
+                bg=_WHITE,
+            ).pack(pady=18)
+    except Exception:
+        parts = []
+        for key, _col in _risk_order:
+            c = risk_counts[key]
+            if c > 0:
+                pct = 100.0 * c / n_clients_view if n_clients_view else 0.0
+                parts.append(f"{key} {c} ({pct:.1f}%)")
+        tk.Label(
+            c0,
+            text="Chart unavailable — " + ("  ·  ".join(parts) if parts else "no data"),
+            font=F(9),
+            fg=_TXT_MUTED,
+            bg=_WHITE,
+            wraplength=640,
+            justify="left",
+        ).pack(padx=12, pady=18)
+    finally:
+        if fig0:
+            plt.close(fig0)
 
     # ── Chart 1: Client count per industry ───────────────────────────
     tk.Label(pad, text="Client Distribution by Industry",

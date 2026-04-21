@@ -12,6 +12,8 @@ from lu_core import (
     run_lu_analysis,
     get_product_risk_overrides,
     set_product_risk_overrides,
+    split_product_name_tokens,
+    lookup_product_risk_override,
     _compute_risk_score,
     _cell_str,
     _parse_numeric,

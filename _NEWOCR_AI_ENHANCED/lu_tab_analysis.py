@@ -108,8 +108,7 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
             score = 0.75
 
     # Product Name risk (lu_core registry) wins over expense/industry when set.
-    pk = str(product_name or "").strip().lower()
-    pr = lu_core.get_product_risk_overrides().get(pk) if pk else None
+    pr, _pr_tok = lu_core.lookup_product_risk_override(str(product_name or ""))
     if pr == "HIGH":
         label = "HIGH"
         if score < 0.6:
@@ -192,7 +191,7 @@ def _lu_apply_risk_overrides(self):
         # Keep color fields in sync so the treeview tag picks up the right color.
         rec["score_fg"] = "#E53E3E" if label_val == "HIGH" else "#2E7D32"
         rec["score_bg"] = "#FFF5F5" if label_val == "HIGH" else "#F0FBE8"
-        pr = lu_core.get_product_risk_overrides().get(product_name.strip().lower())
+        pr, pr_matched = lu_core.lookup_product_risk_override(product_name)
         high_exp = ""
         exp_overrides = lu_core.get_expense_risk_overrides()
         for e in expenses or []:
@@ -212,6 +211,7 @@ def _lu_apply_risk_overrides(self):
             product_override=pr,
             expense_high_name=high_exp,
             is_high_industry=high_ind,
+            product_matched_token=pr_matched,
         )
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}
     _lu_populate_client_dropdown(self)
@@ -927,6 +927,10 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
     industry_counts = {}
     for r in results:
         industry_counts[r["industry"]] = industry_counts.get(r["industry"], 0) + 1
+    high_risk_clients = sum(
+        1 for r in results
+        if str(r.get("score_label") or "").strip().upper() == "HIGH"
+    )
 
     active_industries = getattr(self, "_lu_analysis_filtered_sectors", None)
     stats_bg     = "#0E2040" if active_industries else _NAVY_MIST
@@ -946,10 +950,11 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
                  font=F(7), fg=_TXT_MUTED, bg=stats_bg).pack(anchor="w")
 
     for lbl, val in [
-        ("👥 Clients",          str(len(results))),
-        ("💰 Total Loan Bal",   f"₱{total_lb:,.2f}"),
-        ("📈 Total Net Income", f"₱{total_net:,.2f}"),
-        ("🏭 Industries",       str(len(industry_counts))),
+        ("👥 Clients",              str(len(results))),
+        ("💰 Total Loan Bal",       f"₱{total_lb:,.2f}"),
+        ("📈 Total Net Income",     f"₱{total_net:,.2f}"),
+        ("🏭 Industries",          str(len(industry_counts))),
+        ("🟠 High Risk Clients",    str(high_risk_clients)),
     ]:
         c = tk.Frame(stats_bar, bg=stats_bg)
         c.pack(side="left", padx=20, pady=10)
@@ -962,7 +967,6 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
              font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE).pack(anchor="e", padx=20, pady=(4, 2))
 
     style = ttk.Style()
-    style.theme_use("default")
     style.configure("LU.Treeview",
                     background=_WHITE, foreground=_TXT_NAVY,
                     rowheight=26, fieldbackground=_WHITE,

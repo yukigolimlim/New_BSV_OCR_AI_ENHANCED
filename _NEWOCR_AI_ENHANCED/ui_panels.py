@@ -105,6 +105,27 @@ def _build_topbar(self):
     )
     self._topbar_status.pack(side="right", padx=(0, 20), pady=14)
 
+    # Global zoom controls
+    zoom = tk.Frame(bar, bg=_SB_BG)
+    zoom.pack(side="right", padx=(0, 8), pady=10)
+    z_reset = tk.Label(zoom, text="⟳", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
+                       width=2, cursor="hand2")
+    z_reset.pack(side="left", padx=(0, 2))
+    z_minus = tk.Label(zoom, text="−", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
+                       width=2, cursor="hand2")
+    z_minus.pack(side="left")
+    self._zoom_lbl = tk.Label(zoom, text="100%", font=F(8, "bold"), fg=_SB_TXT_ACT, bg="#1A2F47",
+                              padx=6, pady=3)
+    self._zoom_lbl.pack(side="left", padx=3)
+    z_plus = tk.Label(zoom, text="+", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
+                      width=2, cursor="hand2")
+    z_plus.pack(side="left")
+    z_minus.bind("<Button-1>", lambda _e: self._zoom_out() if hasattr(self, "_zoom_out") else None)
+    z_plus.bind("<Button-1>", lambda _e: self._zoom_in() if hasattr(self, "_zoom_in") else None)
+    # ⟳ = refresh/re-render current UI; % label still resets zoom.
+    z_reset.bind("<Button-1>", lambda _e: self._ui_refresh() if hasattr(self, "_ui_refresh") else None)
+    self._zoom_lbl.bind("<Button-1>", lambda _e: self._zoom_reset() if hasattr(self, "_zoom_reset") else None)
+
 
 # ─────────────────────────────────────────────────────────────────────
 #  LEFT SIDEBAR — redesigned nav

@@ -31,7 +31,7 @@ def _build_ai_prompt_panel(self, parent):
     ctrl_row = tk.Frame(hdr, bg=NAVY_DEEP)
     ctrl_row.pack(side="right", padx=16, pady=8)
 
-    self._kb_status_lbl = tk.Label(ctrl_row, text="KB: 0 docs",
+    self._kb_status_lbl = tk.Label(ctrl_row, text="KB: —",
                                     font=F(8), fg=LIME_PALE,
                                     bg=NAVY_DEEP, padx=8)
     self._kb_status_lbl.pack(side="left")
@@ -51,7 +51,8 @@ def _build_ai_prompt_panel(self, parent):
                   text_color=WHITE,
                   font=FF(8, "bold"),
                   border_width=0).pack(side="left")
-    self._refresh_kb_status()
+    # Defer KB probe so startup stays responsive; RAG init can be heavy or fail (e.g. broken torch).
+    self.after(750, self._refresh_kb_status)
 
     ctx_bar = tk.Frame(self._aiprompt_frame, bg=NAVY_MIST,
                         highlightbackground=BORDER_LIGHT, highlightthickness=1)

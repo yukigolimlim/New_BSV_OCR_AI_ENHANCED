@@ -23,6 +23,7 @@ from lu_core import (
     SECTOR_TRANSPORT, SECTOR_REMITTANCE,
     SECTOR_CONSUMER, SECTOR_OTHER,
     _compute_risk_score, _fmt_value,
+    split_product_name_tokens,
 )
 
 # ══════════════════════════════════════════════════════════════════════
@@ -205,10 +206,22 @@ def lu_client_row_tuple(rec: dict) -> tuple:
 # ══════════════════════════════════════════════════════════════════════
 
 def F(size, weight="normal"):
-    return ("Segoe UI", size, weight)
+    z = 1.0
+    try:
+        from app_constants import get_ui_zoom
+        z = float(get_ui_zoom())
+    except Exception:
+        pass
+    return ("Segoe UI", max(6, int(round(size * z))), weight)
 
 def FF(size, weight="normal"):
-    return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
+    z = 1.0
+    try:
+        from app_constants import get_ui_zoom
+        z = float(get_ui_zoom())
+    except Exception:
+        pass
+    return ctk.CTkFont(family="Segoe UI", size=max(6, int(round(size * z))), weight=weight)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -233,7 +246,14 @@ def _make_scrollable(parent, bg=None):
     sb    = tk.Scrollbar(outer, relief="flat", troughcolor=_OFF_WHITE,
                          bg=_BORDER_LIGHT, width=8, bd=0)
     sb.pack(side="right", fill="y")
-    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0, yscrollcommand=sb.set)
+    def _safe_scroll_set(first, last):
+        try:
+            if sb.winfo_exists():
+                sb.set(first, last)
+        except tk.TclError:
+            # Widget may be destroyed while async redraw still runs.
+            return
+    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0, yscrollcommand=_safe_scroll_set)
     canvas.pack(side="left", fill="both", expand=True)
     sb.config(command=canvas.yview)
     inner = tk.Frame(canvas, bg=bg)
@@ -360,11 +380,16 @@ def _lu_filter_data_by_query(all_data: dict, query: str) -> dict:
         if (tag or "").strip()
     }, key=str.lower)
 
-    unique_product_names = sorted({
-        (rec.get("product_name") or "").strip()
-        for rec in filtered_general
-        if (rec.get("product_name") or "").strip()
-    }, key=str.lower)
+    _prod_first: dict[str, str] = {}
+    for rec in filtered_general:
+        pn = (rec.get("product_name") or "").strip()
+        if not pn:
+            continue
+        for tok in split_product_name_tokens(pn):
+            lk = tok.strip().lower()
+            if lk and lk not in _prod_first:
+                _prod_first[lk] = tok.strip()
+    unique_product_names = sorted(_prod_first.values(), key=str.lower)
 
     return {
         "general": filtered_general,
