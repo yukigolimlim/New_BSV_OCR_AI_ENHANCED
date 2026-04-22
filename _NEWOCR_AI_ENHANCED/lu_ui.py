@@ -9,7 +9,6 @@ dedicated files:
   lu_tab_charts.py          — Charts tab (sector charts)
   lu_simulator_patch.py     — Risk Simulator tab
   lu_loanbal_export_patch.py — Sector vs Loan Balance tab + export
-  lu_tab_report.py          — Report tab + PDF/Excel export
 
 How to use
 ----------
@@ -48,7 +47,6 @@ import lu_tab_analysis
 import lu_tab_charts
 import lu_simulator_patch
 import lu_loanbal_export_patch
-import lu_tab_report
 
 # ── Re-export shared helpers expected by lu_analysis_tab shim ─────────
 from lu_shared import (
@@ -81,11 +79,6 @@ from lu_loanbal_export_patch import (
     _loanbal_show_export_menu, _loanbal_export_pdf, _loanbal_export_excel,
     _generate_loanbal_pdf, _generate_loanbal_excel,
 )
-from lu_tab_report import (
-    _build_report_panel, _report_show_placeholder, _report_render, _report_print,
-    _lu_show_export_menu, _export_pdf, _export_excel,
-    _generate_pdf, _generate_excel,
-)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -113,8 +106,7 @@ def _build_lu_analysis_panel(self, parent):
     for label, view in [("Analysis",             "analysis"),
                         ("Charts",               "charts"),
                         ("Risk Simulator",        "simulator"),
-                        ("Sector vs Loan Balance","loanbal"),
-                        ("Report",               "report")]:
+                        ("Sector vs Loan Balance","loanbal")]:
         tk.Button(tab_frame, text=label, font=F(8, "bold"),
                   bg=_NAVY_MID, fg=_WHITE,
                   activebackground=_LIME_MID, activeforeground=_TXT_ON_LIME,
@@ -211,9 +203,6 @@ def _build_lu_analysis_panel(self, parent):
     self._lu_loanbal_view = tk.Frame(self._lu_view_container, bg=_CARD_WHITE)
     _build_loanbal_panel(self, self._lu_loanbal_view)
 
-    self._lu_report_view = tk.Frame(self._lu_view_container, bg=_CARD_WHITE)
-    _build_report_panel(self, self._lu_report_view)
-
     # State
     self._lu_filepath         = None
     self._lu_results          = []
@@ -242,7 +231,6 @@ def _lu_switch_view(self, view: str):
         "charts":    self._lu_charts_view,
         "simulator": self._lu_simulator_view,
         "loanbal":   self._lu_loanbal_view,
-        "report":    self._lu_report_view,
     }
     for name, frame in views.items():
         if name == view:
@@ -282,8 +270,6 @@ def _lu_switch_view(self, view: str):
         _sim_populate(self)
     if view == "charts"    and self._lu_all_data:
         _charts_render(self)
-    if view == "report"    and self._lu_all_data:
-        _report_render(self)
     if view == "loanbal"   and self._lu_all_data:
         _loanbal_render(self)
 
@@ -1143,7 +1129,6 @@ def attach(cls):
     lu_tab_charts.attach(cls)
     lu_simulator_patch.attach(cls)
     lu_loanbal_export_patch.attach(cls)
-    lu_tab_report.attach(cls)
 
     # Placeholder attributes set by builder
     cls._lu_export_btn    = None

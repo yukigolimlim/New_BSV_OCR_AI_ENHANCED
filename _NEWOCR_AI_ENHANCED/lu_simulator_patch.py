@@ -72,32 +72,32 @@ def _build_simulator_panel(self, parent):
         font=F(10, "bold"), fg=_WHITE, bg=_NAVY_MID)
     self._sim_hdr_lbl.pack(side="left", padx=20, pady=8)
 
-    ctrl = tk.Frame(parent, bg=_OFF_WHITE, height=46)
+    ctrl = tk.Frame(parent, bg=_OFF_WHITE, height=58)
     ctrl.pack(fill="x")
     ctrl.pack_propagate(False)
-    tk.Label(ctrl, text="Global %:", font=F(9, "bold"),
-             fg=_NAVY_MID, bg=_OFF_WHITE).pack(side="left", padx=(16, 4), pady=12)
+    tk.Label(ctrl, text="Global %:", font=F(11, "bold"),
+            fg=_NAVY_MID, bg=_OFF_WHITE).pack(side="left", padx=(16, 4), pady=14)
     self._sim_global_var = tk.StringVar(value="0")
-    ctk.CTkEntry(ctrl, textvariable=self._sim_global_var, width=70, height=26,
-                 corner_radius=4, fg_color=_WHITE, text_color=_TXT_NAVY,
-                 border_color=_BORDER_MID, font=FF(9)
-                 ).pack(side="left", pady=10)
+    ctk.CTkEntry(ctrl, textvariable=self._sim_global_var, width=84, height=32,
+                corner_radius=5, fg_color=_WHITE, text_color=_TXT_NAVY,
+                border_color=_BORDER_MID, font=FF(11)
+                ).pack(side="left", pady=13)
     ctk.CTkButton(ctrl, text="Apply All", command=lambda: _sim_apply_global(self),
-                  width=80, height=26, corner_radius=4,
-                  fg_color=_NAVY_LIGHT, hover_color=_NAVY_MID,
-                  text_color=_WHITE, font=FF(8, "bold")
-                  ).pack(side="left", padx=6, pady=10)
+                width=96, height=32, corner_radius=5,
+                fg_color=_NAVY_LIGHT, hover_color=_NAVY_MID,
+                text_color=_WHITE, font=FF(10, "bold")
+                ).pack(side="left", padx=6, pady=13)
     ctk.CTkButton(ctrl, text="Reset", command=lambda: _sim_reset(self),
-                  width=70, height=26, corner_radius=4,
-                  fg_color=_ACCENT_RED, hover_color="#C53030",
-                  text_color=_WHITE, font=FF(8, "bold")
-                  ).pack(side="left", padx=(0, 6), pady=10)
-    tk.Label(ctrl, text="Filter:", font=F(8, "bold"),
-             fg=_NAVY_MID, bg=_OFF_WHITE).pack(side="left", padx=(14, 4), pady=12)
+                width=84, height=32, corner_radius=5,
+                fg_color=_ACCENT_RED, hover_color="#C53030",
+                text_color=_WHITE, font=FF(10, "bold")
+                ).pack(side="left", padx=(0, 6), pady=13)
+    tk.Label(ctrl, text="Filter:", font=F(10, "bold"),
+            fg=_NAVY_MID, bg=_OFF_WHITE).pack(side="left", padx=(14, 4), pady=14)
     self._sim_search_var = tk.StringVar()
     sim_search_entry = ctk.CTkEntry(
-        ctrl, textvariable=self._sim_search_var, width=230, height=26, corner_radius=4,
-        fg_color=_WHITE, text_color=_TXT_NAVY, border_color=_BORDER_MID, font=FF(8),
+        ctrl, textvariable=self._sim_search_var, width=260, height=32, corner_radius=5,
+        fg_color=_WHITE, text_color=_TXT_NAVY, border_color=_BORDER_MID, font=FF(13),
         placeholder_text="client, ID, PN, industry, sector..."
     )
     sim_search_entry.pack(side="left", pady=10)
@@ -157,11 +157,11 @@ def _build_simulator_panel(self, parent):
                            width=390)
     right_frame.pack(side="right", fill="y")
     right_frame.pack_propagate(False)
-    tk.Label(right_frame, text="Expense mix (pie)", font=F(9, "bold"),
+    tk.Label(right_frame, text="Expense Breakdown", font=F(9, "bold"),
              fg=_TXT_SOFT, bg=_CARD_WHITE).pack(pady=(8, 0))
     tk.Label(
         right_frame,
-        text="% of total simulated expenses",
+        text="Percentage of Total Simulated Expenses",
         font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE,
     ).pack(pady=(0, 4))
     self._sim_chart_holder = tk.Frame(right_frame, bg=_CARD_WHITE)
@@ -350,11 +350,13 @@ def _sim_populate(self):
 
     hdr = tk.Frame(self._sim_scroll_frame, bg=_OFF_WHITE)
     hdr.pack(fill="x", pady=(8, 0))
-    for col, (_title, min_px, wt) in enumerate(SIM_TABLE_COLUMNS):
-        hdr.grid_columnconfigure(col, weight=wt, minsize=min_px)
+    for col, (_title, min_px, _wt) in enumerate(SIM_TABLE_COLUMNS):
+        hdr.grid_columnconfigure(col, weight=1, minsize=min_px, uniform="sim_col")
     for col, (text, _min_px, _wt) in enumerate(SIM_TABLE_COLUMNS):
         tk.Label(hdr, text=text, font=F(8, "bold"), fg=_NAVY_PALE, bg=_OFF_WHITE,
-                 anchor="w", padx=6, pady=5
+                 anchor="w" if col == 0 else "center",
+                 justify="left" if col == 0 else "center",
+                 padx=6, pady=5
                  ).grid(row=0, column=col, sticky="ew", padx=(0, 2))
     tk.Frame(self._sim_scroll_frame, bg=_BORDER_MID, height=1).pack(fill="x")
 
@@ -407,8 +409,8 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
     row_bg = _RISK_BG.get(risk, _WHITE) if idx % 2 == 0 else _WHITE
     row    = tk.Frame(parent, bg=row_bg)
     row.pack(fill="x")
-    for ci, (_title, min_px, wt) in enumerate(SIM_TABLE_COLUMNS):
-        row.grid_columnconfigure(ci, weight=wt, minsize=min_px)
+    for ci, (_title, min_px, _wt) in enumerate(SIM_TABLE_COLUMNS):
+        row.grid_columnconfigure(ci, weight=1, minsize=min_px, uniform="sim_col")
 
     tk.Label(row, text=name, font=F(9, "bold"),
              fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=6
@@ -416,9 +418,10 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
     tk.Label(row, text=risk, font=F(7, "bold"),
              fg=_RISK_COLOR.get(risk, _TXT_SOFT),
              bg=_RISK_BADGE_BG.get(risk, _OFF_WHITE),
-             padx=4, pady=3).grid(row=0, column=1, padx=4, pady=6, sticky="w")
+             anchor="center", justify="center",
+             padx=10, pady=3).grid(row=0, column=1, padx=4, pady=6, sticky="")
     tk.Label(row, text=f"₱{base_total:,.2f}" if base_total > 0 else "—",
-             font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6
+             font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="center", justify="center", padx=6
              ).grid(row=0, column=2, sticky="ew")
 
     rate_entry = ctk.CTkEntry(row, textvariable=var, width=80, height=26, corner_radius=4,
@@ -430,10 +433,10 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
     rate_entry.bind("<FocusOut>", lambda e, ex=exp: _sim_on_slide(self, ex, var.get()))
 
     extra_lbl = tk.Label(row, text="—", font=F(9), fg=_ACCENT_RED,
-                         bg=row_bg, anchor="e", padx=6)
+                         bg=row_bg, anchor="center", justify="center", padx=6)
     extra_lbl.grid(row=0, column=4, sticky="ew")
     sim_lbl = tk.Label(row, text="—", font=F(9, "bold"), fg=_TXT_NAVY,
-                       bg=row_bg, anchor="e", padx=6)
+                       bg=row_bg, anchor="center", justify="center", padx=6)
     sim_lbl.grid(row=0, column=5, sticky="ew")
 
     var._extra_lbl = extra_lbl
@@ -662,7 +665,7 @@ def _sim_draw_chart(self):
             color="#365B8C",
             fontweight="bold",
         )
-        ax.set_title("Share of total (simulated)", fontsize=9, color="#4A6FA5", pad=6)
+        ax.set_title("Share of Total (Simulated)", fontsize=9, color="#4A6FA5", pad=6)
 
         leg_labels = [_short(n, 22) for n in names]
         ax.legend(
@@ -677,7 +680,10 @@ def _sim_draw_chart(self):
         fig.subplots_adjust(left=0.06, right=0.94, top=0.88, bottom=0.30)
 
         canvas = FigureCanvasTkAgg(fig, master=holder)
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        widget = canvas.get_tk_widget()
+        widget.config(width=370, height=370)
+        widget.pack_propagate(False)
+        widget.pack(fill="none", expand=False)
         plt.close(fig)
     except Exception:
         tk.Label(
