@@ -299,19 +299,38 @@ def _build_left(self, p):
     tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x")
 
     # ── Status dot row ────────────────────────────────────────────────
+    # ── Status / welcome block ────────────────────────────────────────
     status_row = tk.Frame(sidebar, bg=_SB_BG)
-    status_row.pack(fill="x", padx=18, pady=(10, 2))
+    status_row.pack(fill="x", padx=18, pady=(10, 6))
 
-    self._status_dot = tk.Canvas(status_row, width=8, height=8,
+    # Dot aligned to the "Welcome" line
+    dot_col = tk.Frame(status_row, bg=_SB_BG)
+    dot_col.pack(side="left", anchor="n", pady=(3, 0))
+
+    self._status_dot = tk.Canvas(dot_col, width=8, height=8,
                                  bg=_SB_BG, highlightthickness=0)
-    self._status_dot.pack(side="left", padx=(0, 6))
+    self._status_dot.pack(padx=(0, 8))
     self._status_dot.create_oval(1, 1, 7, 7, fill=_SB_ACCENT, outline="")
 
+    # Two-line text block: "Welcome" + username on separate lines
+    text_col = tk.Frame(status_row, bg=_SB_BG)
+    text_col.pack(side="left", fill="x", expand=True)
+
+    _username = getattr(self, "_current_username", None) or "User"
+
+    tk.Label(text_col, text="WELCOME",
+             font=F(8), fg=_SB_TXT, bg=_SB_BG,
+             anchor="w").pack(anchor="w")
+    # Trim long usernames (e.g. emails) to fit the sidebar
+    if len(_username) > 20:
+        _username = _username[:18] + "…"
+
     self._status_sidebar_lbl = tk.Label(
-        status_row, text="Ready",
-        font=F(9, "bold"), fg=_SB_ACCENT2, bg=_SB_BG
+        text_col, text=_username,
+        font=F(10, "bold"), fg=_SB_ACCENT2, bg=_SB_BG,
+        anchor="w"
     )
-    self._status_sidebar_lbl.pack(side="left")
+    self._status_sidebar_lbl.pack(anchor="w")
 
     # Animate the dot (pulse effect via color cycling)
     _pulse_state = [0, 1]
@@ -363,27 +382,94 @@ def _build_left(self, p):
     # ── Utility links ─────────────────────────────────────────────────
     tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x", padx=10, pady=(0, 4))
 
+    # ── Log Out button ────────────────────────────────────────────────
     util_frame = tk.Frame(sidebar, bg=_SB_BG)
     util_frame.pack(fill="x", padx=8, pady=(0, 6))
 
-    for u_icon, u_label in [("❓", "Help"), ("⚙", "Settings")]:
-        row = tk.Frame(util_frame, bg=_SB_BG, cursor="hand2", height=38)
-        row.pack(fill="x", pady=1)
-        row.pack_propagate(False)
-        il = tk.Label(row, text=u_icon, font=("Segoe UI Emoji", 11),
-                      fg=_SB_TXT_DIM, bg=_SB_BG, width=3, anchor="center")
-        il.pack(side="left", padx=(10, 4))
-        tl = tk.Label(row, text=u_label, font=F(10), fg=_SB_TXT_DIM,
-                      bg=_SB_BG, anchor="w")
-        tl.pack(side="left", fill="x", expand=True)
-        for w in (row, il, tl):
-            w.bind("<Enter>", lambda e, r=row, i=il, t=tl: [
-                x.config(bg=_SB_HOVER_BG,
-                         fg=(_SB_TXT if x in (i, t) else _SB_HOVER_BG))
-                for x in (r, i, t)])
-            w.bind("<Leave>", lambda e, r=row, i=il, t=tl: [
-                x.config(bg=_SB_BG, fg=(_SB_TXT_DIM if x in (i, t) else _SB_BG))
-                for x in (r, i, t)])
+    logout_row = tk.Frame(util_frame, bg=_SB_BG, cursor="hand2", height=38)
+    logout_row.pack(fill="x", pady=1)
+    logout_row.pack_propagate(False)
+
+    logout_icon = tk.Label(logout_row, text="⏻", font=("Segoe UI Emoji", 11),
+                           fg="#E05555", bg=_SB_BG, width=3, anchor="center")
+    logout_icon.pack(side="left", padx=(10, 4))
+
+    logout_lbl = tk.Label(logout_row, text="Log Out", font=F(10),
+                          fg="#E05555", bg=_SB_BG, anchor="w")
+    logout_lbl.pack(side="left", fill="x", expand=True)
+
+    def _do_logout(e=None):
+        import tkinter.messagebox as mb
+        confirmed = mb.askyesno(
+            "Log Out",
+            "Are you sure you want to log out?",
+            icon="warning"
+        )
+        if not confirmed:
+            return
+
+        # Close DB connection cleanly
+        if getattr(self, "db_conn", None) and not self.db_conn.closed:
+            try:
+                self.db_conn.close()
+            except Exception:
+                pass
+
+        self._is_closing = True
+
+        # Cancel any pending jobs
+        for attr in ("_sim_build_job", "_sum_search_after",
+                    "_gen_sum_search_after", "_job"):
+            job = getattr(self, attr, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+
+        def _relaunch_login():
+            import importlib, sys
+
+            if "login" in sys.modules:
+                importlib.reload(sys.modules["login"])
+            from login import LoginWindow
+
+            def _relaunch_app(user_id, username):
+                if "app" in sys.modules:
+                    importlib.reload(sys.modules["app"])
+                from app import DocExtractorApp
+                app = DocExtractorApp()
+                app._current_user_id = user_id
+                app._current_username = username
+                app.mainloop()
+
+            login = LoginWindow(on_success=_relaunch_app)
+
+            # Force accurate centering after window is fully ready
+            login.update_idletasks()
+            sw = login.winfo_screenwidth()
+            sh = login.winfo_screenheight()
+            x  = (sw - login.W) // 2
+            y  = (sh - login.H) // 2
+            login.geometry(f"{login.W}x{login.H}+{x}+{y}")
+            login.lift()
+            login.focus_force()
+            login.mainloop()
+
+        self.after(0, lambda: [self.destroy(), _relaunch_login()])
+
+    def _logout_enter(e=None):
+        for w in (logout_row, logout_icon, logout_lbl):
+            w.config(bg="#1A0F0F")
+
+    def _logout_leave(e=None):
+        for w in (logout_row, logout_icon, logout_lbl):
+            w.config(bg=_SB_BG)
+
+    for w in (logout_row, logout_icon, logout_lbl):
+        w.bind("<Button-1>", _do_logout)
+        w.bind("<Enter>",    _logout_enter)
+        w.bind("<Leave>",    _logout_leave)
 
     # ── Version footer ────────────────────────────────────────────────
     tk.Frame(sidebar, bg=_SB_BORDER, height=1).pack(fill="x", padx=16)
@@ -989,7 +1075,11 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
         self._topbar_status.config(text="● Ready", fg=_SB_ACCENT, bg="#1A2F47")
         if hasattr(self, '_status_sidebar_lbl'):
-            self._status_sidebar_lbl.config(text="Ready", fg=_SB_ACCENT2)
+            current = self._status_sidebar_lbl.cget("text")
+            if not current.startswith("Welcome"):
+                self._status_sidebar_lbl.config(text="Ready", fg=_SB_ACCENT2)
+            else:
+                self._status_sidebar_lbl.config(fg=_SB_ACCENT2)
 
 def _set_progress(self, pct, stage=""):
     self._pct_lbl.config(text=f"{pct}%")

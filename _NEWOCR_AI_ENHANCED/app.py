@@ -50,6 +50,43 @@ import ui_cibi
 import lu_ui as lu_analysis_tab
 import lu_simulator_patch
 import lu_loanbal_export_patch
+# app.py — at the top, after imports
+import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Global connection — created once when app launches
+# app.py
+
+def get_db_connection():
+    """Create a fresh psycopg2 connection from .env settings."""
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", 5432)),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+    )
+
+# Test connection on startup
+# Test connection on startup
+def check_db_on_startup():
+    try:
+        _conn = get_db_connection()
+        _conn.close()
+        print("✔ Database connected successfully")
+        return True
+    except Exception as e:
+        print(f"✘ Database connection failed: {e}")
+        import tkinter.messagebox as mb
+        mb.showerror(
+            "Database Error",
+            f"Cannot connect to the database.\n\n{e}\n\nCheck your .env file or server."
+        )
+        return False
+
+DB_ONLINE = check_db_on_startup()
 
 try:
     import lu_analysis_row_format_patch as _row_patch
@@ -73,12 +110,32 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         global _FONT_FAMILY
         import app_constants as _ac
         _ac._FONT_FAMILY = best_font()
+        # ── Database connection (shared across all tabs) ───────────────
+        self.db_conn = None
+        if DB_ONLINE:
+            try:
+                self.db_conn = get_db_connection()
+            except Exception as e:
+                print(f"✘ Could not create shared connection: {e}")
 
         self.title("DocExtract Pro — Banco San Vicente")
         self.configure(fg_color=SIDEBAR_BG)
 
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
+        # Get true scaled screen size accounting for DPI awareness
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # GetSystemMetrics with DPI-aware values
+            sw = user32.GetSystemMetrics(0)   # SM_CXSCREEN
+            sh = user32.GetSystemMetrics(1)   # SM_CYSCREEN
+            # Scale back down by the system DPI factor so tkinter lays out correctly
+            dpi = user32.GetDpiForSystem()
+            scale = dpi / 96.0
+            sw = int(sw / scale)
+            sh = int(sh / scale)
+        except Exception:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
         self.geometry(f"{sw}x{sh}+0+0")
         self.resizable(False, False)
 
@@ -90,6 +147,14 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
             self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
         except Exception:
             self._base_tk_scaling = 1.0
+        # Reset tk scaling to 1.0 baseline — DPI is already handled at process level
+        try:
+            import ctypes
+            dpi = ctypes.windll.user32.GetDpiForSystem()
+            scale = dpi / 96.0
+            self.tk.call("tk", "scaling", self._base_tk_scaling / scale)
+        except Exception:
+            pass
         self._apply_ui_zoom(1.0)
 
         # ── Core state ────────────────────────────────────────────────────
@@ -140,6 +205,22 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         self.bind_all("<Control-0>", lambda _e: self._zoom_reset())
         self.bind_all("<Control-KP_Add>", lambda _e: self._zoom_in())
         self.bind_all("<Control-KP_Subtract>", lambda _e: self._zoom_out())
+
+    # ── Database ──────────────────────────────────────────────────────
+    def get_conn(self):
+        try:
+            if self.db_conn is None or self.db_conn.closed:
+                raise Exception("closed")
+            cur = self.db_conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        except Exception:
+            try:
+                self.db_conn = get_db_connection()
+            except Exception as e:
+                print(f"✘ Reconnect failed: {e}")
+                self.db_conn = None
+        return self.db_conn
 
     # ── Font helpers (used by SamplesTabMixin + DocClassifierTabMixin) ────
     def F(self, size: int, weight: str = "normal") -> tuple:
@@ -310,6 +391,12 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
                     setattr(self, attr, None)
                 except Exception:
                     pass
+        # ── Close shared DB connection ─────────────────────────────
+        if getattr(self, "db_conn", None) and not self.db_conn.closed:
+            try:
+                self.db_conn.close()
+            except Exception:
+                pass
 
         try:
             self.destroy()
@@ -383,5 +470,12 @@ lu_loanbal_export_patch.attach(DocExtractorApp)  # 4. loan balance export button
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app = DocExtractorApp()
-    app.mainloop()
+    def _launch(user_id, username):
+        app = DocExtractorApp()
+        app._current_user_id = user_id
+        app._current_username = username
+        app.mainloop()
+
+    from login import LoginWindow
+    login = LoginWindow(on_success=_launch)
+    login.mainloop()
