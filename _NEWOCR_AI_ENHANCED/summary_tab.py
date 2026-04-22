@@ -31,7 +31,6 @@ import re
 import io
 import csv
 import json
-import sqlite3
 import threading
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -51,8 +50,9 @@ from app_constants import (
     F, FF, FMONO,
 )
 
-DB_DIR  = Path(__file__).parent / "lookup_summary_results"
-DB_PATH = DB_DIR / "applicants.db"
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 PAD          = 20
 PAGE_SIZE    = 50
@@ -565,12 +565,15 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
 #  DATABASE LAYER
 # ═══════════════════════════════════════════════════════════════════════
 
-def _db_connect() -> sqlite3.Connection:
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=10, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+def _db_connect():
+    import psycopg2
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", 5432)),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+    )
     return conn
 
 
@@ -597,12 +600,16 @@ _PATCHABLE_COLS = [
 ]
 
 
-def _patch_existing(conn: sqlite3.Connection, existing_id: int,
-                    incoming: dict) -> None:
+def _patch_existing(conn, existing_id: int, incoming: dict) -> None:
     """Fill in only columns that are currently NULL/empty. Never overwrites."""
-    existing = dict(conn.execute(
-        "SELECT * FROM applicants WHERE id=?", (existing_id,)
-    ).fetchone())
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM applicants WHERE id=%s", (existing_id,))
+    cols_desc = [desc[0] for desc in cur.description]
+    row = cur.fetchone()
+    cur.close()
+    if not row:
+        return
+    existing = dict(zip(cols_desc, row))
 
     parts, vals = [], []
     for col in _PATCHABLE_COLS:
@@ -612,137 +619,40 @@ def _patch_existing(conn: sqlite3.Connection, existing_id: int,
         is_empty = (existing_val is None or
                     (isinstance(existing_val, str) and existing_val.strip() == ""))
         if is_empty and incoming[col] not in (None, ""):
-            parts.append(f"{col}=?")
+            parts.append(f"{col}=%s")
             vals.append(incoming[col])
 
     if parts:
-        conn.execute(
-            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+        cur2 = conn.cursor()
+        cur2.execute(
+            f"UPDATE applicants SET {', '.join(parts)} WHERE id=%s",
             vals + [existing_id]
         )
+        cur2.close()
 
 
 def _db_init():
-    with _db_connect() as conn:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS applicants (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id          TEXT    NOT NULL,
-            processed_at        TEXT    NOT NULL,
-            source_file         TEXT,
-            status              TEXT    DEFAULT 'done',
-            applicant_name      TEXT,
-            residence_address   TEXT,
-            office_address      TEXT,
-            income_items        TEXT,
-            income_total        REAL,
-            business_items      TEXT,
-            business_total      REAL,
-            household_items     TEXT,
-            household_total     REAL,
-            net_income          REAL,
-            petrol_risk         INTEGER DEFAULT 0,
-            transport_risk      INTEGER DEFAULT 0,
-            results_json        TEXT,
-            page_map            TEXT,
-            amort_history_total REAL,
-            amort_current_total REAL,
-            client_id           TEXT,
-            pn                  TEXT,
-            industry_name       TEXT,
-            loan_balance        REAL,
-            amortized_cost      REAL,
-            principal_loan      REAL,
-            maturity            TEXT,
-            interest_rate       TEXT,
-            branch              TEXT,
-            loan_class_name     TEXT,
-            product_name        TEXT,
-            loan_date           TEXT,
-            term_unit           TEXT,
-            term                TEXT,
-            security            TEXT,
-            release_tag         TEXT,
-            loan_amount         REAL,
-            loan_status         TEXT,
-            ao_name             TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_session   ON applicants(session_id);
-        CREATE INDEX IF NOT EXISTS idx_name      ON applicants(applicant_name COLLATE NOCASE);
-        CREATE INDEX IF NOT EXISTS idx_status    ON applicants(status);
-        CREATE INDEX IF NOT EXISTS idx_processed ON applicants(processed_at);
-        CREATE INDEX IF NOT EXISTS idx_clientid  ON applicants(client_id);
-        """)
-
-        # ── schema migrations for legacy DBs ──────────────────────────
-        cols = [r[1] for r in conn.execute(
-            "PRAGMA table_info(applicants)").fetchall()]
-        migrations = [
-            ("amort_history_total", "REAL"),
-            ("amort_current_total", "REAL"),
-            ("client_id",           "TEXT"),
-            ("pn",                  "TEXT"),
-            ("industry_name",       "TEXT"),
-            ("loan_balance",        "REAL"),
-            ("amortized_cost",      "REAL"),
-            ("principal_loan",      "REAL"),
-            ("maturity",            "TEXT"),
-            ("interest_rate",       "TEXT"),
-            ("branch",              "TEXT"),
-            ("loan_class_name",     "TEXT"),
-            ("product_name",        "TEXT"),
-            ("industry_name_ploan", "TEXT"),
-            ("loan_date",           "TEXT"),
-            ("term_unit",           "TEXT"),
-            ("term",                "TEXT"),
-            ("security",            "TEXT"),
-            ("release_tag",         "TEXT"),
-            ("loan_amount",         "REAL"),
-            ("loan_balance_ploan",  "REAL"),
-            ("amort_ploan",         "REAL"),
-            ("loan_status",         "TEXT"),
-            ("ao_name",             "TEXT"),
-        ]
-        for col_name, col_type in migrations:
-            if col_name not in cols:
-                conn.execute(
-                    f"ALTER TABLE applicants ADD COLUMN {col_name} {col_type}")
-
-        # ── backfill amort_history_total for legacy rows ───────────────
-        rows_needing_backfill = conn.execute(
-            "SELECT id, results_json FROM applicants "
-            "WHERE amort_history_total IS NULL AND results_json IS NOT NULL"
-        ).fetchall()
-        for r in rows_needing_backfill:
-            val = _parse_amort_history_total(r["results_json"])
-            if val is not None:
-                conn.execute(
-                    "UPDATE applicants SET amort_history_total=? WHERE id=?",
-                    (val, r["id"]))
-
-    _db_deduplicate_client_ids()
+    pass
 
 
 def _db_deduplicate_client_ids() -> int:
-    """
-    Collapse rows that share the same non-empty client_id.
-    Keeps the most-complete record; patches missing fields from duplicates;
-    deletes the extras. Returns number of duplicate rows removed.
-    """
     removed = 0
     with _db_connect() as conn:
-        dupes = conn.execute("""
+        cur = conn.cursor()
+        cur.execute("""
             SELECT client_id, COUNT(*) as cnt
             FROM applicants
             WHERE client_id IS NOT NULL AND TRIM(client_id) != ''
-            GROUP BY client_id HAVING cnt > 1
-        """).fetchall()
+            GROUP BY client_id HAVING COUNT(*) > 1
+        """)
+        dupes = cur.fetchall()
 
-        for dup in dupes:
-            cid  = dup["client_id"]
-            rows = [dict(r) for r in conn.execute(
-                "SELECT * FROM applicants WHERE client_id=? ORDER BY id ASC",
-                (cid,)).fetchall()]
+        for (cid, _cnt) in dupes:
+            cur.execute(
+                "SELECT * FROM applicants WHERE client_id=%s ORDER BY id ASC",
+                (cid,))
+            cols_desc = [desc[0] for desc in cur.description]
+            rows = [dict(zip(cols_desc, r)) for r in cur.fetchall()]
 
             def _score(r):
                 return sum(1 for v in r.values()
@@ -756,58 +666,55 @@ def _db_deduplicate_client_ids() -> int:
                 for col in _PATCHABLE_COLS:
                     if col not in keeper:
                         continue
-                    keeper_val  = keeper.get(col)
-                    is_empty    = (keeper_val is None or
-                                   (isinstance(keeper_val, str) and
-                                    keeper_val.strip() == ""))
-                    incoming    = dup_row.get(col)
-                    has_value   = (incoming is not None and
-                                   str(incoming).strip() != "")
+                    keeper_val = keeper.get(col)
+                    is_empty   = (keeper_val is None or
+                                  (isinstance(keeper_val, str) and
+                                   keeper_val.strip() == ""))
+                    incoming   = dup_row.get(col)
+                    has_value  = (incoming is not None and
+                                  str(incoming).strip() != "")
                     if is_empty and has_value:
-                        conn.execute(
-                            f"UPDATE applicants SET {col}=? WHERE id=?",
+                        cur.execute(
+                            f"UPDATE applicants SET {col}=%s WHERE id=%s",
                             (incoming, keeper_id))
                         keeper[col] = incoming
-                conn.execute("DELETE FROM applicants WHERE id=?",
-                             (dup_row["id"],))
+                cur.execute("DELETE FROM applicants WHERE id=%s", (dup_row["id"],))
                 removed += 1
+
+        conn.commit()
+        cur.close()
     return removed
 
 
 def _db_upsert(session_id: str, row_data: dict) -> int:
-    """
-    Insert or patch a row.
-
-    Match priority:
-      1. Non-empty client_id  → unique business key
-      2. session_id + source_file → technical fallback
-
-    Existing data is NEVER overwritten — only empty fields are filled.
-    """
     with _db_connect() as conn:
+        cur = conn.cursor()
         existing_id = None
         client_id   = (row_data.get("client_id") or "").strip()
 
         if client_id:
-            row = conn.execute(
-                "SELECT id FROM applicants WHERE TRIM(client_id)=?",
-                (client_id,)).fetchone()
+            cur.execute(
+                "SELECT id FROM applicants WHERE TRIM(client_id)=%s",
+                (client_id,))
+            row = cur.fetchone()
             if row:
-                existing_id = row["id"]
+                existing_id = row[0]
 
         if existing_id is None:
-            row = conn.execute(
-                "SELECT id FROM applicants WHERE session_id=? AND source_file=?",
-                (session_id, row_data.get("source_file", ""))).fetchone()
+            cur.execute(
+                "SELECT id FROM applicants WHERE session_id=%s AND source_file=%s",
+                (session_id, row_data.get("source_file", "")))
+            row = cur.fetchone()
             if row:
-                existing_id = row["id"]
+                existing_id = row[0]
 
         if existing_id is not None:
             _patch_existing(conn, existing_id, row_data)
+            conn.commit()
+            cur.close()
             return existing_id
 
-        # ── Full INSERT covering all columns set by Look-Up ────────────
-        cur = conn.execute("""
+        cur.execute("""
             INSERT INTO applicants (
                 session_id, processed_at, source_file, status,
                 applicant_name, residence_address, office_address,
@@ -816,8 +723,7 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 household_items, household_total,
                 net_income, petrol_risk, transport_risk,
                 results_json, page_map,
-                amort_history_total,
-                amort_current_total,
+                amort_history_total, amort_current_total,
                 client_id, pn, industry_name,
                 loan_balance, amortized_cost,
                 principal_loan, maturity, interest_rate,
@@ -825,24 +731,26 @@ def _db_upsert(session_id: str, row_data: dict) -> int:
                 loan_date, term_unit, term, security, release_tag,
                 loan_status, ao_name
             ) VALUES (
-                :session_id, :processed_at, :source_file, :status,
-                :applicant_name, :residence_address, :office_address,
-                :income_items, :income_total,
-                :business_items, :business_total,
-                :household_items, :household_total,
-                :net_income, :petrol_risk, :transport_risk,
-                :results_json, :page_map,
-                :amort_history_total,
-                :amort_current_total,
-                :client_id, :pn, :industry_name,
-                :loan_balance, :amortized_cost,
-                :principal_loan, :maturity, :interest_rate,
-                :branch, :loan_class_name, :product_name,
-                :loan_date, :term_unit, :term, :security, :release_tag,
-                :loan_status, :ao_name
-            )
+                %(session_id)s, %(processed_at)s, %(source_file)s, %(status)s,
+                %(applicant_name)s, %(residence_address)s, %(office_address)s,
+                %(income_items)s, %(income_total)s,
+                %(business_items)s, %(business_total)s,
+                %(household_items)s, %(household_total)s,
+                %(net_income)s, %(petrol_risk)s, %(transport_risk)s,
+                %(results_json)s, %(page_map)s,
+                %(amort_history_total)s, %(amort_current_total)s,
+                %(client_id)s, %(pn)s, %(industry_name)s,
+                %(loan_balance)s, %(amortized_cost)s,
+                %(principal_loan)s, %(maturity)s, %(interest_rate)s,
+                %(branch)s, %(loan_class_name)s, %(product_name)s,
+                %(loan_date)s, %(term_unit)s, %(term)s, %(security)s, %(release_tag)s,
+                %(loan_status)s, %(ao_name)s
+            ) RETURNING id
         """, row_data)
-        return cur.lastrowid
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        return new_id
 
 
 # ── Safe sortable columns (real DB columns only, no virtuals) ──────────
@@ -865,20 +773,17 @@ def _db_query(search: str = "", session_id: str = "",
     for term in terms:
         like = f"%{term}%"
         where_parts.append(
-            "(applicant_name LIKE ? OR residence_address LIKE ? "
-            "OR office_address LIKE ? OR income_items LIKE ? "
-            "OR business_items LIKE ? OR household_items LIKE ? "
-            "OR source_file LIKE ? OR client_id LIKE ? "
-            "OR pn LIKE ? OR industry_name LIKE ?)")
+            "(applicant_name ILIKE %s OR residence_address ILIKE %s "
+            "OR office_address ILIKE %s OR income_items ILIKE %s "
+            "OR business_items ILIKE %s OR household_items ILIKE %s "
+            "OR source_file ILIKE %s OR client_id ILIKE %s "
+            "OR pn ILIKE %s OR industry_name ILIKE %s)")
         params.extend([like] * 10)
 
     if session_id:
-        where_parts.append("session_id = ?")
+        where_parts.append("session_id = %s")
         params.append(session_id)
 
-    # ── Advanced per-column filters ───────────────────────────────────
-    # client_id uses exact match (TRIM + case-insensitive equality).
-    # All other columns use partial LIKE matching.
     _EXACT_MATCH_COLS = {"client_id"}
 
     if adv_filters:
@@ -886,24 +791,27 @@ def _db_query(search: str = "", session_id: str = "",
             if col not in _SORTABLE_COLS or not values:
                 continue
             if col in _EXACT_MATCH_COLS:
-                # OR across each supplied value, but each is an exact match
                 placeholders = " OR ".join(
-                    [f"TRIM(UPPER({col})) = TRIM(UPPER(?))" for _ in values])
+                    [f"TRIM(UPPER({col})) = TRIM(UPPER(%s))" for _ in values])
                 where_parts.append(f"({placeholders})")
                 params.extend(values)
             else:
-                placeholders = " OR ".join([f"{col} LIKE ?" for _ in values])
+                placeholders = " OR ".join([f"{col} ILIKE %s" for _ in values])
                 where_parts.append(f"({placeholders})")
                 params.extend([f"%{v}%" for v in values])
 
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM applicants {where}", params).fetchone()[0]
-        rows  = conn.execute(
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM applicants {where}", params)
+        total = cur.fetchone()[0]
+        cur.execute(
             f"SELECT * FROM applicants {where} "
-            f"ORDER BY {order_col} {direction} LIMIT ? OFFSET ?",
-            params + [limit, offset]).fetchall()
+            f"ORDER BY {order_col} {direction} LIMIT %s OFFSET %s",
+            params + [limit, offset])
+        cols_desc = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols_desc, r)) for r in cur.fetchall()]
+        cur.close()
     return rows, total
 
 
@@ -915,18 +823,17 @@ def _db_totals(session_id: str = "", search: str = "",
     for term in terms:
         like = f"%{term}%"
         where_parts.append(
-            "(applicant_name LIKE ? OR residence_address LIKE ? "
-            "OR office_address LIKE ? OR income_items LIKE ? "
-            "OR business_items LIKE ? OR household_items LIKE ? "
-            "OR source_file LIKE ? OR client_id LIKE ? "
-            "OR pn LIKE ? OR industry_name LIKE ?)")
+            "(applicant_name ILIKE %s OR residence_address ILIKE %s "
+            "OR office_address ILIKE %s OR income_items ILIKE %s "
+            "OR business_items ILIKE %s OR household_items ILIKE %s "
+            "OR source_file ILIKE %s OR client_id ILIKE %s "
+            "OR pn ILIKE %s OR industry_name ILIKE %s)")
         params.extend([like] * 10)
 
     if session_id:
-        where_parts.append("session_id = ?")
+        where_parts.append("session_id = %s")
         params.append(session_id)
 
-    # ── Same exact-match rule for client_id ───────────────────────────
     _EXACT_MATCH_COLS = {"client_id"}
 
     if adv_filters:
@@ -935,51 +842,70 @@ def _db_totals(session_id: str = "", search: str = "",
                 continue
             if col in _EXACT_MATCH_COLS:
                 placeholders = " OR ".join(
-                    [f"TRIM(UPPER({col})) = TRIM(UPPER(?))" for _ in values])
+                    [f"TRIM(UPPER({col})) = TRIM(UPPER(%s))" for _ in values])
                 where_parts.append(f"({placeholders})")
                 params.extend(values)
             else:
-                placeholders = " OR ".join([f"{col} LIKE ?" for _ in values])
+                placeholders = " OR ".join([f"{col} ILIKE %s" for _ in values])
                 where_parts.append(f"({placeholders})")
                 params.extend([f"%{v}%" for v in values])
 
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     with _db_connect() as conn:
-        row = conn.execute(f"""
+        cur = conn.cursor()
+        cur.execute(f"""
             SELECT
-                COUNT(*)                                            AS total,
-                SUM(CASE WHEN status='done'  THEN 1 ELSE 0 END)   AS done,
-                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)   AS errors,
-                SUM(income_total)                                  AS income,
-                SUM(net_income)                                    AS net,
-                SUM(amort_current_total)                           AS amort_current
+                COUNT(*)                                          AS total,
+                SUM(CASE WHEN status='done'  THEN 1 ELSE 0 END)  AS done,
+                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)  AS errors,
+                SUM(income_total)                                 AS income,
+                SUM(net_income)                                   AS net,
+                SUM(amort_current_total)                          AS amort_current
             FROM applicants {where}
-        """, params).fetchone()
-    return dict(row) if row else {}
+        """, params)
+        cols_desc = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+        cur.close()
+    return dict(zip(cols_desc, row)) if row else {}
 
 
 def _db_delete_row(row_id: int):
     with _db_connect() as conn:
-        conn.execute("DELETE FROM applicants WHERE id=?", (row_id,))
+        cur = conn.cursor()
+        cur.execute("DELETE FROM applicants WHERE id=%s", (row_id,))
+        conn.commit()
+        cur.close()
 
 
 def _db_clear_all():
     with _db_connect() as conn:
-        conn.execute("DELETE FROM applicants")
+        cur = conn.cursor()
+        cur.execute("DELETE FROM applicants")
+        conn.commit()
+        cur.close()
 
 
 def _db_update_amort_current(row_id: int, value: float) -> bool:
     with _db_connect() as conn:
-        conn.execute("UPDATE applicants SET amort_current_total=? WHERE id=?",
-                     (value, row_id))
+        cur = conn.cursor()
+        cur.execute("UPDATE applicants SET amort_current_total=%s WHERE id=%s",
+                    (value, row_id))
+        conn.commit()
+        cur.close()
     return True
 
 
 def _db_update_amort_all(matches: list, value: float) -> int:
     count = 0
-    for row_id, _ in matches:
-        _db_update_amort_current(row_id, value)
-        count += 1
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        for row_id, _ in matches:
+            cur.execute(
+                "UPDATE applicants SET amort_current_total=%s WHERE id=%s",
+                (value, row_id))
+            count += 1
+        conn.commit()
+        cur.close()
     return count
 
 
@@ -988,23 +914,26 @@ def _db_update_other_data_all(matches: list, client_id: str, pn_joined: str,
                                amortized_cost) -> int:
     count = 0
     with _db_connect() as conn:
+        cur = conn.cursor()
         for row_id, _ in matches:
             parts, vals = [], []
             if client_id:
-                parts.append("client_id=?");      vals.append(client_id)
+                parts.append("client_id=%s");      vals.append(client_id)
             if pn_joined:
-                parts.append("pn=?");             vals.append(pn_joined)
+                parts.append("pn=%s");             vals.append(pn_joined)
             if industry_name:
-                parts.append("industry_name=?");  vals.append(industry_name)
+                parts.append("industry_name=%s");  vals.append(industry_name)
             if loan_balance is not None:
-                parts.append("loan_balance=?");   vals.append(loan_balance)
+                parts.append("loan_balance=%s");   vals.append(loan_balance)
             if amortized_cost is not None:
-                parts.append("amortized_cost=?"); vals.append(amortized_cost)
+                parts.append("amortized_cost=%s"); vals.append(amortized_cost)
             if parts:
-                conn.execute(
-                    f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+                cur.execute(
+                    f"UPDATE applicants SET {', '.join(parts)} WHERE id=%s",
                     vals + [row_id])
                 count += 1
+        conn.commit()
+        cur.close()
     return count
 
 
@@ -1068,9 +997,12 @@ def _db_update_cell(row_id: int, col_name: str, raw_value: str) -> str:
         display_val = raw_value.strip() if raw_value.strip() else "—"
 
     with _db_connect() as conn:
-        conn.execute(
-            f"UPDATE applicants SET {col_name}=? WHERE id=?",
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE applicants SET {col_name}=%s WHERE id=%s",
             (db_val, row_id))
+        conn.commit()
+        cur.close()
 
     return display_val
 
@@ -1107,14 +1039,15 @@ def _db_update_virtual_cell(row_id: int, col_name: str, raw_value: str) -> str:
         items = [p.strip() for p in raw_stripped.split("  ·  ") if p.strip()]
 
     with _db_connect() as conn:
-        row = conn.execute(
-            "SELECT results_json FROM applicants WHERE id=?", (row_id,)
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT results_json FROM applicants WHERE id=%s", (row_id,))
+        row = cur.fetchone()
         if row is None:
             raise ValueError(f"Row id={row_id} not found.")
 
         try:
-            blob = json.loads(row["results_json"] or "{}")
+            blob = json.loads(row[0] or "{}")
         except Exception:
             blob = {}
 
@@ -1137,10 +1070,11 @@ def _db_update_virtual_cell(row_id: int, col_name: str, raw_value: str) -> str:
                 blob[json_key] = {}
             blob[json_key][sub_key] = items
 
-        conn.execute(
-            "UPDATE applicants SET results_json=? WHERE id=?",
-            (json.dumps(blob, ensure_ascii=False), row_id)
-        )
+        cur.execute(
+            "UPDATE applicants SET results_json=%s WHERE id=%s",
+            (json.dumps(blob, ensure_ascii=False), row_id))
+        conn.commit()
+        cur.close()
 
     return "  ·  ".join(items) if items else "—"
 
@@ -1255,10 +1189,14 @@ def _first_last_match(norm_a: str, norm_b: str) -> bool:
 
 def _db_candidates_all():
     with _db_connect() as conn:
-        return conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             "SELECT id, applicant_name, processed_at FROM applicants "
-            "WHERE applicant_name IS NOT NULL ORDER BY processed_at DESC"
-        ).fetchall()
+            "WHERE applicant_name IS NOT NULL ORDER BY processed_at DESC")
+        cols_desc = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols_desc, r)) for r in cur.fetchall()]
+        cur.close()
+    return rows
 
 
 # ── UPDATED FUNCTION ──────────────────────────────────────────────────
@@ -2523,11 +2461,13 @@ def _advanced_delete(self):
         db_col = display_to_db.get(col_menu.get(), col_var.get())
         try:
             with _db_connect() as conn:
-                rows = conn.execute(
+                cur = conn.cursor()
+                cur.execute(
                     f"SELECT DISTINCT {db_col} FROM applicants "
-                    f"WHERE {db_col} IS NOT NULL AND TRIM({db_col}) != '' "
-                    f"ORDER BY {db_col}"
-                ).fetchall()
+                    f"WHERE {db_col} IS NOT NULL AND TRIM({db_col}::text) != '' "
+                    f"ORDER BY {db_col}")
+                rows = cur.fetchall()
+                cur.close()
             all_vals = [str(r[0]).strip() for r in rows if r[0]]
             val_var.set(", ".join(all_vals))
         except Exception as exc:
@@ -2607,47 +2547,51 @@ def _advanced_delete(self):
 def _count_col_matches(db_col: str, raw_filter: str, mode: str) -> int:
     """Count rows that would be affected by the clear operation."""
     with _db_connect() as conn:
+        cur = conn.cursor()
         if not raw_filter:
-            # No filter = all non-null rows
-            row = conn.execute(
+            cur.execute(
                 f"SELECT COUNT(*) FROM applicants "
-                f"WHERE {db_col} IS NOT NULL AND TRIM(CAST({db_col} AS TEXT)) != ''"
-            ).fetchone()
+                f"WHERE {db_col} IS NOT NULL AND TRIM(CAST({db_col} AS TEXT)) != ''")
         else:
             values = [v.strip() for v in raw_filter.split(",") if v.strip()]
             if mode == "exact":
                 placeholders = " OR ".join(
-                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(?))"
+                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(%s))"
                      for _ in values])
             else:
                 placeholders = " OR ".join(
-                    [f"CAST({db_col} AS TEXT) LIKE ?" for _ in values])
+                    [f"CAST({db_col} AS TEXT) ILIKE %s" for _ in values])
                 values = [f"%{v}%" for v in values]
-            row = conn.execute(
-                f"SELECT COUNT(*) FROM applicants WHERE {placeholders}",
-                values).fetchone()
-        return row[0] if row else 0
+            cur.execute(
+                f"SELECT COUNT(*) FROM applicants WHERE {placeholders}", values)
+        result = cur.fetchone()
+        cur.close()
+    return result[0] if result else 0
 
 
 def _db_clear_column(db_col: str, raw_filter: str, mode: str) -> int:
     """Set the column to NULL for all matching rows. Returns rows affected."""
     with _db_connect() as conn:
+        cur = conn.cursor()
         if not raw_filter:
-            conn.execute(f"UPDATE applicants SET {db_col} = NULL")
+            cur.execute(f"UPDATE applicants SET {db_col} = NULL")
         else:
             values = [v.strip() for v in raw_filter.split(",") if v.strip()]
             if mode == "exact":
                 placeholders = " OR ".join(
-                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(?))"
+                    [f"TRIM(UPPER(CAST({db_col} AS TEXT))) = TRIM(UPPER(%s))"
                      for _ in values])
             else:
                 placeholders = " OR ".join(
-                    [f"CAST({db_col} AS TEXT) LIKE ?" for _ in values])
+                    [f"CAST({db_col} AS TEXT) ILIKE %s" for _ in values])
                 values = [f"%{v}%" for v in values]
-            conn.execute(
+            cur.execute(
                 f"UPDATE applicants SET {db_col} = NULL WHERE {placeholders}",
                 values)
-        return conn.execute("SELECT changes()").fetchone()[0]
+        affected = cur.rowcount
+        conn.commit()
+        cur.close()
+    return affected
 
 
 def _clear_all(self):
@@ -2816,13 +2760,15 @@ def _import_amort_file(self):
 
             # ── Build client_id → db row id lookup ─────────────────────
             with _db_connect() as _conn:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "SELECT client_id, id FROM applicants "
+                    "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''")
                 cid_to_dbid: dict[str, int] = {
                     str(r[0]).strip().upper(): r[1]
-                    for r in _conn.execute(
-                        "SELECT client_id, id FROM applicants "
-                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''"
-                    ).fetchall()
+                    for r in _cur.fetchall()
                 }
+                _cur.close()
 
             # ── Match & update ─────────────────────────────────────────
             updated_by_id   = []
@@ -3072,14 +3018,16 @@ def _import_other_data_file(self):
 
             if col_clientid:
                 with _db_connect() as _conn:
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT client_id, id FROM applicants "
+                        "WHERE client_id IS NOT NULL "
+                        "AND TRIM(client_id) != ''")
                     cid_to_dbid: dict[str, int] = {
                         str(r[0]).strip().upper(): r[1]
-                        for r in _conn.execute(
-                            "SELECT client_id, id FROM applicants "
-                            "WHERE client_id IS NOT NULL "
-                            "AND TRIM(client_id) != ''"
-                        ).fetchall()
+                        for r in _cur.fetchall()
                     }
+                    _cur.close()
 
                 for entry in deduped:
                     file_cid = entry["client_id"].upper()
@@ -3446,10 +3394,13 @@ def _import_ploan_file(self):
 
             # Fetch ALL current DB rows once
             with _db_connect() as _conn:
-                db_all_rows = [dict(r) for r in _conn.execute(
+                _cur = _conn.cursor()
+                _cur.execute(
                     "SELECT id, applicant_name, client_id FROM applicants "
-                    "WHERE applicant_name IS NOT NULL"
-                ).fetchall()]
+                    "WHERE applicant_name IS NOT NULL")
+                cols_desc = [desc[0] for desc in _cur.description]
+                db_all_rows = [dict(zip(cols_desc, r)) for r in _cur.fetchall()]
+                _cur.close()
 
             # Pre-build normalised-name → db row list for fast iteration
             db_norm_index: list[tuple[str, dict]] = [
@@ -3545,9 +3496,12 @@ def _import_ploan_file(self):
 
                         if score >= 0.75:
                             with _db_connect() as _conn:
-                                _conn.execute(
-                                    "UPDATE applicants SET client_id=? WHERE id=?",
+                                cur = _conn.cursor()
+                                cur.execute(
+                                    "UPDATE applicants SET client_id=%s WHERE id=%s",
                                     (file_cid, existing_db_id))
+                                _conn.commit()
+                                cur.close()
                             cid_updated_count += 1
                             match_details.append(
                                 f"✓ Confirmed: '{display_name}' → CID {file_cid} "
@@ -3564,9 +3518,12 @@ def _import_ploan_file(self):
                     if best_row and best_score >= 0.80:
                         db_id = best_row["id"]
                         with _db_connect() as _conn:
-                            _conn.execute(
-                                "UPDATE applicants SET client_id=? WHERE id=?",
+                            cur = _conn.cursor()
+                            cur.execute(
+                                "UPDATE applicants SET client_id=%s WHERE id=%s",
                                 (file_cid, db_id))
+                            _conn.commit()
+                            cur.close()
                         existing_cid_map[file_cid_upper] = db_id
                         for r in db_all_rows:
                             if r["id"] == db_id:
@@ -3626,11 +3583,14 @@ def _import_ploan_file(self):
 
             if file_cid_name_pairs:
                 with _db_connect() as _conn:
-                    no_cid_rows = [dict(r) for r in _conn.execute(
+                    _cur = _conn.cursor()
+                    _cur.execute(
                         "SELECT id, applicant_name FROM applicants "
                         "WHERE (client_id IS NULL OR TRIM(client_id) = '') "
-                        "AND applicant_name IS NOT NULL"
-                    ).fetchall()]
+                        "AND applicant_name IS NOT NULL")
+                    cols_desc = [desc[0] for desc in _cur.description]
+                    no_cid_rows = [dict(zip(cols_desc, r)) for r in _cur.fetchall()]
+                    _cur.close()
 
                 for db_row in no_cid_rows:
                     db_norm = _normalise_for_sim(db_row["applicant_name"])
@@ -3671,10 +3631,12 @@ def _import_ploan_file(self):
                         best_cid_upper = best_cid.upper()
                         if best_cid_upper not in existing_cid_map:
                             with _db_connect() as _conn:
-                                _conn.execute(
-                                    "UPDATE applicants SET client_id=? WHERE id=?",
-                                    (best_cid, db_row["id"])
-                                )
+                                cur = _conn.cursor()
+                                cur.execute(
+                                    "UPDATE applicants SET client_id=%s WHERE id=%s",
+                                    (best_cid, db_row["id"]))
+                                _conn.commit()
+                                cur.close()
                             existing_cid_map[best_cid_upper] = db_row["id"]
                             for r in db_all_rows:
                                 if r["id"] == db_row["id"]:
@@ -3702,13 +3664,15 @@ def _import_ploan_file(self):
             # ══════════════════════════════════════════════════════════════
 
             with _db_connect() as _conn:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "SELECT client_id, id FROM applicants "
+                    "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''")
                 cid_to_dbid: dict[str, int] = {
                     str(r[0]).strip().upper(): r[1]
-                    for r in _conn.execute(
-                        "SELECT client_id, id FROM applicants "
-                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''"
-                    ).fetchall()
+                    for r in _cur.fetchall()
                 }
+                _cur.close()
 
             loan_balance_updated = 0
             other_data_updated   = 0
@@ -3741,18 +3705,21 @@ def _import_ploan_file(self):
                     val = record.get(db_col)
                     if val is None:
                         continue
-                    parts.append(f"{db_col}=?")
+                    parts.append(f"{db_col}=%s")
                     vals.append(val)
 
                 if record.get("loan_amount") is not None:
-                    parts.append("principal_loan=?")
+                    parts.append("principal_loan=%s")
                     vals.append(record["loan_amount"])
 
                 if parts:
                     with _db_connect() as _conn:
-                        _conn.execute(
-                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=?",
+                        cur = _conn.cursor()
+                        cur.execute(
+                            f"UPDATE applicants SET {', '.join(parts)} WHERE id=%s",
                             vals + [db_id])
+                        _conn.commit()
+                        cur.close()
                     if record.get("loan_balance") is not None:
                         loan_balance_updated += 1
                     other_data_updated += 1
@@ -3818,21 +3785,16 @@ def _import_ploan_file(self):
 # ═══════════════════════════════════════════════════════════════════════
 
 def _merge_db_files(self):
+    """Merge one or more SQLite .db files into the PostgreSQL database."""
+    import sqlite3 as _sqlite3
     paths = filedialog.askopenfilenames(
-        title="Select DB files to merge into current database",
+        title="Select SQLite DB files to merge into PostgreSQL",
         filetypes=[("SQLite DB files", "*.db"), ("All files", "*.*")])
     if not paths:
         return
 
-    src_paths = [p for p in paths if Path(p).resolve() != DB_PATH.resolve()]
-    if not src_paths:
-        messagebox.showwarning("Merge DB",
-            "All selected files are the current database — nothing to merge.")
-        return
-
     _flash_btn(self, self._sum_merge_db_btn, "⟳  Merging…", 60_000)
 
-    # All real DB columns (excludes virtual display cols)
     _COLS = [
         "session_id", "processed_at", "source_file", "status",
         "applicant_name", "residence_address", "office_address",
@@ -3841,100 +3803,64 @@ def _merge_db_files(self):
         "household_items", "household_total",
         "net_income", "petrol_risk", "transport_risk",
         "results_json", "page_map",
-        "amort_history_total",
-        "amort_current_total",
+        "amort_history_total", "amort_current_total",
         "client_id", "pn", "industry_name",
         "loan_balance", "amortized_cost",
         "principal_loan", "maturity", "interest_rate",
         "branch", "loan_class_name", "product_name",
         "loan_date", "term_unit", "term", "security", "release_tag",
-        "loan_amount",
-        "loan_status", "ao_name",
+        "loan_amount", "loan_status", "ao_name",
     ]
-    _INSERT = (
+    _PG_INSERT = (
         f"INSERT INTO applicants ({', '.join(_COLS)}) "
-        f"VALUES ({', '.join(['?' for _ in _COLS])})"
+        f"VALUES ({', '.join(['%s'] * len(_COLS))})"
     )
-
-    def _ensure_col(conn, col, col_type):
-        existing = [r[1] for r in conn.execute(
-            "PRAGMA table_info(applicants)").fetchall()]
-        if col not in existing:
-            conn.execute(f"ALTER TABLE applicants ADD COLUMN {col} {col_type}")
-
-    _MIGRATIONS = [
-        ("amort_history_total", "REAL"),
-        ("amort_current_total", "REAL"),
-        ("client_id",           "TEXT"),
-        ("pn",                  "TEXT"),
-        ("industry_name",       "TEXT"),
-        ("loan_balance",        "REAL"),
-        ("amortized_cost",      "REAL"),
-        ("principal_loan",      "REAL"),
-        ("maturity",            "TEXT"),
-        ("interest_rate",       "TEXT"),
-        ("branch",              "TEXT"),
-        ("loan_class_name",     "TEXT"),
-        ("product_name",        "TEXT"),
-        ("loan_date",           "TEXT"),
-        ("term_unit",           "TEXT"),
-        ("term",                "TEXT"),
-        ("security",            "TEXT"),
-        ("release_tag",         "TEXT"),
-        ("loan_amount",         "REAL"),
-        ("loan_status",         "TEXT"),
-        ("ao_name",             "TEXT"),
-    ]
 
     def _worker():
         total_inserted = 0; total_skipped = 0; total_patched = 0
         file_results   = []
 
         try:
-            with _db_connect() as out_conn:
-                for col, ctype in _MIGRATIONS:
-                    _ensure_col(out_conn, col, ctype)
+            for src in paths:
+                try:
+                    # Read source SQLite file
+                    s_conn = _sqlite3.connect(str(src), timeout=10)
+                    s_conn.row_factory = _sqlite3.Row
+                    src_rows = [dict(r) for r in s_conn.execute(
+                        "SELECT * FROM applicants").fetchall()]
+                    s_conn.close()
+                except Exception as e:
+                    file_results.append((Path(src).name, 0, 0, 0, str(e)))
+                    continue
 
-                for src in src_paths:
-                    try:
-                        s_conn = sqlite3.connect(str(src), timeout=10)
-                        s_conn.row_factory = sqlite3.Row
-                        for col, ctype in _MIGRATIONS:
-                            _ensure_col(s_conn, col, ctype)
-                        src_rows = s_conn.execute(
-                            "SELECT * FROM applicants").fetchall()
-                        s_conn.close()
-                    except Exception as e:
-                        file_results.append((Path(src).name, 0, 0, 0, str(e)))
-                        continue
+                ins = skp = pat = 0
 
+                with _db_connect() as out_conn:
+                    pg_cur = out_conn.cursor()
+
+                    # Build lookup sets from PostgreSQL
+                    pg_cur.execute(
+                        "SELECT client_id, id FROM applicants "
+                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''")
                     existing_by_clientid = {
                         str(r[0]).strip().upper(): r[1]
-                        for r in out_conn.execute(
-                            "SELECT client_id, id FROM applicants "
-                            "WHERE client_id IS NOT NULL AND TRIM(client_id) != ''"
-                        ).fetchall()
-                    }
+                        for r in pg_cur.fetchall()}
+
+                    pg_cur.execute(
+                        "SELECT session_id, source_file FROM applicants")
                     existing_primary = {
-                        (r[0], r[1])
-                        for r in out_conn.execute(
-                            "SELECT session_id, source_file FROM applicants"
-                        ).fetchall()
-                    }
+                        (r[0], r[1]) for r in pg_cur.fetchall()}
+
+                    pg_cur.execute(
+                        "SELECT applicant_name, source_file FROM applicants")
                     existing_fallback = {
                         (str(r[0]).strip().upper(), str(r[1]).strip().upper())
-                        for r in out_conn.execute(
-                            "SELECT applicant_name, source_file FROM applicants"
-                        ).fetchall()
-                    }
+                        for r in pg_cur.fetchall()}
 
-                    ins = skp = pat = 0
-                    for row in src_rows:
-                        rd           = dict(row)
+                    for rd in src_rows:
                         incoming_cid = str(rd.get("client_id") or "").strip().upper()
-                        pk           = (rd.get("session_id", ""),
-                                        rd.get("source_file", ""))
-                        fk           = (
+                        pk = (rd.get("session_id", ""), rd.get("source_file", ""))
+                        fk = (
                             str(rd.get("applicant_name") or "").strip().upper(),
                             str(rd.get("source_file")    or "").strip().upper(),
                         )
@@ -3943,20 +3869,27 @@ def _merge_db_files(self):
                             _patch_existing(out_conn,
                                             existing_by_clientid[incoming_cid], rd)
                             pat += 1; continue
+
                         if pk in existing_primary or fk in existing_fallback:
                             skp += 1; continue
 
-                        out_conn.execute(_INSERT, [rd.get(c) for c in _COLS])
+                        pg_cur.execute(_PG_INSERT,
+                                       [rd.get(c) for c in _COLS])
                         if incoming_cid:
-                            existing_by_clientid[incoming_cid] = out_conn.execute(
-                                "SELECT last_insert_rowid()").fetchone()[0]
+                            pg_cur.execute("SELECT lastval()")
+                            new_id = pg_cur.fetchone()[0]
+                            existing_by_clientid[incoming_cid] = new_id
                         existing_primary.add(pk)
                         existing_fallback.add(fk)
                         ins += 1
 
                     out_conn.commit()
-                    file_results.append((Path(src).name, ins, pat, skp, None))
-                    total_inserted += ins; total_patched += pat; total_skipped += skp
+                    pg_cur.close()
+
+                file_results.append((Path(src).name, ins, pat, skp, None))
+                total_inserted += ins
+                total_patched  += pat
+                total_skipped  += skp
 
             _db_deduplicate_client_ids()
             self.after(0, lambda: _refresh_summary(self))
@@ -4367,7 +4300,8 @@ def _validate_clients(self):
                     seen_ref_cids.add(cid_up)
 
             with _db_connect() as conn:
-                db_rows = conn.execute(
+                cur = conn.cursor()
+                cur.execute(
                     "SELECT id, client_id, applicant_name, pn, industry_name, "
                     "residence_address, office_address, "
                     "income_total, business_total, household_total, net_income, "
@@ -4376,9 +4310,10 @@ def _validate_clients(self):
                     "principal_loan, maturity, interest_rate, "
                     "branch, loan_class_name, product_name, loan_date, security, loan_status, ao_name, "
                     "loan_amount "
-                    "FROM applicants"
-                ).fetchall()
-            db_rows = [dict(r) for r in db_rows]
+                    "FROM applicants")
+                cols_desc = [desc[0] for desc in cur.description]
+                db_rows = [dict(zip(cols_desc, r)) for r in cur.fetchall()]
+                cur.close()
 
             matched:    list[tuple] = []
             unmatched:  list[tuple] = []
