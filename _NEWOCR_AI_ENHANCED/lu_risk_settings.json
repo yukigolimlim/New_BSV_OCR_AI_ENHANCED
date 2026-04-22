@@ -7,8 +7,5 @@
     "purchase order loan": "HIGH",
     "truck loan": "HIGH"
   },
-  "expense_risk_overrides": {
-    "utilities – gas / lpg": "HIGH",
-    "fuel & transportation": "HIGH"
-  }
+  "expense_risk_overrides": {}
 }

@@ -20,7 +20,7 @@ DATA POPULATION SOURCES:
       petrol_risk, transport_risk, results_json, page_map,
       amort_history_total, source_file, status, session_id
   • From "Other Data" import (manual):
-      client_id, pn, industry_name, loan_balance, amortized_cost
+      client_id, pn, industry_name, loan_balance
   • From "Amort." import (manual):
       amort_current_total
   • From "P.Loan" import (manual):
@@ -113,7 +113,6 @@ TABLE_COLS = [
     ("amort_current_total", "Total Current Amort.",                150, True,  False),
     # ── Populated by Other Data import ───────────────────────────────
     ("loan_balance",        "Loan Balance",                        150, True,  False),
-    ("amortized_cost",      "Total Amortized Cost",                160, True,  False),
     # ── Populated by P.Loan import ────────────────────────────────────
     ("principal_loan",      "Principal Loan",                      150, True,  False),
     ("maturity",            "Maturity",                            140, False, False),
@@ -232,7 +231,6 @@ _CHECKLIST_PREVIEW_COLS = [
     ("Total Amortization History",               130, True),
     ("Total Current Amortization",               130, True),
     ("Loan Balance",                             110, True),
-    ("Total Amortized Cost",                     120, True),
     ("Principal Loan",                           120, True),
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
@@ -269,7 +267,6 @@ _ALL_EXPORT_COLS = [
     ("Total Amortization History",               130, True),
     ("Total Current Amortization",               130, True),
     ("Loan Balance",                             110, True),
-    ("Total Amortized Cost",                     120, True),
     ("Principal Loan",                           120, True),
     ("Maturity",                                 120, False),
     ("Interest Rate",                            110, False),
@@ -327,12 +324,8 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
     win.resizable(True, True)
     win.grab_set()
 
-    p_x = parent.winfo_rootx(); p_y = parent.winfo_rooty()
-    p_w = parent.winfo_width(); p_h = parent.winfo_height()
-    w_w, w_h = 1140, 720
-    cx = p_x + (p_w - w_w) // 2; cy = p_y + (p_h - w_h) // 2
-    win.geometry(f"{w_w}x{w_h}+{cx}+{cy}")
     win.minsize(760, 500)
+    win.state("zoomed")
 
     result = [None]
     checked:     dict[str, bool] = {str(i): True for i in range(len(flat_rows))}
@@ -384,8 +377,10 @@ def _show_export_checklist(parent: tk.Widget, flat_rows: list) -> tuple | None:
 
     col_grid = tk.Frame(col_outer, bg="#E8F0FB")
     col_grid.pack(fill="x", padx=8, pady=(0, 6))
+    for _ci in range(9):
+        col_grid.columnconfigure(_ci, weight=1)
     _col_vars: dict[str, tk.BooleanVar] = {}
-    COLS_PER_ROW = 6
+    COLS_PER_ROW = 9
 
     for idx, (col_key, col_w, is_mon) in enumerate(_ALL_EXPORT_COLS):
         var = tk.BooleanVar(value=True)
@@ -1030,7 +1025,7 @@ _EDITABLE_COLS = {
     "residence_address", "office_address", "industry_name",
     "income_total", "business_total", "household_total", "net_income",
     "amort_history_total", "amort_current_total",
-    "loan_balance", "amortized_cost",
+    "loan_balance",
     "principal_loan", "maturity", "interest_rate",
     "branch", "loan_class_name", "product_name",
     "loan_date", "term_unit", "term", "security", "release_tag",
@@ -1041,7 +1036,7 @@ _EDITABLE_COLS = {
 _MONETARY_COLS = {
     "income_total", "business_total", "household_total", "net_income",
     "amort_history_total", "amort_current_total",
-    "loan_balance", "amortized_cost", "principal_loan",
+    "loan_balance", "principal_loan",
     "loan_amount",
 }
 
@@ -1670,33 +1665,12 @@ def _build_lookup_summary_panel(self, parent):
         font=FF(8, "bold"), border_width=0)
     self._sum_export_xl_btn.pack(side="left", padx=(0, 4))
 
-    self._sum_refresh_btn = ctk.CTkButton(
-        btn_block, text="↺  Refresh", command=lambda: _refresh_summary(self),
-        width=74, height=30, corner_radius=6, fg_color="#1A3A5C",
-        hover_color="#1E4A72", text_color=WHITE,
-        font=FF(8, "bold"), border_width=0)
-    self._sum_refresh_btn.pack(side="left", padx=(0, 4))
-
     self._sum_clear_all_btn = ctk.CTkButton(
         btn_block, text="🗑  Clear All", command=lambda: _clear_all(self),
         width=80, height=30, corner_radius=6, fg_color="#3D1010",
         hover_color="#5C1A1A", text_color="#FF8A80",
         font=FF(8, "bold"), border_width=0)
     self._sum_clear_all_btn.pack(side="left")
-
-    self._sum_import_amort_btn = ctk.CTkButton(
-        btn_block, text="⬆  Amort.", command=lambda: _import_amort_file(self),
-        width=74, height=30, corner_radius=6, fg_color="#1A3A5C",
-        hover_color="#1E4A72", text_color=WHITE,
-        font=FF(8, "bold"), border_width=0)
-    self._sum_import_amort_btn.pack(side="left", padx=(4, 0))
-
-    self._sum_import_other_btn = ctk.CTkButton(
-        btn_block, text="⬆  Other Data", command=lambda: _import_other_data_file(self),
-        width=88, height=30, corner_radius=6, fg_color="#2A1A5C",
-        hover_color="#3A2472", text_color="#C8B8FF",
-        font=FF(8, "bold"), border_width=0)
-    self._sum_import_other_btn.pack(side="left", padx=(4, 0))
 
     self._sum_import_ploan_btn = ctk.CTkButton(
         btn_block, text="⬆  P.Loan", command=lambda: _import_ploan_file(self),
@@ -1711,13 +1685,6 @@ def _build_lookup_summary_panel(self, parent):
         hover_color="#3D6128", text_color="#B9F5A0",
         font=FF(8, "bold"), border_width=0)
     self._sum_merge_db_btn.pack(side="left", padx=(4, 0))
-
-    self._sum_merge_xl_btn = ctk.CTkButton(
-        btn_block, text="⛁  Merge Excel", command=lambda: _merge_excel_files(self),
-        width=90, height=30, corner_radius=6, fg_color="#1E3D4A",
-        hover_color="#255262", text_color="#A0E4F5",
-        font=FF(8, "bold"), border_width=0)
-    self._sum_merge_xl_btn.pack(side="left", padx=(4, 0))
 
     self._sum_dedup_btn = ctk.CTkButton(
         btn_block, text="🔗  Dedup", command=lambda: _run_dedup(self),
@@ -2289,10 +2256,7 @@ def _open_detail_window(self, row: dict):
 
 
 def _build_detail_panel(self, row: dict, parent: tk.Frame):
-    info_strip = tk.Frame(parent, bg=NAVY_MIST)
-    info_strip.pack(fill="x")
-
-    for label, value in [
+    info_fields = [
         ("Client ID",            row.get("client_id",         "—") or "—"),
         ("PN",                   row.get("pn",                "—") or "—"),
         ("Applicant",            row.get("applicant_name",    "—") or "—"),
@@ -2300,7 +2264,6 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
         ("Residence Address",    row.get("residence_address", "—") or "—"),
         ("Office Address",       row.get("office_address",    "—") or "—"),
         ("Loan Balance",         _fmt_money(row.get("loan_balance"))   or "—"),
-        ("Total Amortized Cost", _fmt_money(row.get("amortized_cost")) or "—"),
         ("Principal Loan",       _fmt_money(row.get("principal_loan")) or "—"),
         ("Maturity",             row.get("maturity",          "—") or "—"),
         ("Interest Rate",        row.get("interest_rate",     "—") or "—"),
@@ -2320,24 +2283,38 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
         ("Source File",          row.get("source_file",       "—") or "—"),
         ("Processed At",         (row.get("processed_at", "") or "")[:16].replace("T", "  ")),
         ("Session",              (row.get("session_id",   "") or "")[:19].replace("T", "  ")),
-    ]:
-        col = tk.Frame(info_strip, bg=NAVY_MIST)
-        col.pack(side="left", padx=12, pady=8, anchor="w")
-        tk.Label(col, text=label, font=F(7, "bold"),
-                 fg=TXT_MUTED, bg=NAVY_MIST).pack(anchor="w")
-        tk.Label(col, text=value or "—", font=F(9, "bold"), fg=NAVY_DEEP,
-                 bg=NAVY_MIST, wraplength=180, justify="left").pack(anchor="w")
+    ]
+    # Keep the same table-like UI style across all sections, including metadata.
+    PAD_X        = 16
+    row_idx      = 0
+    sec_bar = tk.Frame(parent, bg=SEC_BG)
+    sec_bar.pack(fill="x", padx=PAD_X, pady=(8, 0))
+    tk.Label(sec_bar, text="  CLIENT PROFILE",
+             font=F(8, "bold"), fg=SEC_FG, bg=SEC_BG, pady=4).pack(side="left")
 
-    flags = tk.Frame(info_strip, bg=NAVY_MIST)
-    flags.pack(side="right", padx=12, pady=8)
+    def _render_profile_row(field_label: str, value: str):
+        nonlocal row_idx
+        row_bg = ROW_BG_EVEN if row_idx % 2 == 0 else ROW_BG_ODD
+        row_idx += 1
+        row_f = tk.Frame(parent, bg=row_bg,
+                         highlightbackground="#E5EAF3", highlightthickness=1)
+        row_f.pack(fill="x", padx=PAD_X)
+        tk.Label(row_f, text=field_label, font=F(8, "bold"), fg=NAVY_DEEP,
+                 bg=row_bg, padx=8, pady=6, anchor="w", width=26).pack(side="left")
+        tk.Label(row_f, text="—", font=F(8),
+                 fg=TXT_MUTED, bg=row_bg, padx=8, width=14, anchor="e").pack(side="left")
+        tk.Label(row_f, text=str(value or "—"), font=F(8),
+                 fg=TXT_NAVY if str(value or "").strip() and str(value) != "—" else TXT_MUTED,
+                 bg=row_bg, padx=8, anchor="w",
+                 wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
+
+    for field_label, value in info_fields:
+        _render_profile_row(field_label, value)
+
     if row.get("petrol_risk"):
-        tk.Label(flags, text="⚠ Petrol Risk", font=F(8, "bold"),
-                 fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
+        _render_profile_row("Petrol Risk", "⚠ Petrol Risk")
     if row.get("transport_risk"):
-        tk.Label(flags, text="⚠ Transport Risk", font=F(8, "bold"),
-                 fg=ACCENT_RED, bg=NAVY_MIST).pack(anchor="e")
-
-    tk.Frame(parent, bg=BORDER_MID, height=1).pack(fill="x")
+        _render_profile_row("Transport Risk", "⚠ Transport Risk")
 
     try:
         results = json.loads(row.get("results_json", "") or "{}")
@@ -2345,14 +2322,22 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
         results = {}
 
     last_section = None
-    PAD_X        = 16
+    # Continue row striping from metadata block for a single visual rhythm.
 
-    for idx, (key, section, field_label) in enumerate(LOOKUP_ROWS):
-        field_data = results.get(key, {})
-        items  = field_data.get("items", []) if isinstance(field_data, dict) else []
-        total  = field_data.get("total", "") if isinstance(field_data, dict) else ""
-        non_m  = key in NON_MONETARY
+    def _normalize_items(raw_items):
+        out = []
+        for it in (raw_items or []):
+            s = str(it or "").strip()
+            if s:
+                out.append(s)
+        return out
 
+    def _pretty_label_from_key(key: str) -> str:
+        s = str(key or "").strip().replace("_", " ")
+        return " ".join(part.capitalize() for part in s.split()) if s else "Unnamed Parameter"
+
+    def _render_param_row(section: str, field_label: str, items, total, non_monetary: bool):
+        nonlocal last_section, row_idx
         if section != last_section:
             last_section = section
             sec_bar = tk.Frame(parent, bg=SEC_BG)
@@ -2360,22 +2345,56 @@ def _build_detail_panel(self, row: dict, parent: tk.Frame):
             tk.Label(sec_bar, text=f"  {section.upper()}",
                      font=F(8, "bold"), fg=SEC_FG, bg=SEC_BG, pady=4).pack(side="left")
 
-        row_bg = ROW_BG_EVEN if idx % 2 == 0 else ROW_BG_ODD
-        row_f  = tk.Frame(parent, bg=row_bg,
-                          highlightbackground="#E5EAF3", highlightthickness=1)
+        row_bg = ROW_BG_EVEN if row_idx % 2 == 0 else ROW_BG_ODD
+        row_idx += 1
+        row_f = tk.Frame(parent, bg=row_bg,
+                         highlightbackground="#E5EAF3", highlightthickness=1)
         row_f.pack(fill="x", padx=PAD_X)
         tk.Label(row_f, text=field_label, font=F(8, "bold"), fg=NAVY_DEEP,
                  bg=row_bg, padx=8, pady=6, anchor="w", width=26).pack(side="left")
-        amt_txt = total if (total and not non_m) else "—"
+        amt_txt = total if (total and not non_monetary) else "—"
         tk.Label(row_f, text=amt_txt,
                  font=F(9, "bold") if amt_txt != "—" else F(8),
                  fg=NAVY_MID if amt_txt != "—" else TXT_MUTED,
                  bg=row_bg, padx=8, width=14, anchor="e").pack(side="left")
+        items = _normalize_items(items)
         det_txt = ("\n".join(f"• {it}" for it in items) if items else "No data found")
         tk.Label(row_f, text=det_txt, font=F(8),
                  fg=TXT_NAVY if items else TXT_MUTED,
                  bg=row_bg, padx=8, anchor="w",
                  wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
+
+    known_lookup_keys = {k for (k, _s, _lbl) in LOOKUP_ROWS}
+
+    # Render canonical rows first, preserving existing section order.
+    for key, section, field_label in LOOKUP_ROWS:
+        field_data = results.get(key, {})
+        items = field_data.get("items", []) if isinstance(field_data, dict) else []
+        total = field_data.get("total", "") if isinstance(field_data, dict) else ""
+        _render_param_row(section, field_label, items, total, key in NON_MONETARY)
+
+    # Render additional parameters (if any) using the same summary row format.
+    extra_rows = []
+    for key, val in (results or {}).items():
+        if key in known_lookup_keys or str(key).startswith("_"):
+            continue
+        if isinstance(val, dict):
+            items = val.get("items", [])
+            total = val.get("total", "")
+            non_monetary = not bool(str(total or "").strip())
+        elif isinstance(val, list):
+            items = val
+            total = ""
+            non_monetary = True
+        else:
+            raw = str(val or "").strip()
+            items = [raw] if raw else []
+            total = ""
+            non_monetary = True
+        extra_rows.append(("Other Parameters", _pretty_label_from_key(key), items, total, non_monetary))
+
+    for section, field_label, items, total, non_monetary in sorted(extra_rows, key=lambda x: x[1].lower()):
+        _render_param_row(section, field_label, items, total, non_monetary)
 
     page_map = row.get("page_map", "") or ""
     if page_map:
@@ -3969,271 +3988,6 @@ def _merge_db_files(self):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MERGE EXCEL
-# ═══════════════════════════════════════════════════════════════════════
-
-def _merge_excel_files(self):
-    paths = filedialog.askopenfilenames(
-        title="Select Excel summaries to merge",
-        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")])
-    if not paths or len(paths) < 1:
-        return
-
-    out_path = filedialog.asksaveasfilename(
-        title="Save merged Excel as…",
-        defaultextension=".xlsx",
-        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-        initialfile=f"Merged_LookUp_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-    if not out_path:
-        return
-
-    _flash_btn(self, self._sum_merge_xl_btn, "⟳  Merging…", 60_000)
-
-    def _worker():
-        _HEADERS = [
-            "Client ID", "PN",
-            "Applicant", "Residence Address", "Office Address", "Industry Name",
-            "Spouse Info", "Personal Assets", "Business Assets", "Business Inventory",
-            "Source of Income", "Total Source Of Income",
-            "Business Expenses", "Total Business Expenses",
-            "Household / Personal Expenses", "Total Household / Personal Expenses",
-            "Total Net Income",
-            "Total Amortization History", "Total Current Amortization",
-            "Loan Balance", "Total Amortized Cost", "Principal Loan",
-            "Maturity", "Interest Rate",
-            # P.Loan expanded
-            "Branch", "Loan Class", "Product Name",
-            "Loan Date", "Term Unit", "Term", "Security", "Release Tag",
-            "Loan Amount",
-            "Loan Status", "AO Name",
-        ]
-        _MONETARY = {
-            "Total Source Of Income", "Total Business Expenses",
-            "Total Household / Personal Expenses",
-            "Total Amortization History", "Total Current Amortization",
-            "Loan Balance", "Total Amortized Cost", "Principal Loan",
-            "Loan Amount", "Loan Balance (PLoan)", "Amort. (PLoan)",
-        }
-        _NET_COL    = "Total Net Income"
-        _SUM_COLS   = _MONETARY | {_NET_COL}
-        _COL_WIDTHS = {
-            "Client ID": 14, "PN": 12,
-            "Applicant": 22, "Residence Address": 30, "Office Address": 26,
-            "Industry Name": 20,
-            "Spouse Info": 28, "Personal Assets": 28,
-            "Business Assets": 28, "Business Inventory": 24,
-            "Source of Income": 32, "Total Source Of Income": 22,
-            "Business Expenses": 32, "Total Business Expenses": 22,
-            "Household / Personal Expenses": 36,
-            "Total Household / Personal Expenses": 24,
-            "Total Net Income": 20,
-            "Total Amortization History": 26, "Total Current Amortization": 26,
-            "Loan Balance": 22, "Total Amortized Cost": 24,
-            "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
-            "Branch": 18, "Loan Class": 20, "Product Name": 22,
-            "Industry (PLoan)": 22, "Loan Date": 16, "Term Unit": 14,
-            "Term": 10, "Security": 24, "Release Tag": 16,
-            "Loan Amount": 20, "Loan Balance (PLoan)": 22,
-            "Amort. (PLoan)": 18, "Loan Status": 16, "AO Name": 22,
-        }
-
-        def _to_float(val):
-            if val is None or val == "":
-                return None
-            try:
-                return float(str(val).replace(",", "")
-                             .replace("(", "-").replace(")", ""))
-            except Exception:
-                return None
-
-        def _read_one(path):
-            import openpyxl as _xl
-            wb = _xl.load_workbook(str(path), read_only=True, data_only=True)
-            ws = wb.active
-            rows_iter  = ws.iter_rows(values_only=True)
-            header_row = next(rows_iter, None)
-            if header_row is None:
-                wb.close(); return [], []
-            file_hdrs = [str(h).strip() if h is not None else "" for h in header_row]
-            col_map   = {h: i for i, h in enumerate(file_hdrs) if h in _HEADERS}
-            records   = []
-            for row in rows_iter:
-                first = str(row[0]).strip().upper() if row[0] is not None else ""
-                if first in ("TOTAL", "AVERAGE") or all(v is None for v in row):
-                    continue
-                rec = {h: (row[col_map[h]] if h in col_map else None)
-                       for h in _HEADERS}
-                records.append(rec)
-            wb.close()
-            return records, [h for h in _HEADERS if h not in col_map]
-
-        try:
-            import openpyxl
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
-
-            all_rows       = []
-            seen_clientids: set[str] = set()
-            seen_names:     set[str] = set()
-            dup_rows       = []
-            file_results   = []
-
-            for path in paths:
-                rows, missing = _read_one(path)
-                ins = 0
-                for row in rows:
-                    cid  = str(row.get("Client ID") or "").strip().upper()
-                    name = str(row.get("Applicant")  or "").strip().upper()
-                    if cid and cid in seen_clientids:
-                        dup_rows.append((name, Path(path).name, "dup client_id"))
-                        continue
-                    if not cid and name in seen_names:
-                        dup_rows.append((name, Path(path).name, "dup name"))
-                        continue
-                    if cid: seen_clientids.add(cid)
-                    if name: seen_names.add(name)
-                    all_rows.append(row); ins += 1
-                file_results.append((Path(path).name, ins, missing))
-
-            if not all_rows:
-                raise ValueError("No data rows found across selected files.")
-
-            hdr_fill  = PatternFill("solid", fgColor="93C47D")
-            tot_fill  = PatternFill("solid", fgColor="D9EAD3")
-            avg_fill  = PatternFill("solid", fgColor="B8D0E5")
-            even_fill = PatternFill("solid", fgColor="FFFFFF")
-            odd_fill  = PatternFill("solid", fgColor="F3F9F0")
-            hdr_font  = Font(name="Roboto", bold=True, color="FFFFFF", size=10)
-            body_font = Font(name="Roboto", size=9)
-            bold_font = Font(name="Roboto", bold=True, size=9)
-            net_font  = Font(name="Roboto", bold=True, size=9, color="1F6B28")
-            tot_font  = Font(name="Roboto", bold=True, size=10)
-            tot_font_j= Font(name="Roboto", bold=True, size=10, color="1F6B28")
-            avg_font  = Font(name="Roboto", bold=True, size=10, color="1A3A5C")
-            thin      = Side(style="thin",   color="CCCCCC")
-            med       = Side(style="medium", color="555555")
-            cell_bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-            tot_bdr   = Border(left=med,  right=med,  top=med,  bottom=med)
-            wrap_al   = Alignment(horizontal="left",  vertical="top", wrap_text=True)
-            right_al  = Alignment(horizontal="right", vertical="top")
-            right_c   = Alignment(horizontal="right", vertical="center")
-            left_c    = Alignment(horizontal="left",  vertical="center")
-            CURRENCY  = '#,##0.00;(#,##0.00);"-"'
-
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Look-Up Summary (Merged)"
-
-            for ci, h in enumerate(_HEADERS, 1):
-                cell = ws.cell(row=1, column=ci, value=h)
-                cell.font = hdr_font; cell.fill = hdr_fill
-                cell.alignment = wrap_al; cell.border = cell_bdr
-                ws.column_dimensions[get_column_letter(ci)].width = \
-                    _COL_WIDTHS.get(h, 20)
-            ws.row_dimensions[1].height = 28
-
-            for ri, row_dict in enumerate(all_rows, 2):
-                bg_fill    = even_fill if (ri - 2) % 2 == 0 else odd_fill
-                text_lines = []
-                for ci, h in enumerate(_HEADERS, 1):
-                    val  = row_dict.get(h)
-                    fval = _to_float(val) if h in _SUM_COLS else None
-                    cell = ws.cell(row=ri, column=ci,
-                                   value=fval if fval is not None
-                                   else (val if val is not None else None))
-                    cell.fill = bg_fill; cell.border = cell_bdr
-                    if h == _NET_COL:
-                        cell.number_format = CURRENCY
-                        cell.font = net_font; cell.alignment = right_al
-                    elif h in _MONETARY:
-                        cell.number_format = CURRENCY
-                        cell.font = bold_font; cell.alignment = right_al
-                    elif h == "Applicant":
-                        cell.font = bold_font; cell.alignment = wrap_al
-                    else:
-                        cell.font = body_font; cell.alignment = wrap_al
-                        if val:
-                            text_lines.append(len(str(val).split("\n")))
-                ws.row_dimensions[ri].height = max(
-                    18, min((max(text_lines) if text_lines else 1) * 15, 150))
-
-            first_data = 2; last_data = len(all_rows) + 1
-            tot_row    = last_data + 1; avg_row = last_data + 2
-
-            for ci, h in enumerate(_HEADERS, 1):
-                col_l = get_column_letter(ci)
-                cell  = ws.cell(row=tot_row, column=ci)
-                cell.fill = tot_fill; cell.border = tot_bdr
-                if h == "Applicant":
-                    cell.value = "TOTAL"; cell.font = tot_font; cell.alignment = left_c
-                elif h == _NET_COL:
-                    cell.value = f"=SUM({col_l}{first_data}:{col_l}{last_data})"
-                    cell.number_format = CURRENCY
-                    cell.font = tot_font_j; cell.alignment = right_c
-                elif h in _SUM_COLS:
-                    cell.value = f"=SUM({col_l}{first_data}:{col_l}{last_data})"
-                    cell.number_format = CURRENCY
-                    cell.font = tot_font; cell.alignment = right_c
-                else:
-                    cell.font = tot_font; cell.alignment = left_c
-
-                cell_avg = ws.cell(row=avg_row, column=ci)
-                cell_avg.fill = avg_fill; cell_avg.border = tot_bdr
-                if h == "Applicant":
-                    cell_avg.value = "AVERAGE"
-                    cell_avg.font = avg_font; cell_avg.alignment = left_c
-                elif h == _NET_COL:
-                    cell_avg.value = f"=AVERAGE({col_l}{first_data}:{col_l}{last_data})"
-                    cell_avg.number_format = CURRENCY
-                    cell_avg.font = avg_font; cell_avg.alignment = right_c
-                elif h in _SUM_COLS:
-                    cell_avg.value = f"=AVERAGE({col_l}{first_data}:{col_l}{last_data})"
-                    cell_avg.number_format = CURRENCY
-                    cell_avg.font = avg_font; cell_avg.alignment = right_c
-                else:
-                    cell_avg.font = avg_font; cell_avg.alignment = left_c
-
-            ws.row_dimensions[tot_row].height = 22
-            ws.row_dimensions[avg_row].height = 22
-            ws.freeze_panes = "A2"
-            wb.save(out_path)
-
-            msg  = f"Merge complete.\n\n"
-            msg += f"✓  Total rows : {len(all_rows):,}\n"
-            msg += f"–  Duplicates : {len(dup_rows):,} (skipped)\n\n"
-            msg += "Per file:\n"
-            for fname, ins, missing in file_results:
-                msg += f"  ✓  {fname}  →  {ins:,} rows added\n"
-                if missing:
-                    msg += f"     ⚠ Missing cols (blanked): {', '.join(missing)}\n"
-            if dup_rows:
-                msg += "\nDuplicate applicants skipped (first file wins):\n"
-                for name, src, reason in dup_rows[:15]:
-                    msg += f"  • {name}  (from {src})\n"
-                if len(dup_rows) > 15:
-                    msg += f"  … and {len(dup_rows) - 15} more\n"
-
-            self.after(0, lambda: (
-                _flash_btn(self, self._sum_merge_xl_btn, "✓  Saved!", 2500),
-                messagebox.showinfo("Merge Excel Result", msg)
-            ))
-        except ImportError:
-            self.after(0, lambda: (
-                _flash_btn(self, self._sum_merge_xl_btn, "openpyxl not installed", 3000),
-                messagebox.showerror("Merge Excel Error",
-                    "openpyxl is required.\nRun: pip install openpyxl")
-            ))
-        except Exception as exc:
-            err = str(exc)
-            self.after(0, lambda: (
-                _flash_btn(self, self._sum_merge_xl_btn, "✗  Error", 3000),
-                messagebox.showerror("Merge Excel Error", err)
-            ))
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-
-# ═══════════════════════════════════════════════════════════════════════
 #  EXPORT HELPERS
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -4292,7 +4046,6 @@ def _row_to_export_dict(row: dict) -> dict:
         "Total Amortization History":          _fmt(amort_hist),
         "Total Current Amortization":          _fmt(row.get("amort_current_total")),
         "Loan Balance":                        _fmt(row.get("loan_balance")),
-        "Total Amortized Cost":                _fmt(row.get("amortized_cost")),
         "Principal Loan":                      _fmt(row.get("principal_loan")),
         "Maturity":                            row.get("maturity",           "") or "",
         "Interest Rate":                       row.get("interest_rate",      "") or "",
@@ -4404,7 +4157,7 @@ def _export_excel(self):
                 "Total Source Of Income", "Total Business Expenses",
                 "Total Household / Personal Expenses",
                 "Total Amortization History", "Total Current Amortization",
-                "Loan Balance", "Total Amortized Cost", "Principal Loan",
+                "Loan Balance", "Principal Loan",
                 "Loan Amount",
             }
             NET_COL  = "Total Net Income"
@@ -4423,7 +4176,7 @@ def _export_excel(self):
                 "Total Net Income": 20,
                 "Total Amortization History": 26,
                 "Total Current Amortization": 26,
-                "Loan Balance": 22, "Total Amortized Cost": 24,
+                "Loan Balance": 22,
                 "Principal Loan": 22, "Maturity": 20, "Interest Rate": 18,
                 "Branch": 18, "Loan Class": 20, "Product Name": 22,
                 "Loan Date": 16, "Term Unit": 14,
@@ -4686,7 +4439,6 @@ def _validate_clients(self):
                 ("amort_history_total", "Total Amortization History"),
                 ("amort_current_total", "Total Current Amortization"),
                 ("loan_balance",        "Loan Balance"),
-                ("amortized_cost",      "Total Amortized Cost"),
                 ("principal_loan",      "Principal Loan"),
                 ("maturity",            "Maturity"),
                 ("interest_rate",       "Interest Rate"),

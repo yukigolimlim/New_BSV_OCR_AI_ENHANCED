@@ -78,6 +78,12 @@ def F(size: int, weight: str = "normal") -> tuple:
     if _FONT_FAMILY is None: _FONT_FAMILY = best_font()
     return (_FONT_FAMILY, max(6, int(round(size * _UI_ZOOM))), weight)
 
+def F_sidebar(size: int, weight: str = "normal") -> tuple:
+    """Same as F but without UI zoom — window chrome and left sidebar only."""
+    global _FONT_FAMILY
+    if _FONT_FAMILY is None: _FONT_FAMILY = best_font()
+    return (_FONT_FAMILY, max(6, int(round(size))), weight)
+
 def FMONO(size: int, weight: str = "normal") -> tuple:
     import tkinter.font as tkfont
     available = set(tkfont.families())
@@ -259,9 +265,20 @@ def FF(size: int, weight: str = "normal"):
     Returns a ctk.CTkFont using the resolved _FONT_FAMILY.
     Use this instead of ctk.CTkFont(_FONT_FAMILY, ...) in ui_* files
     so the font family is read at call-time, not at import-time.
+    Scales with UI zoom (main content area).
     """
     import customtkinter as ctk
     import app_constants as _ac
     if _ac._FONT_FAMILY is None:
         _ac._FONT_FAMILY = best_font()
-    return ctk.CTkFont(_ac._FONT_FAMILY, size, weight=weight)
+    sz = max(6, int(round(size * _ac._UI_ZOOM)))
+    return ctk.CTkFont(_ac._FONT_FAMILY, sz, weight=weight)
+
+def FF_sidebar(size: int, weight: str = "normal"):
+    """CTkFont without UI zoom — matches F_sidebar for CustomTkinter widgets."""
+    import customtkinter as ctk
+    import app_constants as _ac
+    if _ac._FONT_FAMILY is None:
+        _ac._FONT_FAMILY = best_font()
+    sz = max(6, int(round(size)))
+    return ctk.CTkFont(_ac._FONT_FAMILY, sz, weight=weight)
