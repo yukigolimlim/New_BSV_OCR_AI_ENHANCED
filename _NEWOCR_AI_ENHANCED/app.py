@@ -142,6 +142,7 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         self.overrideredirect(True)
         self._drag_x = self._drag_y = 0
         self._is_closing = False
+        self.report_callback_exception = self._suppress_closing_errors
         self._ui_zoom = 1.0
         try:
             self._base_tk_scaling = float(self.tk.call("tk", "scaling"))
@@ -407,6 +408,12 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
             except Exception:
                 pass
 
+    def _suppress_closing_errors(self, exc, val, tb):
+        if getattr(self, '_is_closing', False):
+            return  # silently swallow Tkinter errors during shutdown
+        import traceback
+        traceback.print_exception(exc, val, tb)
+
     # ── UI build ──────────────────────────────────────────────────────────
     def _build_ui(self):
         self._build_topbar()
@@ -441,11 +448,15 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
                 get_rag_engine()
             except Exception:
                 pass
+            if getattr(self, "_is_closing", False):
+                return
             try:
                 from extraction import prewarm_ocr_engines
                 prewarm_ocr_engines()
             except Exception:
                 pass
+            if getattr(self, "_is_closing", False):
+                return
             try:
                 from extraction import prewarm_trocr
                 prewarm_trocr()

@@ -56,20 +56,28 @@ DB_CONFIG = {
 }
 
 
-def db_check_login(username: str, password: str):
-    """Returns (id, username) tuple if credentials match, else None."""
+def db_check_login(email: str, password: str):
+    """Returns (id, display_name) tuple if credentials match, else None."""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur  = conn.cursor()
         cur.execute(
-            "SELECT id, username FROM users WHERE username = %s "
+            "SELECT id, username FROM users WHERE email = %s "
             "AND password = crypt(%s, password)",
-            (username, password)
+            (email, password)
         )
         row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE public.users SET last_login_at = NOW() WHERE id = %s",
+                (row[0],)
+            )
+            conn.commit()
+            user_id, username = row
+            row = (user_id, username)  # username is now a clean separate column
         cur.close()
         conn.close()
-        return row  # (id, username) or None
+        return row  # (id, display_name) or None
     except Exception as ex:
         print(f"DB error: {ex}")
         return None
@@ -287,8 +295,8 @@ class LoginWindow(tk.Tk):
                  bg=WHITE, fg=TEXT_SOFT,
                  font=(FUI, 8)).pack(anchor="w", pady=(3, 18))
 
-        self._ue = self._field(f, "EMPLOYEE ID / USERNAME",
-                               "e.g.  bsv\\jdelacruz")
+        self._ue = self._field(f, "EMAIL ADDRESS",
+                               "e.g.  juan@bancosanvicente.com")
         tk.Frame(f, bg=WHITE, height=8).pack()
         self._pe = self._field(f, "PASSWORD",
                                "Enter your password", secret=True)
