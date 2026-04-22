@@ -317,13 +317,40 @@ def _build_left(self, p):
     text_col.pack(side="left", fill="x", expand=True)
 
     _username = getattr(self, "_current_username", None) or "User"
+    if len(_username) > 20:
+        _username = _username[:18] + "…"
+    self._display_username = _username   # store for loader restore
+
+    # Fetch position from DB
+    # Fetch position and role from DB
+    _position = ""
+    _user_role = "user"  # safe default — least privilege
+    try:
+        _conn = self.get_conn()
+        if _conn:
+            _cur = _conn.cursor()
+            _cur.execute(
+                "SELECT position, role FROM users WHERE id = %s",
+                (getattr(self, '_current_user_id', None),)
+            )
+            _row = _cur.fetchone()
+            _cur.close()
+            if _row:
+                if _row[0]:
+                    _position = _row[0]
+                    if len(_position) > 22:
+                        _position = _position[:20] + "…"
+                if _row[1]:
+                    _user_role = _row[1].strip().lower()
+    except Exception:
+        pass
+
+    # Store role on self so other parts of the app can reference it
+    self._current_user_role = _user_role
 
     tk.Label(text_col, text="WELCOME",
              font=F(8), fg=_SB_TXT, bg=_SB_BG,
              anchor="w").pack(anchor="w")
-    # Trim long usernames (e.g. emails) to fit the sidebar
-    if len(_username) > 20:
-        _username = _username[:18] + "…"
 
     self._status_sidebar_lbl = tk.Label(
         text_col, text=_username,
@@ -332,23 +359,13 @@ def _build_left(self, p):
     )
     self._status_sidebar_lbl.pack(anchor="w")
 
-    # Animate the dot (pulse effect via color cycling)
-    _pulse_state = [0, 1]
-    def _pulse_dot():
-        t   = _pulse_state[0] / 20.0
-        mid = abs((t % 1.0) - 0.5) * 2
-        r   = int(91  + (30  * (1 - mid)))
-        g   = int(191 + (30  * (1 - mid)))
-        b   = int(62  + (10  * (1 - mid)))
-        r, g, b = min(r, 255), min(g, 255), min(b, 255)
-        col = "#{:02x}{:02x}{:02x}".format(r, g, b)
-        try:
-            self._status_dot.itemconfig(1, fill=col)
-        except Exception:
-            return
-        _pulse_state[0] += 1
-        sidebar.after(80, _pulse_dot)
-    sidebar.after(500, _pulse_dot)
+    # Position label — only shown if position exists in DB
+    self._position_sidebar_lbl = tk.Label(
+        text_col, text=_position,
+        font=F(7), fg=_SB_TXT_DIM, bg=_SB_BG,
+        anchor="w"
+    )
+    self._position_sidebar_lbl.pack(anchor="w")
 
     # ── Section label ─────────────────────────────────────────────────
     tk.Label(sidebar, text="NAVIGATION",
@@ -359,22 +376,39 @@ def _build_left(self, p):
     self._nav_btns       = {}
     self._active_tab_key = tk.StringVar(value="cibi")
 
+    # ── Role-based nav visibility ─────────────────────────────────────
+    # Define which tabs each role can see
+    _ROLE_TABS = {
+        "super admin": {
+            "cibi", "extract", "analysis", "summary",
+            "aiprompt", "samples", "lookup", "lookup_summary", "lu_analysis"
+        },
+        "user": {
+            "cibi",
+        },
+    }
+    # Fall back to "user" permissions if role is unrecognised
+    _allowed = _ROLE_TABS.get(_user_role, _ROLE_TABS["user"])
+
     nav_container = tk.Frame(sidebar, bg=_SB_BG)
     nav_container.pack(fill="x", padx=8)
 
     for tab_key, icon, label, badge in _NAV_ITEMS:
-        _build_nav_pill(self, nav_container, tab_key, icon, label, badge)
+        if tab_key in _allowed:
+            _build_nav_pill(self, nav_container, tab_key, icon, label, badge)
 
-    # Thin grouped divider
-    div_row = tk.Frame(sidebar, bg=_SB_BG)
-    div_row.pack(fill="x", padx=16, pady=(6, 4))
-    tk.Frame(div_row, bg=_SB_BORDER, height=1).pack(fill="x")
+    # Only show the second group + divider if the user can see any of those tabs
+    _nav2_visible = [x for x in _NAV_ITEMS_2 if x[0] in _allowed]
+    if _nav2_visible:
+        div_row = tk.Frame(sidebar, bg=_SB_BG)
+        div_row.pack(fill="x", padx=16, pady=(6, 4))
+        tk.Frame(div_row, bg=_SB_BORDER, height=1).pack(fill="x")
 
-    nav_container2 = tk.Frame(sidebar, bg=_SB_BG)
-    nav_container2.pack(fill="x", padx=8)
+        nav_container2 = tk.Frame(sidebar, bg=_SB_BG)
+        nav_container2.pack(fill="x", padx=8)
 
-    for tab_key, icon, label, badge in _NAV_ITEMS_2:
-        _build_nav_pill(self, nav_container2, tab_key, icon, label, badge)
+        for tab_key, icon, label, badge in _nav2_visible:
+            _build_nav_pill(self, nav_container2, tab_key, icon, label, badge)
 
     # ── Spacer ────────────────────────────────────────────────────────
     tk.Frame(sidebar, bg=_SB_BG).pack(fill="both", expand=True)
@@ -1036,6 +1070,8 @@ def _switch_tab(self, tab):
 #  LOADER
 # ─────────────────────────────────────────────────────────────────────
 def _show_loader(self, show, stage_text="Processing…"):
+    if getattr(self, '_is_closing', False):
+        return
     if show:
         self._txt_frame.pack_forget()
         self._analysis_frame.pack_forget()
@@ -1051,8 +1087,13 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._status_lbl.config(text="●  Processing…", fg=ACCENT_GOLD)
         self._topbar_status.config(text="● Processing…", fg=ACCENT_GOLD, bg="#1A2F47")
         # Update sidebar status dot/label
-        if hasattr(self, '_status_sidebar_lbl'):
-            self._status_sidebar_lbl.config(text="Processing…", fg=ACCENT_GOLD)
+        # Update sidebar status dot/label
+        if hasattr(self, '_status_sidebar_lbl') and not getattr(self, '_is_closing', False):
+            try:
+                if self._status_sidebar_lbl.winfo_exists():
+                    self._status_sidebar_lbl.config(text="Processing…", fg=ACCENT_GOLD)
+            except Exception:
+                pass
     else:
         self._spinner.stop()
         self._loader_frame.pack_forget()
@@ -1074,12 +1115,13 @@ def _show_loader(self, show, stage_text="Processing…"):
             self._aiprompt_frame.pack(fill="both", expand=True)
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
         self._topbar_status.config(text="● Ready", fg=_SB_ACCENT, bg="#1A2F47")
-        if hasattr(self, '_status_sidebar_lbl'):
-            current = self._status_sidebar_lbl.cget("text")
-            if not current.startswith("Welcome"):
-                self._status_sidebar_lbl.config(text="Ready", fg=_SB_ACCENT2)
-            else:
-                self._status_sidebar_lbl.config(fg=_SB_ACCENT2)
+        if hasattr(self, '_status_sidebar_lbl') and not getattr(self, '_is_closing', False):
+            try:
+                if self._status_sidebar_lbl.winfo_exists():
+                    _name = getattr(self, "_display_username", None) or "User"
+                    self._status_sidebar_lbl.config(text=_name, fg=_SB_ACCENT2)
+            except Exception:
+                pass
 
 def _set_progress(self, pct, stage=""):
     self._pct_lbl.config(text=f"{pct}%")
