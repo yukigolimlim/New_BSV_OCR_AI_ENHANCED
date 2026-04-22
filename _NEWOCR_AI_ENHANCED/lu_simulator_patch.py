@@ -290,16 +290,32 @@ def _sim_populate(self):
     accumulated: dict = {}
     for rec in recs:
         for exp in rec.get("expenses", []):
-            if exp["total"] <= 0:
+            name = str((exp or {}).get("name") or "").strip()
+            if not name:
                 continue
-            name = exp["name"]
+            try:
+                total = float((exp or {}).get("total") or 0.0)
+            except (TypeError, ValueError):
+                total = 0.0
+            if total <= 0:
+                continue
+            risk = str((exp or {}).get("risk") or "LOW").upper()
+            if risk not in _RISK_ORDER:
+                risk = "LOW"
+            reason = str((exp or {}).get("reason") or "").strip()
             if name not in accumulated:
-                accumulated[name] = dict(exp)
+                accumulated[name] = {
+                    "name": name,
+                    "total": total,
+                    "risk": risk,
+                    "reason": reason,
+                    "value_str": _fmt_value([total]),
+                }
             else:
-                accumulated[name]["total"] += exp["total"]
-                if _RISK_ORDER.get(exp["risk"], 9) < _RISK_ORDER.get(accumulated[name]["risk"], 9):
-                    accumulated[name]["risk"]   = exp["risk"]
-                    accumulated[name]["reason"] = exp["reason"]
+                accumulated[name]["total"] += total
+                if _RISK_ORDER.get(risk, 9) < _RISK_ORDER.get(accumulated[name]["risk"], 9):
+                    accumulated[name]["risk"] = risk
+                    accumulated[name]["reason"] = reason
                 accumulated[name]["value_str"] = _fmt_value([accumulated[name]["total"]])
 
     all_expenses = sorted(accumulated.values(),
@@ -348,12 +364,14 @@ def _sim_populate(self):
         self._sim_sliders[exp["name"]] = var
 
     # Chunked build
+    built_rows = {"count": 0}
     def _build_chunk(start: int):
         chunk = all_expenses[start: start + SIM_CHUNK_SIZE]
         for idx, exp in enumerate(chunk, start=start):
             try:
                 var = self._sim_sliders[exp["name"]]
                 _sim_build_expense_row(self, self._sim_scroll_frame, exp, var, idx)
+                built_rows["count"] += 1
             except Exception:
                 continue
         next_start = start + SIM_CHUNK_SIZE
@@ -362,6 +380,12 @@ def _sim_populate(self):
                 16, lambda s=next_start: _build_chunk(s))
         else:
             self._sim_build_job = None
+            if built_rows["count"] == 0 and all_expenses:
+                tk.Label(
+                    self._sim_scroll_frame,
+                    text="Unable to render expense rows for this selection.",
+                    font=F(9), fg=_ACCENT_RED, bg=_CARD_WHITE, justify="center"
+                ).pack(pady=20)
             _sim_refresh(self)
 
     _build_chunk(0)
@@ -372,21 +396,28 @@ def _sim_populate(self):
 # ══════════════════════════════════════════════════════════════════════
 
 def _sim_build_expense_row(self, parent, exp, var, idx):
-    risk   = exp["risk"]
+    risk   = str(exp.get("risk") or "LOW").upper()
+    if risk not in _RISK_ORDER:
+        risk = "LOW"
+    name = str(exp.get("name") or "Unnamed Expense")
+    try:
+        base_total = float(exp.get("total") or 0.0)
+    except (TypeError, ValueError):
+        base_total = 0.0
     row_bg = _RISK_BG.get(risk, _WHITE) if idx % 2 == 0 else _WHITE
     row    = tk.Frame(parent, bg=row_bg)
     row.pack(fill="x")
     for ci, (_title, min_px, wt) in enumerate(SIM_TABLE_COLUMNS):
         row.grid_columnconfigure(ci, weight=wt, minsize=min_px)
 
-    tk.Label(row, text=exp["name"], font=F(9, "bold"),
+    tk.Label(row, text=name, font=F(9, "bold"),
              fg=_TXT_NAVY, bg=row_bg, anchor="w", padx=8, pady=6
              ).grid(row=0, column=0, sticky="ew")
     tk.Label(row, text=risk, font=F(7, "bold"),
              fg=_RISK_COLOR.get(risk, _TXT_SOFT),
              bg=_RISK_BADGE_BG.get(risk, _OFF_WHITE),
              padx=4, pady=3).grid(row=0, column=1, padx=4, pady=6, sticky="w")
-    tk.Label(row, text=f"₱{exp['total']:,.2f}" if exp["total"] > 0 else "—",
+    tk.Label(row, text=f"₱{base_total:,.2f}" if base_total > 0 else "—",
              font=F(9), fg=_TXT_NAVY, bg=row_bg, anchor="e", padx=6
              ).grid(row=0, column=2, sticky="ew")
 
@@ -407,7 +438,7 @@ def _sim_build_expense_row(self, parent, exp, var, idx):
 
     var._extra_lbl = extra_lbl
     var._sim_lbl   = sim_lbl
-    var._base      = exp["total"]
+    var._base      = base_total
     tk.Frame(parent, bg=_BORDER_LIGHT, height=1).pack(fill="x")
 
 
