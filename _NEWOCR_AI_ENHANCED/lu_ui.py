@@ -621,8 +621,9 @@ def _open_product_risk_dialog(self):
         )
         return
 
-    products = sorted(self._lu_all_data["unique_product_names"], key=str.lower)
+    _detected = (self._lu_all_data or {}).get("unique_product_names", [])
     current = get_product_risk_overrides()
+    products = sorted({str(x).strip() for x in _detected if str(x).strip()}, key=str.lower)
 
     dialog = ctk.CTkToplevel(self)
     dialog.title("Product Name Risk Settings")
@@ -888,7 +889,9 @@ def _open_expense_risk_dialog(self):
     ).pack(side="left", padx=16, pady=12)
     tk.Label(
         hdr,
-        text="Based on expense_categories.pdf  •  17 Household + 14 Business categories",
+        text=(
+            "Based on expense_categories.pdf  •  17 Household + 14 Business categories"
+        ),
         font=F(7),
         fg=_NAVY_PALE,
         bg=_NAVY_MID,
@@ -959,7 +962,7 @@ def _open_expense_risk_dialog(self):
     canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
     row_state   = {}   # row_id -> {"name": category_name, "var": tk.StringVar}
-    row_widgets = []   # list of (frame_widget, exp_name, section_label_widget)
+    row_widgets = []   # list of (frame_widget, exp_name, section_title)
 
     def _paint_buttons(var, high_btn, low_btn):
         if var.get() == "HIGH":
@@ -988,7 +991,7 @@ def _open_expense_risk_dialog(self):
                 anchor="w",
             )
             sec_lbl.pack(fill="x", padx=6, pady=5)
-            row_widgets.append((sec_frame, None, sec_lbl, section_title))  # section sentinel
+            row_widgets.append((sec_frame, None, section_title))  # section sentinel
 
             for cat_name in categories:
                 ek  = _lu_core._expense_override_key(cat_name)
@@ -1037,15 +1040,15 @@ def _open_expense_risk_dialog(self):
                     lambda *_a, v=risk_var, hb=high_btn, lb=low_btn: _paint_buttons(v, hb, lb),
                 )
                 _paint_buttons(risk_var, high_btn, low_btn)
-                # Store (row_frame, cat_name, None, section_title) for filtering
-                row_widgets.append((row, cat_name, None, section_title))
+                # Store (row_frame, cat_name, section_title) for filtering
+                row_widgets.append((row, cat_name, section_title))
 
     def _apply_filter(*_args):
         q = _norm(search_var.get())
         # Track which section headers should be visible
         section_has_match: dict[str, bool] = {}
         for entry in row_widgets:
-            frame, cat_name, _, section_title = entry
+            frame, cat_name, section_title = entry
             if cat_name is None:
                 # This is a section header sentinel — decide later
                 continue
@@ -1060,7 +1063,7 @@ def _open_expense_risk_dialog(self):
 
         # Show/hide section header rows based on whether any child matches
         for entry in row_widgets:
-            frame, cat_name, _, section_title = entry
+            frame, cat_name, section_title = entry
             if cat_name is None:  # section header sentinel
                 visible = section_has_match.get(section_title, False) or not q
                 if visible:
