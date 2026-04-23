@@ -25,6 +25,7 @@ from doc_classifier_tab import (
 from lookup_tab import attach as _attach_lookup
 from summary_tab import attach as _attach_summary, _refresh_summary
 from lu_analysis_tab import attach as _attach_lu_analysis
+import admin_logs as _admin_logs_mod
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ _NAV_ITEMS_2 = [
     ("lookup",         "🔎",  "Look-Up",      None),
     ("lookup_summary", "📋",  "LU Summary",   None),
     ("lu_analysis",    "📈",  "LU Analysis",  None),
+    ("logs",           "🗒",  "Logs",         "ADMIN"),
 ]
 
 
@@ -381,7 +383,8 @@ def _build_left(self, p):
     _ROLE_TABS = {
         "super admin": {
             "cibi", "extract", "analysis", "summary",
-            "aiprompt", "samples", "lookup", "lookup_summary", "lu_analysis"
+            "aiprompt", "samples", "lookup", "lookup_summary", "lu_analysis",
+            "logs",
         },
         "user": {
             "cibi",
@@ -703,6 +706,7 @@ def _build_right(self, p):
     self._build_lookup_panel(card)
     self._build_lookup_summary_panel(card)
     self._build_lu_analysis_panel(card)
+    self._build_logs_panel(card)
 
     self._put_placeholder()
     self._current_tab = "cibi"
@@ -1019,6 +1023,7 @@ _TAB_TITLES = {
     "lookup":          "Look-Up",
     "lookup_summary":  "LU Summary",
     "lu_analysis":     "LU Analysis",
+    "logs":            "System Logs",
 }
 
 def _switch_tab(self, tab):
@@ -1040,6 +1045,7 @@ def _switch_tab(self, tab):
     self._lookup_frame.pack_forget()
     self._lookup_summary_frame.pack_forget()
     self._lu_analysis_frame.pack_forget()
+    self._logs_frame.pack_forget()
 
     if tab == "extract":
         self._txt_frame.pack(fill="both", expand=True)
@@ -1058,6 +1064,8 @@ def _switch_tab(self, tab):
         _refresh_summary(self)
     elif tab == "lu_analysis":
         self._lu_analysis_frame.pack(fill="both", expand=True)
+    elif tab == "logs":                                        # ← NEW
+        self._logs_frame.pack(fill="both", expand=True)
     else:  # aiprompt
         self._aiprompt_frame.pack(fill="both", expand=True)
         self.after(50, self._chat_input.focus_set)
@@ -1081,6 +1089,7 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._lookup_frame.pack_forget()
         self._lookup_summary_frame.pack_forget()
         self._lu_analysis_frame.pack_forget()
+        self._logs_frame.pack_forget()
         self._loader_frame.pack(fill="both", expand=True)
         self._stage_lbl.config(text=stage_text)
         self._spinner.start()
@@ -1111,6 +1120,8 @@ def _show_loader(self, show, stage_text="Processing…"):
             self._lookup_summary_frame.pack(fill="both", expand=True)
         elif self._current_tab == "lu_analysis":
             self._lu_analysis_frame.pack(fill="both", expand=True)
+        elif self._current_tab == "logs":                      # ← NEW
+            self._logs_frame.pack(fill="both", expand=True)
         else:
             self._aiprompt_frame.pack(fill="both", expand=True)
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
@@ -1330,3 +1341,4 @@ def attach(cls):
     _attach_lookup(cls)
     _attach_summary(cls)
     _attach_lu_analysis(cls)
+    _admin_logs_mod.attach(cls)

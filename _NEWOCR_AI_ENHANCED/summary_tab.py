@@ -54,6 +54,27 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+# ═══════════════════════════════════════════════════════════════════════
+#  AUDIT LOG HELPER
+# ═══════════════════════════════════════════════════════════════════════
+
+def _log_action(self, action: str, description: str):
+    """Write an audit log entry to the logs table."""
+    try:
+        user_id = getattr(self, "_current_user_id", None)
+        email   = getattr(self, "_current_username", None) or ""
+        with _db_connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO logs (user_id, email, action, description, time) "
+                "VALUES (%s, %s, %s, %s, NOW())",
+                (user_id, email, action, description)
+            )
+            conn.commit()
+            cur.close()
+    except Exception as e:
+        print(f"[log_action] failed: {e}")
+
 PAD          = 20
 PAGE_SIZE    = 50
 HDR_BG       = "#93C47D"
@@ -2066,7 +2087,19 @@ def _start_cell_edit(self, iid: str, col_id: str):
                 self._sum_row_data[iid][col_id] = new_raw.strip() or None
 
         # Update just this one cell in the treeview — no full reload
+        # Update just this one cell in the treeview — no full reload
         vals = list(tree.item(iid, "values"))
+        old_display = vals[col_index]
+        vals[col_index] = display_val
+        tree.item(iid, values=vals)
+
+        entry.destroy()
+        _update_stats(self)   # keep the aggregate stat pills in sync
+
+        # ── Audit log ─────────────────────────────────────────────────
+        applicant = self._sum_row_data.get(iid, {}).get("applicant_name", "") or f"id={row_id}"
+        _log_action(self, "edit_cell",
+                    f"[{col_id}] '{old_display}' → '{display_val}'  ({applicant})")
         vals[col_index] = display_val
         tree.item(iid, values=vals)
 
@@ -2354,7 +2387,11 @@ def _delete_row(self, row_id: int):
     if not messagebox.askyesno("Delete Record",
             "Remove this applicant from the database?\n\nThis cannot be undone."):
         return
+    applicant = next(
+        (r.get("applicant_name", "") for iid, r in self._sum_row_data.items()
+         if r.get("id") == row_id or iid == str(row_id)), f"id={row_id}")
     _db_delete_row(row_id)
+    _log_action(self, "delete_row", f"Deleted applicant: '{applicant}' (id={row_id})")
     _refresh_summary(self)
 
 def _advanced_delete(self):
@@ -2523,6 +2560,9 @@ def _advanced_delete(self):
                 icon="warning"):
             return
         cleared = _db_clear_column(db_col, raw, match_mode.get())
+        _log_action(self, "adv_delete",
+                    f"Cleared column [{col_display}] on {cleared} row(s)"
+                    + (f" where value matched: '{raw}'" if raw else " (all rows)"))
         win.destroy()
         _refresh_summary(self)
         messagebox.showinfo("Advanced Delete",
@@ -2607,6 +2647,7 @@ def _clear_all(self):
             icon="warning"):
         return
     _db_clear_all()
+    _log_action(self, "clear_all", f"Cleared all {total} applicant record(s) from database")
     _refresh_summary(self)
 
 
@@ -2626,6 +2667,8 @@ def _run_dedup(self):
         try:
             removed = _db_deduplicate_client_ids()
             self.after(0, lambda: _refresh_summary(self))
+            self.after(0, lambda r=removed: _log_action(
+                self, "dedup", f"Deduplication complete — {r} duplicate row(s) removed"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_dedup_btn, "✓  Done!", 2500),
                 messagebox.showinfo(
@@ -2827,6 +2870,10 @@ def _import_amort_file(self):
                 if len(skipped_names) > 10:
                     msg += f"  … and {len(skipped_names) - 10} more"
 
+            total_amort_updated = len(updated_by_id) + len(updated_by_name) + len(updated_relaxed)
+            self.after(0, lambda n=total_amort_updated, sk=len(skipped_names): _log_action(
+                self, "import_amort",
+                f"Amort import: {n} record(s) updated, {sk} skipped — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_amort_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Amort. Import Result", msg)
@@ -3120,6 +3167,9 @@ def _import_other_data_file(self):
                 if len(skipped_no_match) > 10:
                     msg += f"  … and {len(skipped_no_match) - 10} more"
 
+            self.after(0, lambda n=total_updated, sk=len(skipped_no_match): _log_action(
+                self, "import_other_data",
+                f"Other Data import: {n} record(s) updated, {sk} unmatched — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_other_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Other Data Import Result", msg)
@@ -3765,6 +3815,11 @@ def _import_ploan_file(self):
                 if len(match_details) > 25:
                     msg += f"  … and {len(match_details) - 25} more\n"
 
+            self.after(0, lambda a=cid_assigned_count, u=cid_updated_count,
+                              b=backfill_assigned, w=other_data_updated: _log_action(
+                self, "import_ploan",
+                f"P.Loan import: {a} CIDs assigned, {u} confirmed, {b} backfilled, "
+                f"{w} data row(s) written — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
                 messagebox.showinfo("P.Loan Import Result", msg)
@@ -3906,6 +3961,10 @@ def _merge_db_files(self):
                     msg += (f"  ✓  {fname}  →  {ins:,} inserted, "
                             f"{pat:,} patched, {skp:,} skipped\n")
 
+            self.after(0, lambda i=total_inserted, p=total_patched, s=total_skipped: _log_action(
+                self, "merge_db",
+                f"Merge DB: {i} inserted, {p} patched, {s} skipped — "
+                f"{len(paths)} file(s): {', '.join(Path(p_).name for p_ in paths)}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_merge_db_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Merge DB Result", msg)
@@ -4014,6 +4073,8 @@ def _export_csv(self):
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
             writer.writerows(flat)
+        _log_action(self, "export_csv",
+                    f"Exported {len(flat):,} record(s) to CSV: {Path(path).name}")
         _flash_btn(self, self._sum_export_csv_btn, "✓  Saved!", 2000)
     except Exception as e:
         _flash_btn(self, self._sum_export_csv_btn, f"Error: {e}", 3000)
@@ -4190,6 +4251,9 @@ def _export_excel(self):
             ws.freeze_panes = "A2"
             wb.save(path)
 
+            self.after(0, lambda n=len(flat), h=len(headers): _log_action(
+                self, "export_excel",
+                f"Exported {n:,} record(s), {h} column(s) to Excel: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_export_xl_btn, "✓  Saved!", 2000),
                 messagebox.showinfo("Export Excel",
@@ -4703,6 +4767,10 @@ def _validate_clients(self):
             msg += f"Match Rate                 : {rate}\n\n"
             msg += f"Report saved to:\n{out_path}"
 
+            self.after(0, lambda m=n_matched, u=n_unmatched, nd=n_notindb: _log_action(
+                self, "validate_clients",
+                f"Validation: {m} matched, {u} unmatched, {nd} not in DB — "
+                f"ref file: {Path(path).name}, report: {Path(out_path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_validate_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Validation Result", msg)

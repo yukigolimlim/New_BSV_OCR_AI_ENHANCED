@@ -50,6 +50,7 @@ import ui_cibi
 import lu_ui as lu_analysis_tab
 import lu_simulator_patch
 import lu_loanbal_export_patch
+import admin_logs
 # app.py — at the top, after imports
 import psycopg2
 from dotenv import load_dotenv

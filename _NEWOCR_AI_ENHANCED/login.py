@@ -68,13 +68,31 @@ def db_check_login(email: str, password: str):
         )
         row = cur.fetchone()
         if row:
+            user_id, username = row
+
+            # Update last login timestamp
             cur.execute(
                 "UPDATE public.users SET last_login_at = NOW() WHERE id = %s",
-                (row[0],)
+                (user_id,)
             )
+
+            # Insert audit log entry
+            cur.execute(
+                """
+                INSERT INTO logs (user_id, email, action, description, time)
+                VALUES (%s, %s, %s, %s, NOW())
+                """,
+                (
+                    user_id,
+                    email,
+                    "LOGGED IN",
+                    f"User '{username}' ({email}) successfully logged in to DocExtract Pro.",
+                )
+            )
+
             conn.commit()
-            user_id, username = row
-            row = (user_id, username)  # username is now a clean separate column
+            row = (user_id, username)
+
         cur.close()
         conn.close()
         return row  # (id, display_name) or None
