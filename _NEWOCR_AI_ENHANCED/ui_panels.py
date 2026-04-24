@@ -382,11 +382,16 @@ def _build_left(self, p):
     # Define which tabs each role can see
     _ROLE_TABS = {
         "super admin": {
-            "cibi", "extract", "analysis", "summary",
-            "lookup", "lookup_summary", "lu_analysis",
+            "lookup_summary", "lu_analysis",
             "logs", "accounts",
         },
-        "user": {
+        "Account Officer": {
+            "cibi", "extract", "analysis", "summary",
+        },
+        "Credit Risk Officer": {
+            "lookup", "lookup_summary", "lu_analysis",
+        },
+        "user": {          # ← Add this as the safe fallback
             "cibi",
         },
     }

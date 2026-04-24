@@ -70,8 +70,8 @@ _COLUMNS = [
 
 _ROLE_BADGE = {
     "super admin": ("#FFFFFF",      "#1E5C1E", "#1E5C1E"),
-    "admin":       (_NAVY_MID,      _NAVY_MIST, _NAVY_LIGHT),
-    "user":        (_TXT_SOFT,      "#F0F4F8",  _BORDER_MID),
+    "Account Officer":       (_NAVY_MID,      _NAVY_MIST, _NAVY_LIGHT),
+    "Credit Risk Officer":        (_TXT_SOFT,      "#F0F4F8",  _BORDER_MID),
 }
 _STATUS_BADGE = {
     "active":   (_ACCENT_SUCCESS, "#E8F7EE", "#2E8B4A"),
@@ -311,7 +311,7 @@ def _open_edit_dialog(self, user_row):
     status_var = tk.StringVar(value=str(user_row.get("status") or "active"))
 
     for label, var, vals in [
-        ("Role:",   role_var,   ["user", "admin", "super admin"]),
+        ("Role:",   role_var,   ["super admin", "Account Officer", "Credit Risk Officer"]),
         ("Status:", status_var, ["active", "inactive", "pending"]),
     ]:
         r = tk.Frame(body, bg=_PAGE_BG); r.pack(fill="x", pady=6)
