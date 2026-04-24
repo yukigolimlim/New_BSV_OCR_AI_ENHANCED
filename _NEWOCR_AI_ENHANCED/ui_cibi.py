@@ -16,6 +16,15 @@ from app_constants import _ai_check_stage1
 from extraction import extract as _extract_fn, extract_bank_ci_vlm, bank_ci_to_ai_context
 from Cibi_populator import populate_cibi_form
 from cibi_analysis import run_cibi_analysis, run_cibi_analysis_from_text
+from admin_logs import insert_log
+
+
+def _cibi_log(self, action: str, description: str):
+    """Best-effort audit log writer for CIBI workflow actions."""
+    try:
+        insert_log(self, action, description)
+    except Exception:
+        pass
 
 def _build_cibi_output_panel(self, parent):
     self._cibi_output_frame = tk.Frame(parent, bg=CARD_WHITE)
@@ -685,6 +694,11 @@ def _cibi_finish_stage1(self, cic_result: dict, bank_ci_result: dict):
 
     self._cibi_s2_frame.pack(fill="x")
     self._cibi_show_stage("2")
+    _cibi_log(
+        self,
+        "Bank CI Extraction",
+        f"Re-check CIC and Bank CI completed. Verdict={verdict}, proceed={proceed}, tier={tier}."
+    )
 
 def _cibi_proceed_to_stage3(self):
     self._cibi_stage = "bank_ci_reviewed"
@@ -824,6 +838,11 @@ def _cibi_all_extracted(self, extract_keys: list):
         + "\n\n✅  Select your CIBI Excel template, then click  Populate → CIBI Excel.",
         role="system"
     )
+    _cibi_log(
+        self,
+        "Extracted CIBI Documents",
+        f"Extract all documents completed for: {', '.join(extract_keys)}."
+    )
 
 # ── STAGE 4 ACTIONS ───────────────────────────────────────────────────
 def _cibi_pick_template(self):
@@ -928,6 +947,7 @@ def _cibi_finish_populate(self, out_path: Path):
         else:                          os.system(f'xdg-open "{folder}"')
     except Exception:
         pass
+    _cibi_log(self, "CIBI Population", f"Populate CIBI Excel completed: {out_path.name}")
 
 def _cibi_finish_error(self, msg: str):
     self._show_loader(False)

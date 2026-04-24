@@ -37,13 +37,11 @@ from app_constants import (
 )
 
 from widgets import GradientCanvas, Spinner
-from samples_tab import SamplesTabMixin
 from doc_classifier_tab import DocClassifierTabMixin
 
 import ui_panels
 import ui_extraction
 import ui_summary
-import ui_chat
 import ui_cibi
 
 # ── LU Analysis imports ───────────────────────────────────────────────────────
@@ -76,10 +74,10 @@ def check_db_on_startup():
     try:
         _conn = get_db_connection()
         _conn.close()
-        print("✔ Database connected successfully")
+        print("[OK] Database connected successfully")
         return True
     except Exception as e:
-        print(f"✘ Database connection failed: {e}")
+        print(f"[ERROR] Database connection failed: {e}")
         import tkinter.messagebox as mb
         mb.showerror(
             "Database Error",
@@ -103,7 +101,7 @@ ctk.set_default_color_theme("blue")
 #  MAIN APPLICATION CLASS
 # ══════════════════════════════════════════════════════════════════════════════
 
-class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
+class DocExtractorApp(DocClassifierTabMixin, ctk.CTk):
 
     def __init__(self, user_id=None, username=None):
         super().__init__()
@@ -195,9 +193,6 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
         self._summary_cibi_excel_path:    str|None = None
         self._summary_cibi_populated:     bool     = False
         self._last_cibi_path:             Path|None= None
-
-        # ── Mixin init ────────────────────────────────────────────────────
-        self._samples_init_state()   # SamplesTabMixin
 
         # ── Build UI ──────────────────────────────────────────────────────
         self._build_ui()
@@ -472,7 +467,6 @@ class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
 ui_panels.attach(DocExtractorApp)
 ui_extraction.attach(DocExtractorApp)
 ui_summary.attach(DocExtractorApp)
-ui_chat.attach(DocExtractorApp)
 ui_cibi.attach(DocExtractorApp)
 
 # ── Attach LU Analysis (order matters) ───────────────────────────────────────

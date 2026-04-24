@@ -32,6 +32,8 @@ import io
 import csv
 import json
 import threading
+import time
+import queue
 import tkinter as tk
 import tkinter.ttk as ttk
 import customtkinter as ctk
@@ -1591,6 +1593,11 @@ def _build_lookup_summary_panel(self, parent):
     _db_init()
     _apply_tree_style()
 
+    # Thread-safe UI callback channel for background DB writes
+    self._sum_bg_queue = queue.Queue()
+    self._sum_bg_poller_started = False
+    _start_summary_ui_poller(self)
+
     outer = tk.Frame(parent, bg=CARD_WHITE)
     self._lookup_summary_frame = outer
     main = tk.Frame(outer, bg=CARD_WHITE)
@@ -1734,6 +1741,11 @@ def _build_lookup_summary_panel(self, parent):
 
     right_ctrl = tk.Frame(controls_row, bg="#F0F4FA")
     right_ctrl.pack(side="right", padx=10, pady=8)
+    self._sum_save_status_after = None
+    self._sum_save_status_lbl = tk.Label(
+        right_ctrl, text="", font=F(8, "bold"),
+        fg=ACCENT_SUCCESS, bg="#F0F4FA")
+    self._sum_save_status_lbl.pack(side="top", anchor="e")
     self._sum_count_lbl = tk.Label(right_ctrl, text="",
                                     font=F(8), fg=TXT_SOFT, bg="#F0F4FA")
     self._sum_count_lbl.pack(side="top", anchor="e")
@@ -1806,6 +1818,7 @@ def _build_lookup_summary_panel(self, parent):
     self._sum_search_after   = None
     self._sum_row_data       = {}
     self._sum_adv_filters    = {}
+    self._sum_active_cell_entry = None
     _refresh_summary(self)
 
 
@@ -1826,6 +1839,9 @@ def _refresh_summary(self):
 
 
 def _load_and_render(self):
+    # If the grid is about to re-render (sort/search/paginate), close any
+    # inline editor so it can't "float" over the refreshed Treeview.
+    _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
     raw    = self._sum_search_var.get().strip()
     search = "" if "separate terms with commas" in raw else raw
     offset = self._sum_page * PAGE_SIZE
@@ -1877,11 +1893,13 @@ def _update_pagination(self, total: int):
 
 
 def _page_prev(self):
+    _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
     if self._sum_page > 0:
         self._sum_page -= 1; _load_and_render(self)
 
 
 def _page_next(self):
+    _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
     total_pages = max(1, -(-self._sum_total_rows // PAGE_SIZE))
     if self._sum_page + 1 < total_pages:
         self._sum_page += 1; _load_and_render(self)
@@ -1897,6 +1915,7 @@ def _fmt_money(val) -> str:
 
 
 def _render_tree(self, rows):
+    _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
     self._sum_tree.delete(*self._sum_tree.get_children())
     self._sum_row_data = {}
 
@@ -1937,6 +1956,7 @@ def _render_tree(self, rows):
 
 
 def _sort_by(self, col_key: str):
+    _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
     # ── Virtual columns cannot be sorted by DB; fall back to name ─────
     if col_key in _VIRTUAL_COLS:
         col_key = "applicant_name"
@@ -1960,6 +1980,253 @@ def _sort_by(self, col_key: str):
 #  ROW INTERACTION (including CHANGE 3 + CHANGE 5)
 # ═══════════════════════════════════════════════════════════════════════
 
+def _teardown_summary_cell_entry(app, entry: tk.Entry | None) -> None:
+    """Close an inline summary cell editor without running its FocusOut commit."""
+    if entry is None:
+        return
+    try:
+        if not entry.winfo_exists():
+            return
+        for seq in ("<FocusOut>", "<Return>", "<KP_Enter>", "<Escape>", "<Tab>"):
+            try:
+                entry.unbind(seq)
+            except tk.TclError:
+                pass
+        entry.destroy()
+    except tk.TclError:
+        pass
+    if getattr(app, "_sum_active_cell_entry", None) is entry:
+        app._sum_active_cell_entry = None
+
+
+def _set_summary_edit_lock(self, locked: bool, reason: str = "") -> None:
+    """
+    While locked, users can still sort/scroll/search, but cannot open a new
+    inline cell editor until the pending DB save finishes.
+    """
+    self._sum_edit_locked = bool(locked)
+    try:
+        if locked:
+            self._sum_tree.configure(cursor="watch")
+            if hasattr(self, "_sum_save_status_lbl"):
+                self._sum_save_status_lbl.config(
+                    text="Saving to database…", fg=ACCENT_GOLD)
+        else:
+            self._sum_tree.configure(cursor="")
+    except Exception:
+        pass
+
+
+def _summary_ui_dispatch(self, fn) -> None:
+    """Enqueue a UI callback to run on the Tk main thread."""
+    try:
+        q = getattr(self, "_sum_bg_queue", None)
+        if q is None:
+            return
+        q.put(fn)
+    except Exception:
+        pass
+
+
+def _start_summary_ui_poller(self) -> None:
+    if getattr(self, "_sum_bg_poller_started", False):
+        return
+    self._sum_bg_poller_started = True
+
+    def _poll():
+        q = getattr(self, "_sum_bg_queue", None)
+        if q is not None:
+            try:
+                while True:
+                    fn = q.get_nowait()
+                    try:
+                        if callable(fn):
+                            fn()
+                    except Exception:
+                        pass
+            except queue.Empty:
+                pass
+        try:
+            self.after(80, _poll)
+        except Exception:
+            self._sum_bg_poller_started = False
+
+    try:
+        self.after(80, _poll)
+    except Exception:
+        self._sum_bg_poller_started = False
+
+
+def _summary_display_from_raw(col_id: str, raw_value: str) -> tuple[str, float | None]:
+    """
+    Convert user-edited raw text into:
+      - display string (as shown in Treeview)
+      - parsed numeric value for monetary cols (else None)
+    Mirrors _db_update_cell formatting so UI can update immediately.
+    """
+    if col_id in _MONETARY_COLS:
+        cleaned = re.sub(r"[^\d.]", "", (raw_value or "").replace(",", "").strip())
+        if cleaned == "":
+            return "—", None
+        val = float(cleaned)  # may raise ValueError (handled by caller)
+        return f"P{val:,.2f}", val
+    txt = (raw_value or "").strip()
+    return (txt if txt else "—"), None
+
+
+def _summary_virtual_display_and_store(raw_value: str) -> tuple[str, str]:
+    """
+    For virtual cols, normalise user entry to the app's separator format.
+    Returns:
+      - display_val to show in the tree ("  ·  " separated, or "—")
+      - store_raw to send to _db_update_virtual_cell (same format)
+    """
+    s = (raw_value or "").strip()
+    if not s or s in ("—",):
+        return "—", ""
+    # Allow users to type multi-line; convert to separator format.
+    s = s.replace("\r\n", "\n")
+    parts = [p.strip() for p in re.split(r"\n+| {2}· {2}", s) if p.strip()]
+    joined = "  ·  ".join(parts)
+    return (joined if joined else "—"), (joined if joined else "")
+
+
+def _summary_tree_cell_bbox(tree: ttk.Treeview, iid: str, col_name: str):
+    """Bounding box for a data cell; retries after scroll. Returns (x,y,w,h) or None."""
+    tree.focus(iid)
+    tree.selection_set(iid)
+    for _ in range(3):
+        tree.update_idletasks()
+        b = tree.bbox(iid, col_name)
+        if b:
+            return b
+        tree.see(iid)
+    try:
+        n = TREE_COLS.index(col_name) + 1
+        tree.update_idletasks()
+        return tree.bbox(iid, f"#{n}")
+    except (ValueError, tk.TclError):
+        return None
+
+
+def _summary_edit_values_equivalent(col_id: str, before: str, after: str) -> bool:
+    """True if the inline editor value is unchanged from when editing started."""
+    if col_id in _MONETARY_COLS:
+        def _num_part(s: str) -> str:
+            s = (s or "").strip()
+            if s in ("—", "–", "-", ""):
+                return ""
+            return re.sub(r"[^\d.]", "", s.replace(",", ""))
+
+        b, a = _num_part(before), _num_part(after)
+        if not b and not a:
+            return True
+        try:
+            return float(b) == float(a)
+        except ValueError:
+            return before.strip() == after.strip()
+    b = (before or "").strip().replace("\r\n", "\n")
+    a = (after or "").strip().replace("\r\n", "\n")
+    return b == a
+
+
+def _confirm_cell_modify(self) -> bool:
+    """
+    Frameless modal: navy bar is the window top (no OS title bar).
+    Shown after the user edits a cell and commits, before persisting to the DB.
+    Returns True if the user clicks Confirm, False for Cancel or ✕.
+    """
+    result = [False]
+    win = tk.Toplevel(self)
+    win.title("Confirm Edit")    # ← ADD this
+    win.configure(bg=CARD_WHITE)
+    win.resizable(False, False)
+    win.transient(self)
+    win.grab_set()
+    win.lift(self)
+    win.focus_force()
+
+    p_x = self.winfo_rootx()
+    p_y = self.winfo_rooty()
+    p_w = self.winfo_width()
+    p_h = self.winfo_height()
+    w_w, w_h = 420, 168
+    win.geometry(
+        f"{w_w}x{w_h}+{p_x + (p_w - w_w) // 2}+{p_y + (p_h - w_h) // 2}")
+
+    shell = tk.Frame(win, bg=BORDER_MID)
+    shell.pack(fill="both", expand=True, padx=1, pady=1)
+    root = tk.Frame(shell, bg=CARD_WHITE)
+    root.pack(fill="both", expand=True)
+
+    def _finish(ok: bool):
+        result[0] = ok
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    hdr = tk.Frame(root, bg=NAVY_DEEP)
+    hdr.pack(fill="x")
+    hdr_row = tk.Frame(hdr, bg=NAVY_DEEP)
+    hdr_row.pack(fill="x", padx=(14, 6), pady=(10, 10))
+    tk.Label(
+        hdr_row, text="Confirm edit",
+        font=("Segoe UI", 11, "bold"), fg=WHITE, bg=NAVY_DEEP,
+    ).pack(side="left")
+    close_lbl = tk.Label(
+        hdr_row, text="✕", font=("Segoe UI", 11, "bold"),
+        fg="#8DA8C8", bg=NAVY_DEEP, cursor="hand2", padx=6, pady=0)
+    close_lbl.pack(side="right")
+    close_lbl.bind("<Enter>", lambda e: close_lbl.config(fg=WHITE))
+    close_lbl.bind("<Leave>", lambda e: close_lbl.config(fg="#8DA8C8"))
+    close_lbl.bind("<Button-1>", lambda e: _finish(False))
+
+    body = tk.Frame(root, bg=CARD_WHITE)
+    body.pack(fill="both", expand=True, padx=18, pady=(14, 16))
+    tk.Label(
+        body,
+        text="Are you sure you want to modify this cell?",
+        font=("Segoe UI", 10),
+        fg=TXT_NAVY,
+        bg=CARD_WHITE,
+        wraplength=380,
+        justify="left",
+    ).pack(anchor="w")
+
+    btn_f = tk.Frame(body, bg=CARD_WHITE)
+    btn_f.pack(fill="x", pady=(16, 0))
+
+    ctk.CTkButton(
+        btn_f, text="Cancel", command=lambda: _finish(False),
+        width=92, height=30, corner_radius=6,
+        fg_color="#E8ECF2", hover_color="#DDE2EA",
+        text_color=TXT_NAVY, font=FF(8, "bold"),
+    ).pack(side="right", padx=(8, 0))
+    ctk.CTkButton(
+        btn_f, text="Confirm", command=lambda: _finish(True),
+        width=92, height=30, corner_radius=6,
+        fg_color=LIME_MID, hover_color=LIME_BRIGHT,
+        text_color=TXT_ON_LIME, font=FF(8, "bold"),
+    ).pack(side="right")
+
+    win.bind("<Escape>", lambda e: _finish(False))
+
+    try:
+        # Even if something goes wrong, never leave a global grab behind.
+        win.wait_window(win)
+    finally:
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+    return result[0]
+
+
 # ── CHANGE 3 (add _start_cell_edit) ───────────────────────────────────
 def _start_cell_edit(self, iid: str, col_id: str):
     """
@@ -1967,26 +2234,27 @@ def _start_cell_edit(self, iid: str, col_id: str):
     cell so the user can type a new value.
 
     Behaviour:
-      <Return> or <KP_Enter>  — commit and close
-      <Tab>                   — commit and move to next editable column
+      <Return> or <KP_Enter>  — confirm dialog (if changed), then save and close
+      <Tab>                   — same, then move to next editable column
       <Escape>                — cancel, restore original value
-      FocusOut                — commit and close
+      FocusOut                — same as Return (if focus leaves the cell)
     """
     if col_id not in _EDITABLE_COLS:
+        return
+    if getattr(self, "_sum_edit_locked", False):
         return
 
     tree   = self._sum_tree
     row_id = int(iid)
 
+    prev_entry = getattr(self, "_sum_active_cell_entry", None)
+    if prev_entry is not None:
+        _teardown_summary_cell_entry(self, prev_entry)
+
     # ── Get the cell's pixel bounding box ─────────────────────────────
-    bbox = tree.bbox(iid, col_id)
+    bbox = _summary_tree_cell_bbox(tree, iid, col_id)
     if not bbox:
-        # Row is off-screen — scroll it into view first, then retry once
-        tree.see(iid)
-        tree.update_idletasks()
-        bbox = tree.bbox(iid, col_id)
-        if not bbox:
-            return
+        return
     x, y, width, height = bbox
 
     # ── Current raw value ─────────────────────────────────────────────
@@ -2022,6 +2290,7 @@ def _start_cell_edit(self, iid: str, col_id: str):
         highlightcolor=LIME_BRIGHT,
     )
     entry.place(x=x, y=y, width=max(width, 120), height=height)
+    self._sum_active_cell_entry = entry
     entry.focus_set()
     entry.select_range(0, "end")
 
@@ -2034,87 +2303,135 @@ def _start_cell_edit(self, iid: str, col_id: str):
     def _commit(event=None):
         if committed[0]:
             return
-        committed[0] = True
         new_raw = var.get()
+
+        if _summary_edit_values_equivalent(col_id, cur_edit, new_raw):
+            committed[0] = True
+            entry.destroy()
+            return
+
+        if not _confirm_cell_modify(self):
+            entry.focus_set()
+            return
+
+        # ── Optimistic UI update (fast) + background DB write (no UI freeze) ──
         try:
             if col_id in _VIRTUAL_TO_JSON:
-                display_val = _db_update_virtual_cell(row_id, col_id, new_raw)
-            elif col_id in {"income_items", "business_items", "household_items"}:
-                display_val = _db_update_cell(row_id, col_id, new_raw)
+                display_val, store_raw = _summary_virtual_display_and_store(new_raw)
+                parsed_num = None
             else:
-                display_val = _db_update_cell(row_id, col_id, new_raw)
+                display_val, parsed_num = _summary_display_from_raw(col_id, new_raw)
+                store_raw = new_raw
         except ValueError as exc:
-            committed[0] = False   # allow re-edit after validation error
             entry.config(bg="#FFE0E0", highlightbackground=ACCENT_RED)
             messagebox.showerror("Invalid Value", str(exc))
             entry.focus_set()
             return
 
-        # Patch the in-memory row cache so the detail window stays current
+        committed[0] = True
+
+        # Update just this one cell in the treeview immediately — no full reload
+        vals = list(tree.item(iid, "values"))
+        vals[col_index] = display_val
+        tree.item(iid, values=vals)
+
+        # Patch the in-memory row cache optimistically so detail window stays current
         if iid in self._sum_row_data:
             if col_id in _MONETARY_COLS:
-                cleaned = re.sub(r"[^\d.]", "",
-                                 new_raw.replace(",", "")).strip()
-                self._sum_row_data[iid][col_id] = \
-                    float(cleaned) if cleaned else None
+                self._sum_row_data[iid][col_id] = parsed_num
             elif col_id in _VIRTUAL_TO_JSON:
-                # Virtual cols live in results_json; update the cache directly
-                # so the detail window reflects the edit without a full reload.
-                self._sum_row_data[iid][col_id] = new_raw.strip() or None
-                # Also keep results_json in sync so _extract_* helpers work
-                # if the detail window re-reads from the row dict.
+                self._sum_row_data[iid][col_id] = (store_raw.strip() or None)
                 try:
-                    blob = json.loads(
-                        self._sum_row_data[iid].get("results_json") or "{}")
-                    items = [p.strip()
-                             for p in new_raw.strip().split("  ·  ")
-                             if p.strip()]
+                    blob = json.loads(self._sum_row_data[iid].get("results_json") or "{}")
+                    items = [p.strip() for p in (store_raw or "").split("  ·  ") if p.strip()]
                     if col_id == "spouse_info":
-                        plain  = [it for it in items
-                                  if not it.startswith("Office: ")]
-                        office = [it[len("Office: "):] for it in items
-                                  if it.startswith("Office: ")]
-                        blob.setdefault("cibi_spouse", {})["items"]        = plain
+                        plain  = [it for it in items if not it.startswith("Office: ")]
+                        office = [it[len("Office: "):] for it in items if it.startswith("Office: ")]
+                        blob.setdefault("cibi_spouse", {})["items"] = plain
                         blob.setdefault("cibi_spouse_office", {})["items"] = office
                     else:
                         json_key, sub_key = _VIRTUAL_TO_JSON[col_id]
                         blob.setdefault(json_key, {})[sub_key] = items
-                    self._sum_row_data[iid]["results_json"] = \
-                        json.dumps(blob, ensure_ascii=False)
+                    self._sum_row_data[iid]["results_json"] = json.dumps(blob, ensure_ascii=False)
                 except Exception:
                     pass
             else:
-                self._sum_row_data[iid][col_id] = new_raw.strip() or None
-
-        # Update just this one cell in the treeview — no full reload
-        # Update just this one cell in the treeview — no full reload
-        vals = list(tree.item(iid, "values"))
-        old_display = vals[col_index]
-        vals[col_index] = display_val
-        tree.item(iid, values=vals)
+                self._sum_row_data[iid][col_id] = (store_raw.strip() or None)
 
         entry.destroy()
-        _update_stats(self)   # keep the aggregate stat pills in sync
+        _update_stats(self)
 
-        # ── Audit log ─────────────────────────────────────────────────
-        applicant = self._sum_row_data.get(iid, {}).get("applicant_name", "") or f"id={row_id}"
-        _log_action(self, "edit_cell",
-                    f"[{col_id}] '{old_display}' → '{display_val}'  ({applicant})")
-        vals[col_index] = display_val
-        tree.item(iid, values=vals)
+        _set_summary_edit_lock(self, True, "saving")
+        t0 = time.perf_counter()
+        prior_display = cur_display
+        prior_raw_cache = None
+        if iid in self._sum_row_data:
+            prior_raw_cache = self._sum_row_data[iid].get(col_id)
 
-        entry.destroy()
-        _update_stats(self)   # keep the aggregate stat pills in sync
+        def _worker():
+            err = None
+            try:
+                if col_id in _VIRTUAL_TO_JSON:
+                    _db_update_virtual_cell(row_id, col_id, store_raw)
+                else:
+                    _db_update_cell(row_id, col_id, store_raw)
+            except Exception as e:
+                err = e
+
+            def _done():
+                _set_summary_edit_lock(self, False)
+                if err:
+                    # Revert UI + cache on failure
+                    try:
+                        vals2 = list(tree.item(iid, "values"))
+                        vals2[col_index] = prior_display
+                        tree.item(iid, values=vals2)
+                    except Exception:
+                        pass
+                    if iid in self._sum_row_data:
+                        self._sum_row_data[iid][col_id] = prior_raw_cache
+                    messagebox.showerror("Save Failed", str(err))
+                else:
+                    # ── Audit log on success ───────────────────────────
+                    try:
+                        applicant = (self._sum_row_data.get(iid, {})
+                                     .get("applicant_name", "") or f"id={row_id}")
+                        _log_action(self, "edit_cell",
+                                    f"[{col_id}] '{prior_display}' → '{display_val}'  ({applicant})")
+                    except Exception:
+                        pass
+                    if hasattr(self, "_sum_save_status_lbl"):
+                        ms = int((time.perf_counter() - t0) * 1000)
+                        self._sum_save_status_lbl.config(
+                            text=f"Saved to database ({ms} ms)", fg=ACCENT_SUCCESS)
+                        try:
+                            if getattr(self, "_sum_save_status_after", None):
+                                self.after_cancel(self._sum_save_status_after)
+                        except Exception:
+                            pass
+                        self._sum_save_status_after = self.after(
+                            1600, lambda: self._sum_save_status_lbl.config(text=""))
+
+            _summary_ui_dispatch(self, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _cancel(event=None):
         committed[0] = True
         entry.destroy()
 
+    def _on_focus_out(event=None):
+        # Avoid commit-on-blur loops while users move across cells.
+        # Commit remains explicit via Enter/Tab; blur just closes the editor.
+        if committed[0]:
+            return
+        _cancel()
+
     def _tab_next(event=None):
         """Commit and jump to the next editable column on the same row."""
         _commit()
         if not committed[0]:
-            return   # commit was blocked by a validation error
+            return "break"   # validation error or confirm cancelled
         # Find the next editable column to the right
         start = col_index + 1
         for next_idx in range(start, len(TREE_COLS)):
@@ -2128,12 +2445,21 @@ def _start_cell_edit(self, iid: str, col_id: str):
     entry.bind("<KP_Enter>", _commit)
     entry.bind("<Escape>",   _cancel)
     entry.bind("<Tab>",      _tab_next)
-    entry.bind("<FocusOut>", _commit)
+    entry.bind("<FocusOut>", _on_focus_out)
 
     # Restore mousewheel when the entry is destroyed
-    entry.bind("<Destroy>", lambda e: tree.bind_all(
-        "<MouseWheel>",
-        lambda ev: tree.yview_scroll(int(-1 * (ev.delta / 120)), "units")))
+    def _on_entry_destroy(e):
+        try:
+            tree.bind_all(
+                "<MouseWheel>",
+                lambda ev: tree.yview_scroll(
+                    int(-1 * (ev.delta / 120)), "units"))
+        except tk.TclError:
+            pass
+        if getattr(self, "_sum_active_cell_entry", None) is entry:
+            self._sum_active_cell_entry = None
+
+    entry.bind("<Destroy>", _on_entry_destroy)
 
 
 # ── CHANGE 5 (replace _on_tree_double_click and add _on_tree_return_key) ──
@@ -2220,7 +2546,22 @@ def _open_detail_window(self, row: dict):
     canvas.bind_all("<MouseWheel>",
                     lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
     _build_detail_panel(self, row, body)
-    ctk.CTkButton(body, text="Close", command=win.destroy,
+
+    def _close():
+        # Prevent "stuck grab" UI lockups after closing the detail window.
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    win.protocol("WM_DELETE_WINDOW", _close)
+    win.bind("<Escape>", lambda e: _close())
+
+    ctk.CTkButton(body, text="Close", command=_close,
                   width=100, height=32, corner_radius=7,
                   fg_color=NAVY_LIGHT, hover_color=NAVY_PALE,
                   text_color=WHITE, font=FF(9, "bold")).pack(pady=(12, 16))
@@ -2387,11 +2728,7 @@ def _delete_row(self, row_id: int):
     if not messagebox.askyesno("Delete Record",
             "Remove this applicant from the database?\n\nThis cannot be undone."):
         return
-    applicant = next(
-        (r.get("applicant_name", "") for iid, r in self._sum_row_data.items()
-         if r.get("id") == row_id or iid == str(row_id)), f"id={row_id}")
     _db_delete_row(row_id)
-    _log_action(self, "delete_row", f"Deleted applicant: '{applicant}' (id={row_id})")
     _refresh_summary(self)
 
 def _advanced_delete(self):
@@ -2560,9 +2897,6 @@ def _advanced_delete(self):
                 icon="warning"):
             return
         cleared = _db_clear_column(db_col, raw, match_mode.get())
-        _log_action(self, "adv_delete",
-                    f"Cleared column [{col_display}] on {cleared} row(s)"
-                    + (f" where value matched: '{raw}'" if raw else " (all rows)"))
         win.destroy()
         _refresh_summary(self)
         messagebox.showinfo("Advanced Delete",
@@ -2647,7 +2981,6 @@ def _clear_all(self):
             icon="warning"):
         return
     _db_clear_all()
-    _log_action(self, "clear_all", f"Cleared all {total} applicant record(s) from database")
     _refresh_summary(self)
 
 
@@ -2667,8 +3000,6 @@ def _run_dedup(self):
         try:
             removed = _db_deduplicate_client_ids()
             self.after(0, lambda: _refresh_summary(self))
-            self.after(0, lambda r=removed: _log_action(
-                self, "dedup", f"Deduplication complete — {r} duplicate row(s) removed"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_dedup_btn, "✓  Done!", 2500),
                 messagebox.showinfo(
@@ -2870,10 +3201,6 @@ def _import_amort_file(self):
                 if len(skipped_names) > 10:
                     msg += f"  … and {len(skipped_names) - 10} more"
 
-            total_amort_updated = len(updated_by_id) + len(updated_by_name) + len(updated_relaxed)
-            self.after(0, lambda n=total_amort_updated, sk=len(skipped_names): _log_action(
-                self, "import_amort",
-                f"Amort import: {n} record(s) updated, {sk} skipped — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_amort_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Amort. Import Result", msg)
@@ -3167,9 +3494,6 @@ def _import_other_data_file(self):
                 if len(skipped_no_match) > 10:
                     msg += f"  … and {len(skipped_no_match) - 10} more"
 
-            self.after(0, lambda n=total_updated, sk=len(skipped_no_match): _log_action(
-                self, "import_other_data",
-                f"Other Data import: {n} record(s) updated, {sk} unmatched — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_other_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Other Data Import Result", msg)
@@ -3815,11 +4139,6 @@ def _import_ploan_file(self):
                 if len(match_details) > 25:
                     msg += f"  … and {len(match_details) - 25} more\n"
 
-            self.after(0, lambda a=cid_assigned_count, u=cid_updated_count,
-                              b=backfill_assigned, w=other_data_updated: _log_action(
-                self, "import_ploan",
-                f"P.Loan import: {a} CIDs assigned, {u} confirmed, {b} backfilled, "
-                f"{w} data row(s) written — file: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_import_ploan_btn, "✓  Done!", 2500),
                 messagebox.showinfo("P.Loan Import Result", msg)
@@ -3961,10 +4280,6 @@ def _merge_db_files(self):
                     msg += (f"  ✓  {fname}  →  {ins:,} inserted, "
                             f"{pat:,} patched, {skp:,} skipped\n")
 
-            self.after(0, lambda i=total_inserted, p=total_patched, s=total_skipped: _log_action(
-                self, "merge_db",
-                f"Merge DB: {i} inserted, {p} patched, {s} skipped — "
-                f"{len(paths)} file(s): {', '.join(Path(p_).name for p_ in paths)}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_merge_db_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Merge DB Result", msg)
@@ -4073,8 +4388,6 @@ def _export_csv(self):
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
             writer.writerows(flat)
-        _log_action(self, "export_csv",
-                    f"Exported {len(flat):,} record(s) to CSV: {Path(path).name}")
         _flash_btn(self, self._sum_export_csv_btn, "✓  Saved!", 2000)
     except Exception as e:
         _flash_btn(self, self._sum_export_csv_btn, f"Error: {e}", 3000)
@@ -4251,9 +4564,6 @@ def _export_excel(self):
             ws.freeze_panes = "A2"
             wb.save(path)
 
-            self.after(0, lambda n=len(flat), h=len(headers): _log_action(
-                self, "export_excel",
-                f"Exported {n:,} record(s), {h} column(s) to Excel: {Path(path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_export_xl_btn, "✓  Saved!", 2000),
                 messagebox.showinfo("Export Excel",
@@ -4767,10 +5077,6 @@ def _validate_clients(self):
             msg += f"Match Rate                 : {rate}\n\n"
             msg += f"Report saved to:\n{out_path}"
 
-            self.after(0, lambda m=n_matched, u=n_unmatched, nd=n_notindb: _log_action(
-                self, "validate_clients",
-                f"Validation: {m} matched, {u} unmatched, {nd} not in DB — "
-                f"ref file: {Path(path).name}, report: {Path(out_path).name}"))
             self.after(0, lambda: (
                 _flash_btn(self, self._sum_validate_btn, "✓  Done!", 2500),
                 messagebox.showinfo("Validation Result", msg)
@@ -4806,6 +5112,11 @@ def _flash_btn(self, btn, msg: str, ms: int):
 
 
 def lookup_summary_notify(self):
+    # Do not refresh while a cell edit is in flight — a full re-render
+    # would wipe _sum_row_data and destroy the in-progress treeview item,
+    # making the row un-editable until the next manual refresh.
+    if getattr(self, "_sum_edit_locked", False):
+        return
     if getattr(self, "_current_tab", "") == "lookup_summary":
         _refresh_summary(self)
     elif hasattr(self, "_sum_stat_labels"):

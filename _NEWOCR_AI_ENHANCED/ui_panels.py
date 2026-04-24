@@ -139,8 +139,6 @@ _NAV_ITEMS = [
     ("extract",        "📄",  "Extracted",    None),
     ("analysis",       "🏦",  "CIBI Analysis",None),
     ("summary",        "📊",  "Summary",      None),
-    ("aiprompt",       "🤖",  "AI Chat",      "AI"),
-    ("samples",        "🗂",  "Samples",      None),
 ]
 
 _NAV_ITEMS_2 = [
@@ -385,7 +383,7 @@ def _build_left(self, p):
     _ROLE_TABS = {
         "super admin": {
             "cibi", "extract", "analysis", "summary",
-            "aiprompt", "samples", "lookup", "lookup_summary", "lu_analysis",
+            "lookup", "lookup_summary", "lu_analysis",
             "logs", "accounts",
         },
         "user": {
@@ -701,9 +699,7 @@ def _build_right(self, p):
     self._configure_analysis_tags(self._analysis_box)
 
     self._build_summary_panel(card)
-    self._build_ai_prompt_panel(card)
     self._build_cibi_output_panel(card)
-    self._build_samples_panel(card)
     self._build_lookup_panel(card)
     self._build_lookup_summary_panel(card)
     self._build_lu_analysis_panel(card)
@@ -1020,8 +1016,6 @@ _TAB_TITLES = {
     "extract":         "Extracted Content",
     "analysis":        "CIBI Analysis",
     "summary":         "Summary",
-    "aiprompt":        "AI Chat",
-    "samples":         "Samples",
     "lookup":          "Look-Up",
     "lookup_summary":  "LU Summary",
     "lu_analysis":     "LU Analysis",
@@ -1030,6 +1024,7 @@ _TAB_TITLES = {
 }
 
 def _switch_tab(self, tab):
+    prev_tab = getattr(self, "_current_tab", None)
     self._current_tab = tab
 
     if hasattr(self, '_nav_btns'):
@@ -1042,9 +1037,7 @@ def _switch_tab(self, tab):
     self._txt_frame.pack_forget()
     self._analysis_frame.pack_forget()
     self._summary_frame.pack_forget()
-    self._aiprompt_frame.pack_forget()
     self._cibi_output_frame.pack_forget()
-    self._samples_frame.pack_forget()
     self._lookup_frame.pack_forget()
     self._lookup_summary_frame.pack_forget()
     self._lu_analysis_frame.pack_forget()
@@ -1059,8 +1052,6 @@ def _switch_tab(self, tab):
         self._summary_frame.pack(fill="both", expand=True)
     elif tab == "cibi":
         self._cibi_output_frame.pack(fill="both", expand=True)
-    elif tab == "samples":
-        self._samples_frame.pack(fill="both", expand=True)
     elif tab == "lookup":
         self._lookup_frame.pack(fill="both", expand=True)
     elif tab == "lookup_summary":
@@ -1072,12 +1063,13 @@ def _switch_tab(self, tab):
         self._logs_frame.pack(fill="both", expand=True)
     elif tab == "accounts":                                    # ← ADD THIS
         self._accounts_frame.pack(fill="both", expand=True)
-    else:  # aiprompt
-        self._aiprompt_frame.pack(fill="both", expand=True)
-        self.after(50, self._chat_input.focus_set)
+    else:
+        # Default/fallback: return to CIBI Mode if an unknown tab key is requested.
+        self._cibi_output_frame.pack(fill="both", expand=True)
 
     if self._search_var.get().strip() and tab in ("extract", "analysis"):
         self._do_search()
+
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1090,7 +1082,6 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._txt_frame.pack_forget()
         self._analysis_frame.pack_forget()
         self._summary_frame.pack_forget()
-        self._aiprompt_frame.pack_forget()
         self._cibi_output_frame.pack_forget()
         self._lookup_frame.pack_forget()
         self._lookup_summary_frame.pack_forget()
@@ -1131,7 +1122,7 @@ def _show_loader(self, show, stage_text="Processing…"):
         elif self._current_tab == "accounts":                      # ← ADD THIS
             self._accounts_frame.pack(fill="both", expand=True)
         else:
-            self._aiprompt_frame.pack(fill="both", expand=True)
+            self._cibi_output_frame.pack(fill="both", expand=True)
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
         self._topbar_status.config(text="● Ready", fg=_SB_ACCENT, bg="#1A2F47")
         if hasattr(self, '_status_sidebar_lbl') and not getattr(self, '_is_closing', False):

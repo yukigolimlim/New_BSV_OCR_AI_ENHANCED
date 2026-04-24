@@ -1516,11 +1516,22 @@ def extract_all_unified(
     saln_prefix    = _few_shot_block("saln",    saln_text)    if has_saln    else ""
     itr_prefix     = _few_shot_block("itr",     itr_text)     if has_itr     else ""
 
-    prompt = _UNIFIED_PROMPT.format(
-        cic_text     = cic_section,
-        payslip_text = (payslip_prefix + payslip_text[:15_000]) if has_payslip else "NOT PROVIDED",
-        saln_text    = (saln_prefix    + saln_text[:20_000])    if has_saln    else "NOT PROVIDED",
-        itr_text     = (itr_prefix     + itr_text[:15_000])     if has_itr     else "NOT PROVIDED",
+    # Use direct placeholder replacement instead of str.format().
+    # Prompt content loaded from cibi_prompts.md may contain literal braces
+    # (e.g. "{}" or "{ ... }"), which can crash .format with IndexError.
+    prompt = _UNIFIED_PROMPT
+    prompt = prompt.replace("{cic_text}", cic_section)
+    prompt = prompt.replace(
+        "{payslip_text}",
+        (payslip_prefix + payslip_text[:15_000]) if has_payslip else "NOT PROVIDED",
+    )
+    prompt = prompt.replace(
+        "{saln_text}",
+        (saln_prefix + saln_text[:20_000]) if has_saln else "NOT PROVIDED",
+    )
+    prompt = prompt.replace(
+        "{itr_text}",
+        (itr_prefix + itr_text[:15_000]) if has_itr else "NOT PROVIDED",
     )
 
     # TL-2: Unified Gemini call with thinking_budget=1024, max_tokens=24_576
