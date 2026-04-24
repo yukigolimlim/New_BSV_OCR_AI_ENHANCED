@@ -9,6 +9,9 @@ import customtkinter as ctk
 from pathlib import Path
 from tkinter import filedialog
 from datetime import datetime
+# ── ADDED IMPORT for summary tab integration ──────────────────────────
+from summary_tab import db_save_applicant, lookup_summary_notify
+from admin_logs import insert_log
 
 from app_constants import (
     NAVY_DEEP, NAVY_LIGHT, NAVY_MID, NAVY_PALE, NAVY_MIST, NAVY_GHOST,
@@ -626,6 +629,9 @@ def _lookup_run(self):
     self._lookup_done_count = 0
 
     self._lookup_session_id = datetime.now().isoformat(timespec="seconds")
+    insert_log(self, "lookup_run",
+               f"Started Look-Up session {self._lookup_session_id} "
+               f"— {len(self._lookup_filepaths)} file(s)")
 
     self._lookup_run_btn.configure(state="disabled", text="Running…")
     self._lookup_prog_var.set(0.0)
@@ -687,6 +693,9 @@ def _lookup_worker(self):
                 self._lookup_prog_var.set(v))
 
     if not cancelled():
+        insert_log(self, "lookup_complete",
+                   f"Look-Up session complete — {done}/{total} processed, "
+                   f"{total - done} error(s)")
         with self._lookup_done_lock:
             done = self._lookup_done_count
         errors = total - done
@@ -715,6 +724,8 @@ def _process_single_file_safe(self, path: str, cancelled) -> None:
             _set_row_status(self, p, "error", f"Error: {e[:120]}"))
         self._lookup_file_data[path]["error"] = str(exc)
         self._lookup_file_data[path]["status"] = "error"
+        insert_log(self, "lookup_error",
+                   f"Look-Up error on file: '{Path(path).name}' — {str(exc)[:200]}")
         raise
 
 
