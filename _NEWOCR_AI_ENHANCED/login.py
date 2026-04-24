@@ -84,7 +84,7 @@ def db_check_login(email: str, password: str):
                 """,
                 (
                     user_id,
-                    email,
+                    username,
                     "LOGGED IN",
                     f"User '{username}' ({email}) successfully logged in to DocExtract Pro.",
                 )
