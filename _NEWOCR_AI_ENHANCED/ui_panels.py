@@ -473,13 +473,12 @@ def _build_left(self, p):
                 importlib.reload(sys.modules["login"])
             from login import LoginWindow
 
+            # In ui_panels.py _relaunch_app
             def _relaunch_app(user_id, username):
                 if "app" in sys.modules:
                     importlib.reload(sys.modules["app"])
                 from app import DocExtractorApp
-                app = DocExtractorApp()
-                app._current_user_id = user_id
-                app._current_username = username
+                app = DocExtractorApp(user_id=user_id, username=username)
                 app.mainloop()
 
             login = LoginWindow(on_success=_relaunch_app)

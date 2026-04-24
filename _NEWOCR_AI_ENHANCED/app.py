@@ -105,8 +105,10 @@ ctk.set_default_color_theme("blue")
 
 class DocExtractorApp(DocClassifierTabMixin, SamplesTabMixin, ctk.CTk):
 
-    def __init__(self):
+    def __init__(self, user_id=None, username=None):
         super().__init__()
+        self._current_user_id = user_id
+        self._current_username = username
         register_fonts()
         global _FONT_FAMILY
         import app_constants as _ac

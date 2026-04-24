@@ -34,11 +34,10 @@ import customtkinter as ctk
 from login import LoginWindow
 
 
+# In main.py
 def launch_main_app(user_id=None, username=None):
     from app import DocExtractorApp
-    DocExtractorApp._current_user_id = user_id
-    DocExtractorApp._current_username = username
-    app = DocExtractorApp()
+    app = DocExtractorApp(user_id=user_id, username=username)
     app.mainloop()
 
 

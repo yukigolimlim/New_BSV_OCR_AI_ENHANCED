@@ -53,7 +53,7 @@ _ACTION_COLORS = {
 }
 _ACTION_DEFAULT = ("#EDF1F7", "#3A4A5E")
 
-_PAGE_SIZE = 50
+_PAGE_SIZE = 20
 
 # Column config: (key, header, pixel_width, anchor)
 # pixel_width = 0 means "expand to fill remaining space"
