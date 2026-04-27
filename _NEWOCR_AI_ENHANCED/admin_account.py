@@ -511,7 +511,7 @@ def _open_add_dialog(self):
     status_var = tk.StringVar(value="active")
 
     for label, var, opts in [
-        ("Role",   role_var,   ["user", "admin", "super admin"]),
+        ("Role",   role_var,   ["super admin", "Account Officer", "Credit Risk Officer"]),
         ("Status", status_var, ["active", "inactive", "pending"]),
     ]:
         r = tk.Frame(body, bg=_PAGE_BG); r.pack(fill="x", pady=5)

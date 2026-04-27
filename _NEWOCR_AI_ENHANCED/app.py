@@ -391,6 +391,14 @@ class DocExtractorApp(DocClassifierTabMixin, ctk.CTk):
                 except Exception:
                     pass
         # ── Close shared DB connection ─────────────────────────────
+        # ── Close matplotlib figures (dashboard) ───────────────────
+        try:
+            import matplotlib.pyplot as plt
+            plt.close("all")
+        except Exception:
+            pass
+
+        # ── Close shared DB connection ─────────────────────────────
         if getattr(self, "db_conn", None) and not self.db_conn.closed:
             try:
                 self.db_conn.close()
