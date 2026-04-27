@@ -119,21 +119,12 @@ _trocr_lock        = threading.Lock()  # SP-4 / GPU-3
 # ── GPU availability helper ────────────────────────────────────────────────────
 
 def _cuda_available() -> bool:
-    """Return True if a CUDA-capable GPU is visible to the current process."""
-    # Try paddle first (most relevant for PaddleOCR / PPStructure)
+    """Return True if Paddle sees a CUDA-capable GPU."""
     try:
         import paddle
-        if paddle.device.cuda.device_count() > 0:
-            return True
+        return paddle.device.cuda.device_count() > 0
     except Exception:
-        pass
-    # Fallback: check via torch (used by TrOCR)
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except Exception:
-        pass
-    return False
+        return False
 
 
 def _use_gpu() -> bool:
@@ -142,28 +133,21 @@ def _use_gpu() -> bool:
 
     Priority:
       1. PADDLE_USE_GPU env var explicitly set -> honour it as a boolean.
-      2. Otherwise -> auto-detect CUDA availability.
+      2. Otherwise -> default to CPU (no startup CUDA probing/retries).
 
-    Logs a clear warning when GPU was requested but CUDA is unavailable.
+    This avoids startup lag on machines where CUDA/Torch libraries are
+    partially installed or mismatched.
     """
     env_val = os.getenv("PADDLE_USE_GPU", "").strip()
-    if env_val:
-        explicit = env_val == "1"
-        if explicit and not _cuda_available():
-            logger.warning(
-                "PADDLE_USE_GPU=1 requested but no CUDA GPU detected -- "
-                "falling back to CPU. Install the GPU build of PaddlePaddle "
-                "or set PADDLE_USE_GPU=0 to suppress this warning."
-            )
-            return False
-        return explicit
-    # Auto-detect
-    available = _cuda_available()
-    if available:
-        logger.info("GPU auto-detected -- enabling GPU acceleration for all OCR engines.")
-    else:
-        logger.info("No CUDA GPU detected -- running OCR engines on CPU.")
-    return available
+    explicit = (env_val == "1")
+    if not explicit:
+        return False
+    if not _cuda_available():
+        logger.warning(
+            "PADDLE_USE_GPU=1 requested but no CUDA GPU detected -- falling back to CPU."
+        )
+        return False
+    return True
 
 
 def _get_gemini():

@@ -1,0 +1,118 @@
+{
+  "clients": 494,
+  "high": 9,
+  "industries": 14,
+  "total_loan": 197940693.35,
+  "total_net": 27819104.710000012,
+  "series_loan": [
+    6,
+    2,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "series_net": [
+    0,
+    0,
+    0,
+    199,
+    103,
+    39,
+    35,
+    30,
+    16,
+    15,
+    11,
+    8
+  ],
+  "industry_low": [
+    0,
+    0,
+    0,
+    199,
+    103,
+    39,
+    35
+  ],
+  "industry_high": [
+    6,
+    2,
+    1,
+    0,
+    0,
+    0,
+    0
+  ],
+  "industry_names": [
+    "Mining and Quarrying",
+    "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle, Mining and Quarrying",
+    "Construction, Mining and Quarrying",
+    "Household Use",
+    "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle",
+    "Real Estate Activities",
+    "Transportation and Storage"
+  ],
+  "at_risk_names": [
+    "Mining and Quarrying",
+    "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle, Mining and Quarrying",
+    "Construction, Mining and Quarrying"
+  ],
+  "top_sector": "Other",
+  "high_rows": [
+    {
+      "client": "NESTOR M. BIGLETE JR.",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 279387.38,
+      "net_income": 46602.33
+    },
+    {
+      "client": "DELA CRUZ, RODEL ILAN",
+      "industry": "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle, Mining and Quarrying",
+      "loan_balance": 2105422.8,
+      "net_income": 87053.5
+    },
+    {
+      "client": "RONNIE JORDAN SAIN",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 163980.42,
+      "net_income": 104488.0
+    },
+    {
+      "client": "ALLAN Z. FRANCISCO",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 166075.56,
+      "net_income": 134014.27
+    },
+    {
+      "client": "ANNA FE LUMBIS RANARA",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 3245767.5,
+      "net_income": 161035.08
+    },
+    {
+      "client": "ANALYN ELNAR ANGELES",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 5760338.5,
+      "net_income": 174476.05
+    },
+    {
+      "client": "ROEL ILAN DELA CRUZ",
+      "industry": "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle, Mining and Quarrying",
+      "loan_balance": 2170995.2,
+      "net_income": 178794.17
+    },
+    {
+      "client": "JALIMAO, EVELYN SIAZON",
+      "industry": "Mining and Quarrying",
+      "loan_balance": 4759284.0,
+      "net_income": 185291.3
+    }
+  ]
+}

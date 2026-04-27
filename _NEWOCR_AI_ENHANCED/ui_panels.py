@@ -25,6 +25,7 @@ from doc_classifier_tab import (
 from lookup_tab import attach as _attach_lookup
 from summary_tab import attach as _attach_summary, _refresh_summary
 from lu_analysis_tab import attach as _attach_lu_analysis
+from dashboard_tab import attach as _attach_dashboard
 import admin_logs as _admin_logs_mod
 import admin_account as _admin_account_mod
 
@@ -107,26 +108,7 @@ def _build_topbar(self):
     )
     self._topbar_status.pack(side="right", padx=(0, 20), pady=14)
 
-    # Global zoom controls
-    zoom = tk.Frame(bar, bg=_SB_BG)
-    zoom.pack(side="right", padx=(0, 8), pady=10)
-    z_reset = tk.Label(zoom, text="⟳", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
-                       width=2, cursor="hand2")
-    z_reset.pack(side="left", padx=(0, 2))
-    z_minus = tk.Label(zoom, text="−", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
-                       width=2, cursor="hand2")
-    z_minus.pack(side="left")
-    self._zoom_lbl = tk.Label(zoom, text="100%", font=F(8, "bold"), fg=_SB_TXT_ACT, bg="#1A2F47",
-                              padx=6, pady=3)
-    self._zoom_lbl.pack(side="left", padx=3)
-    z_plus = tk.Label(zoom, text="+", font=F(10, "bold"), fg=_SB_TXT, bg=_SB_BG,
-                      width=2, cursor="hand2")
-    z_plus.pack(side="left")
-    z_minus.bind("<Button-1>", lambda _e: self._zoom_out() if hasattr(self, "_zoom_out") else None)
-    z_plus.bind("<Button-1>", lambda _e: self._zoom_in() if hasattr(self, "_zoom_in") else None)
-    # ⟳ = refresh/re-render current UI; % label still resets zoom.
-    z_reset.bind("<Button-1>", lambda _e: self._ui_refresh() if hasattr(self, "_ui_refresh") else None)
-    self._zoom_lbl.bind("<Button-1>", lambda _e: self._zoom_reset() if hasattr(self, "_zoom_reset") else None)
+    # Zoom controls removed (feature no longer used).
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -135,6 +117,7 @@ def _build_topbar(self):
 
 # (tab_key, icon, label, badge_text_or_None)
 _NAV_ITEMS = [
+    ("dashboard",      "🏠",  "Dashboard",    None),
     ("cibi",           "📋",  "CIBI Mode",    None),
     ("extract",        "📄",  "Extracted",    None),
     ("analysis",       "🏦",  "CIBI Analysis",None),
@@ -376,22 +359,26 @@ def _build_left(self, p):
 
     # ── Nav pills ─────────────────────────────────────────────────────
     self._nav_btns       = {}
-    self._active_tab_key = tk.StringVar(value="cibi")
+    self._active_tab_key = tk.StringVar(value="dashboard")
 
     # ── Role-based nav visibility ─────────────────────────────────────
     # Define which tabs each role can see
     _ROLE_TABS = {
         "super admin": {
+            "dashboard",
             "lookup_summary", "lu_analysis",
             "logs", "accounts",
         },
         "account officer": {
+            "dashboard",
             "cibi", "extract", "analysis", "summary",
         },
         "credit risk officer": {
+            "dashboard",
             "lookup", "lookup_summary", "lu_analysis",
         },
         "user": {          # ← Add this as the safe fallback
+            "dashboard",
             "cibi",
         },
     }
@@ -704,6 +691,7 @@ def _build_right(self, p):
     self._configure_analysis_tags(self._analysis_box)
 
     self._build_summary_panel(card)
+    self._build_dashboard_panel(card)
     self._build_cibi_output_panel(card)
     self._build_lookup_panel(card)
     self._build_lookup_summary_panel(card)
@@ -712,8 +700,8 @@ def _build_right(self, p):
     self._build_accounts_panel(card)
 
     self._put_placeholder()
-    self._current_tab = "cibi"
-    self._switch_tab("cibi")
+    self._current_tab = "dashboard"
+    self._switch_tab("dashboard")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1017,6 +1005,7 @@ def _put_placeholder(self):
 #  TAB SWITCHING
 # ─────────────────────────────────────────────────────────────────────
 _TAB_TITLES = {
+    "dashboard":       "Dashboard",
     "cibi":            "CIBI Mode",
     "extract":         "Extracted Content",
     "analysis":        "CIBI Analysis",
@@ -1039,6 +1028,7 @@ def _switch_tab(self, tab):
         self._page_title_lbl.config(text=_TAB_TITLES.get(tab, tab.title()))
 
     self._loader_frame.pack_forget()
+    self._dashboard_frame.pack_forget()
     self._txt_frame.pack_forget()
     self._analysis_frame.pack_forget()
     self._summary_frame.pack_forget()
@@ -1049,7 +1039,10 @@ def _switch_tab(self, tab):
     self._logs_frame.pack_forget()
     self._accounts_frame.pack_forget()
 
-    if tab == "extract":
+    if tab == "dashboard":
+        self._refresh_dashboard_from_lu()
+        self._dashboard_frame.pack(fill="both", expand=True)
+    elif tab == "extract":
         self._txt_frame.pack(fill="both", expand=True)
     elif tab == "analysis":
         self._analysis_frame.pack(fill="both", expand=True)
@@ -1084,6 +1077,7 @@ def _show_loader(self, show, stage_text="Processing…"):
     if getattr(self, '_is_closing', False):
         return
     if show:
+        self._dashboard_frame.pack_forget()
         self._txt_frame.pack_forget()
         self._analysis_frame.pack_forget()
         self._summary_frame.pack_forget()
@@ -1110,6 +1104,8 @@ def _show_loader(self, show, stage_text="Processing…"):
         self._loader_frame.pack_forget()
         if self._current_tab == "extract":
             self._txt_frame.pack(fill="both", expand=True)
+        elif self._current_tab == "dashboard":
+            self._dashboard_frame.pack(fill="both", expand=True)
         elif self._current_tab == "analysis":
             self._analysis_frame.pack(fill="both", expand=True)
         elif self._current_tab == "summary":
@@ -1278,6 +1274,8 @@ def _clear_search(self):
 #  COPY
 # ─────────────────────────────────────────────────────────────────────
 def _copy(self):
+    if self._current_tab == "dashboard":
+        return
     if self._current_tab == "extract":
         content = self._textbox.get("1.0", "end").strip()
     else:
@@ -1345,5 +1343,6 @@ def attach(cls):
     _attach_lookup(cls)
     _attach_summary(cls)
     _attach_lu_analysis(cls)
+    _attach_dashboard(cls)
     _admin_logs_mod.attach(cls)
     _admin_account_mod.attach(cls)

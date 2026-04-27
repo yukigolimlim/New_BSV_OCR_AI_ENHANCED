@@ -972,7 +972,7 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
                     rowheight=26, fieldbackground=_WHITE,
                     bordercolor=_BORDER_MID, font=("Segoe UI", 9))
     style.configure("LU.Treeview.Heading",
-                    background=_NAVY_MID, foreground=_WHITE,
+                    background=_NAVY_DEEP, foreground=_WHITE,
                     font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0)
     style.map("LU.Treeview.Heading", background=[("active", _NAVY_LIGHT)])
     style.map("LU.Treeview",

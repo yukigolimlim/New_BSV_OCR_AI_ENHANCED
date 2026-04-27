@@ -1371,10 +1371,10 @@ def _apply_tree_style():
         background=WHITE, foreground=TXT_NAVY, fieldbackground=WHITE,
         rowheight=36, font=("Segoe UI", 9), borderwidth=0, relief="flat")
     style.configure("Summary.Treeview.Heading",
-        background=HDR_BG, foreground=HDR_FG,
-        font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0, padding=(8, 8))
+        background=NAVY_DEEP, foreground=WHITE,
+        font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0, padding=(10, 8))
     style.map("Summary.Treeview.Heading",
-        background=[("active", "#7AB567")], relief=[("active", "flat")])
+        background=[("active", NAVY_LIGHT)], relief=[("active", "flat")])
     style.map("Summary.Treeview",
         background=[("selected", "#C8E6C9")], foreground=[("selected", NAVY_DEEP)])
 

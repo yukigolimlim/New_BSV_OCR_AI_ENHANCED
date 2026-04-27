@@ -330,6 +330,10 @@ def _lu_run_analysis(self):
         if getattr(self, "_loanbal_export_btn", None) is not None:
             self._loanbal_export_btn.configure(state="normal")
         _sim_populate(self)
+        if hasattr(self, "_persist_dashboard_snapshot_from_lu"):
+            self._persist_dashboard_snapshot_from_lu()
+        if hasattr(self, "_refresh_dashboard_from_lu"):
+            self._refresh_dashboard_from_lu()
     except Exception as exc:
         _lu_show_error(self, str(exc))
         self._lu_status_lbl.config(text="❌  Error during scan", fg=_ACCENT_RED)
@@ -405,6 +409,10 @@ def _lu_rescore_all(self):
         )
     # Keep the clients dict in sync
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}
+    if hasattr(self, "_persist_dashboard_snapshot_from_lu"):
+        self._persist_dashboard_snapshot_from_lu()
+    if hasattr(self, "_refresh_dashboard_from_lu"):
+        self._refresh_dashboard_from_lu()
 
 
 # ══════════════════════════════════════════════════════════════════════

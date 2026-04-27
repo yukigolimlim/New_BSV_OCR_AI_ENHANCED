@@ -1,11 +1,7 @@
 {
   "high_risk_industries": [
-    "Electricity, Gas, Steam and Air Conditioning Supply"
+    "Mining and Quarrying"
   ],
-  "product_risk_overrides": {
-    "business loan": "HIGH",
-    "purchase order loan": "HIGH",
-    "truck loan": "HIGH"
-  },
+  "product_risk_overrides": {},
   "expense_risk_overrides": {}
 }
