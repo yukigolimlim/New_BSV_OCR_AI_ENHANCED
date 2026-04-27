@@ -153,7 +153,8 @@ TABLE_COLS = [
     ("ao_name",             "AO Name",                             160, False, False),
 ]
 
-TREE_COLS = [c[0] for c in TABLE_COLS]
+_EDIT_ACTION_COL = "_edit_action"
+TREE_COLS = [c[0] for c in TABLE_COLS] + [_EDIT_ACTION_COL]
 
 LOOKUP_ROWS = [
     ("cibi_place_of_work",      "CI/BI Report",      "Office Address"),
@@ -1596,6 +1597,7 @@ def _build_lookup_summary_panel(self, parent):
     # Thread-safe UI callback channel for background DB writes
     self._sum_bg_queue = queue.Queue()
     self._sum_bg_poller_started = False
+    self._sum_save_inflight = False
     _start_summary_ui_poller(self)
 
     outer = tk.Frame(parent, bg=CARD_WHITE)
@@ -1796,6 +1798,9 @@ def _build_lookup_summary_panel(self, parent):
                                command=lambda c=db_col: _sort_by(self, c))
         self._sum_tree.column(db_col, width=width_px, minwidth=60,
                               anchor=anchor, stretch=False)
+    self._sum_tree.heading(_EDIT_ACTION_COL, text="Edit")
+    self._sum_tree.column(_EDIT_ACTION_COL, width=64, minwidth=54,
+                          anchor="center", stretch=False)
 
     self._sum_tree.tag_configure("even", background=ROW_BG_EVEN)
     self._sum_tree.tag_configure("odd",  background=ROW_BG_ODD)
@@ -1950,6 +1955,7 @@ def _render_tree(self, rows):
                 values.append(str(raw).replace("\n", "  ·  "))
             else:
                 values.append(str(raw))
+        values.append("✏")
         self._sum_tree.insert("", "end", iid=str(row_id),
                               values=values, tags=(tag,))
         self._sum_row_data[str(row_id)] = row
@@ -2021,9 +2027,14 @@ def _summary_ui_dispatch(self, fn) -> None:
     """Enqueue a UI callback to run on the Tk main thread."""
     try:
         q = getattr(self, "_sum_bg_queue", None)
-        if q is None:
+        if q is not None:
+            q.put(fn)
             return
-        q.put(fn)
+    except Exception:
+        pass
+    # Fallback path: if queue dispatch is unavailable, schedule directly.
+    try:
+        self.after(0, fn)
     except Exception:
         pass
 
@@ -2132,15 +2143,15 @@ def _summary_edit_values_equivalent(col_id: str, before: str, after: str) -> boo
 
 def _confirm_cell_modify(self) -> bool:
     """
-    Frameless modal: navy bar is the window top (no OS title bar).
+    Frameless modal with custom light header (no OS title bar / no X).
     Shown after the user edits a cell and commits, before persisting to the DB.
-    Returns True if the user clicks Confirm, False for Cancel or ✕.
+    Returns True if the user clicks Confirm, False for Cancel.
     """
     result = [False]
     win = tk.Toplevel(self)
-    win.title("Confirm Edit")    # ← ADD this
     win.configure(bg=CARD_WHITE)
     win.resizable(False, False)
+    win.overrideredirect(True)
     win.transient(self)
     win.grab_set()
     win.lift(self)
@@ -2170,24 +2181,21 @@ def _confirm_cell_modify(self) -> bool:
         except Exception:
             pass
 
-    hdr = tk.Frame(root, bg=NAVY_DEEP)
+    hdr = tk.Frame(root, bg="#E8EEF8")
     hdr.pack(fill="x")
-    hdr_row = tk.Frame(hdr, bg=NAVY_DEEP)
-    hdr_row.pack(fill="x", padx=(14, 6), pady=(10, 10))
     tk.Label(
-        hdr_row, text="Confirm edit",
-        font=("Segoe UI", 11, "bold"), fg=WHITE, bg=NAVY_DEEP,
-    ).pack(side="left")
-    close_lbl = tk.Label(
-        hdr_row, text="✕", font=("Segoe UI", 11, "bold"),
-        fg="#8DA8C8", bg=NAVY_DEEP, cursor="hand2", padx=6, pady=0)
-    close_lbl.pack(side="right")
-    close_lbl.bind("<Enter>", lambda e: close_lbl.config(fg=WHITE))
-    close_lbl.bind("<Leave>", lambda e: close_lbl.config(fg="#8DA8C8"))
-    close_lbl.bind("<Button-1>", lambda e: _finish(False))
+        hdr,
+        text="Confirm edit",
+        font=("Segoe UI", 10, "bold"),
+        fg=NAVY_MID,
+        bg="#E8EEF8",
+        padx=14,
+        pady=8,
+        anchor="w",
+    ).pack(fill="x")
 
     body = tk.Frame(root, bg=CARD_WHITE)
-    body.pack(fill="both", expand=True, padx=18, pady=(14, 16))
+    body.pack(fill="both", expand=True, padx=18, pady=(12, 14))
     tk.Label(
         body,
         text="Are you sure you want to modify this cell?",
@@ -2242,7 +2250,10 @@ def _start_cell_edit(self, iid: str, col_id: str):
     if col_id not in _EDITABLE_COLS:
         return
     if getattr(self, "_sum_edit_locked", False):
-        return
+        # Recover from stale lock state if no save is actually running.
+        if getattr(self, "_sum_save_inflight", False):
+            return
+        _set_summary_edit_lock(self, False, "stale_lock_recover")
 
     tree   = self._sum_tree
     row_id = int(iid)
@@ -2311,7 +2322,7 @@ def _start_cell_edit(self, iid: str, col_id: str):
             return
 
         if not _confirm_cell_modify(self):
-            entry.focus_set()
+            _cancel()
             return
 
         # ── Optimistic UI update (fast) + background DB write (no UI freeze) ──
@@ -2361,6 +2372,7 @@ def _start_cell_edit(self, iid: str, col_id: str):
         entry.destroy()
         _update_stats(self)
 
+        self._sum_save_inflight = True
         _set_summary_edit_lock(self, True, "saving")
         t0 = time.perf_counter()
         prior_display = cur_display
@@ -2379,6 +2391,7 @@ def _start_cell_edit(self, iid: str, col_id: str):
                 err = e
 
             def _done():
+                self._sum_save_inflight = False
                 _set_summary_edit_lock(self, False)
                 if err:
                     # Revert UI + cache on failure
@@ -2418,14 +2431,17 @@ def _start_cell_edit(self, iid: str, col_id: str):
 
     def _cancel(event=None):
         committed[0] = True
+        # Defensive cleanup in case a prior failed callback left a stale lock.
+        if not getattr(self, "_sum_save_inflight", False):
+            _set_summary_edit_lock(self, False, "cancel_cleanup")
         entry.destroy()
 
     def _on_focus_out(event=None):
-        # Avoid commit-on-blur loops while users move across cells.
-        # Commit remains explicit via Enter/Tab; blur just closes the editor.
+        # Auto-commit on blur so edits are saved/logged even without Enter.
+        # Defer by one tick so focus settles first (avoids duplicate commits).
         if committed[0]:
             return
-        _cancel()
+        self.after_idle(lambda: (None if committed[0] else _commit()))
 
     def _tab_next(event=None):
         """Commit and jump to the next editable column on the same row."""
@@ -2462,6 +2478,175 @@ def _start_cell_edit(self, iid: str, col_id: str):
     entry.bind("<Destroy>", _on_entry_destroy)
 
 
+def _open_row_edit_dialog(self, row_id: int):
+    """Open a form dialog to edit all summary table columns for one row."""
+    iid = str(row_id)
+    row = dict(getattr(self, "_sum_row_data", {}).get(iid, {}) or {})
+    if not row:
+        messagebox.showerror("Edit Row", "Could not load row data.")
+        return
+
+    dlg = tk.Toplevel(self)
+    dlg.title(f"Edit Row — {row.get('applicant_name', '') or f'id={row_id}'}")
+    dlg.configure(bg=CARD_WHITE)
+    dlg.resizable(True, True)
+    dlg.transient(self)
+    dlg.grab_set()
+
+    p_x = self.winfo_rootx()
+    p_y = self.winfo_rooty()
+    p_w = self.winfo_width()
+    p_h = self.winfo_height()
+    w_w, w_h = 820, 700
+    dlg.geometry(
+        f"{w_w}x{w_h}+{p_x + (p_w - w_w) // 2}+{p_y + (p_h - w_h) // 2}")
+    dlg.minsize(700, 520)
+
+    hdr = tk.Frame(dlg, bg=NAVY_DEEP)
+    hdr.pack(fill="x")
+    tk.Label(
+        hdr,
+        text=f"✏  Edit Summary Row  ·  ID {row_id}",
+        font=("Segoe UI", 12, "bold"),
+        fg=WHITE,
+        bg=NAVY_DEEP,
+        padx=16,
+        pady=10,
+        anchor="w",
+    ).pack(fill="x")
+
+    outer = tk.Frame(dlg, bg=CARD_WHITE)
+    outer.pack(fill="both", expand=True, padx=16, pady=12)
+    canvas = tk.Canvas(outer, bg=CARD_WHITE, highlightthickness=0)
+    vscroll = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vscroll.set)
+    vscroll.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    form = tk.Frame(canvas, bg=CARD_WHITE)
+    cwin = canvas.create_window((0, 0), window=form, anchor="nw")
+
+    def _on_cfg(_e=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.itemconfig(cwin, width=canvas.winfo_width())
+
+    form.bind("<Configure>", _on_cfg)
+    canvas.bind("<Configure>", _on_cfg)
+
+    widgets: dict[str, object] = {}
+    label_by_col = {db_col: label for db_col, label, *_ in TABLE_COLS}
+    list_like_cols = {"income_items", "business_items", "household_items"}
+
+    for idx, (db_col, label, _w, _is_mon, is_text_block) in enumerate(TABLE_COLS):
+        row_bg = ROW_BG_EVEN if idx % 2 == 0 else ROW_BG_ODD
+        line = tk.Frame(form, bg=row_bg, highlightbackground="#E5EAF3", highlightthickness=1)
+        line.pack(fill="x", pady=1)
+        tk.Label(
+            line, text=f"{label}:", font=F(8, "bold"), fg=NAVY_DEEP,
+            bg=row_bg, width=22, anchor="w", padx=8, pady=6
+        ).pack(side="left")
+
+        raw = row.get(db_col, "")
+        if db_col in _MONETARY_COLS:
+            init_val = "" if raw in (None, "") else str(raw)
+        else:
+            init_val = "" if raw in (None, "") else str(raw)
+
+        if db_col in _VIRTUAL_TO_JSON or db_col in list_like_cols:
+            init_val = init_val.replace("  ·  ", "\n")
+
+        if is_text_block or db_col in _VIRTUAL_TO_JSON or db_col in list_like_cols:
+            txt = tk.Text(
+                line, height=3, font=("Segoe UI", 9), fg=TXT_NAVY, bg=WHITE,
+                insertbackground=NAVY_MID, relief="solid", bd=1, wrap="word"
+            )
+            txt.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
+            txt.insert("1.0", init_val)
+            widgets[db_col] = txt
+        else:
+            var = tk.StringVar(value=init_val)
+            ent = tk.Entry(
+                line, textvariable=var, font=("Segoe UI", 9), fg=TXT_NAVY, bg=WHITE,
+                insertbackground=NAVY_MID, relief="solid", bd=1
+            )
+            ent.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
+            widgets[db_col] = var
+
+    btn_row = tk.Frame(dlg, bg=CARD_WHITE)
+    btn_row.pack(fill="x", padx=16, pady=(0, 14))
+
+    def _read_raw(col: str) -> str:
+        w = widgets[col]
+        if isinstance(w, tk.StringVar):
+            val = w.get().strip()
+        else:
+            val = w.get("1.0", "end-1c").strip()
+        if col in _VIRTUAL_TO_JSON or col in list_like_cols:
+            parts = [p.strip() for p in val.splitlines() if p.strip()]
+            return "  ·  ".join(parts)
+        return val
+
+    def _save():
+        if getattr(self, "_sum_edit_locked", False) and getattr(self, "_sum_save_inflight", False):
+            messagebox.showinfo("Please wait", "A previous save is still in progress.")
+            return
+
+        changes: list[tuple[str, str]] = []
+        for db_col, _label, _w, _is_mon, _is_txt in TABLE_COLS:
+            before_raw = "" if row.get(db_col) is None else str(row.get(db_col))
+            after_raw = _read_raw(db_col)
+            if db_col in _VIRTUAL_TO_JSON or db_col in list_like_cols:
+                before_raw = before_raw.replace("\n", "  ·  ")
+            if not _summary_edit_values_equivalent(db_col, before_raw, after_raw):
+                changes.append((db_col, after_raw))
+
+        if not changes:
+            dlg.destroy()
+            return
+
+        self._sum_save_inflight = True
+        _set_summary_edit_lock(self, True, "row_edit_save")
+        try:
+            for db_col, new_raw in changes:
+                if db_col in _VIRTUAL_TO_JSON:
+                    _db_update_virtual_cell(row_id, db_col, new_raw)
+                else:
+                    _db_update_cell(row_id, db_col, new_raw)
+
+            try:
+                applicant = row.get("applicant_name", "") or f"id={row_id}"
+                changed_labels = [label_by_col.get(c, c) for c, _ in changes]
+                _log_action(
+                    self,
+                    "edit_row",
+                    f"Updated {len(changes)} fields ({', '.join(changed_labels[:6])}"
+                    f"{' …' if len(changed_labels) > 6 else ''}) ({applicant})",
+                )
+            except Exception:
+                pass
+
+            dlg.destroy()
+            _refresh_summary(self)
+        except Exception as exc:
+            messagebox.showerror("Save Failed", str(exc))
+        finally:
+            self._sum_save_inflight = False
+            _set_summary_edit_lock(self, False)
+
+    ctk.CTkButton(
+        btn_row, text="💾  Save Changes", command=_save,
+        width=150, height=32, corner_radius=7,
+        fg_color=LIME_MID, hover_color=LIME_BRIGHT,
+        text_color=TXT_ON_LIME, font=FF(9, "bold")
+    ).pack(side="right")
+    ctk.CTkButton(
+        btn_row, text="Cancel", command=dlg.destroy,
+        width=110, height=32, corner_radius=7,
+        fg_color="#E8ECF2", hover_color="#DDE2EA",
+        text_color=TXT_NAVY, font=FF(9, "bold")
+    ).pack(side="right", padx=(0, 8))
+
+
 # ── CHANGE 5 (replace _on_tree_double_click and add _on_tree_return_key) ──
 def _on_tree_double_click(self, event):
     """
@@ -2483,13 +2668,12 @@ def _on_tree_double_click(self, event):
     except (ValueError, IndexError):
         db_col = ""
 
-    if db_col in _EDITABLE_COLS:
-        _start_cell_edit(self, iid, db_col)
-    else:
-        # Non-editable or virtual column — show detail window
-        row = self._sum_row_data.get(iid)
-        if row:
-            _open_detail_window(self, row)
+    if db_col == _EDIT_ACTION_COL:
+        _open_row_edit_dialog(self, int(iid))
+        return
+    row = self._sum_row_data.get(iid)
+    if row:
+        _open_detail_window(self, row)
 
 
 def _on_tree_return_key(self, event):
@@ -2500,7 +2684,9 @@ def _on_tree_return_key(self, event):
     """
     iid = self._sum_tree.focus()
     if iid:
-        _start_cell_edit(self, iid, "applicant_name")
+        row = self._sum_row_data.get(iid)
+        if row:
+            _open_detail_window(self, row)
 
 
 def _on_tree_right_click(self, event):
@@ -2511,6 +2697,8 @@ def _on_tree_right_click(self, event):
     self._sum_tree.focus(iid)
     menu = tk.Menu(self._sum_tree, tearoff=0, bg=CARD_WHITE, fg=TXT_NAVY,
                    activebackground=NAVY_MIST, font=("Segoe UI", 9))
+    menu.add_command(label="✏  Edit Row", command=lambda: _open_row_edit_dialog(self, int(iid)))
+    menu.add_separator()
     menu.add_command(label="👁  View Details",
                      command=lambda: _open_detail_window(
                          self, self._sum_row_data.get(iid, {})))
