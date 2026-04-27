@@ -370,15 +370,12 @@ def _build_left(self, p):
             "logs", "accounts",
         },
         "account officer": {
-            "dashboard",
             "cibi", "extract", "analysis", "summary",
         },
         "credit risk officer": {
-            "dashboard",
             "lookup", "lookup_summary", "lu_analysis",
         },
-        "user": {          # ← Add this as the safe fallback
-            "dashboard",
+        "user": {
             "cibi",
         },
     }
