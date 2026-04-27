@@ -121,6 +121,7 @@ def _build_dashboard_panel(self, parent):
         pad_l, pad_r, pad_t, pad_b = 30, 18, 16, 30
         plot_w = w - pad_l - pad_r
         plot_h = h - pad_t - pad_b
+        bottom_y = pad_t + plot_h
         for i in range(6):
             y = pad_t + (plot_h * i / 5)
             cv.create_line(pad_l, y, w - pad_r, y, fill="#EEF2F8")
@@ -139,11 +140,23 @@ def _build_dashboard_panel(self, parent):
         for x, va, vb in zip(xs, series_a, series_b):
             pts_a.extend((x, _to_y(va)))
             pts_b.extend((x, _to_y(vb)))
+
+        # Shaded fill under series_b (net income - light blue)
+        fill_b = [pad_l, bottom_y] + pts_b + [xs[-1], bottom_y]
+        cv.create_polygon(fill_b, fill="#D6F0F8", outline="", smooth=True)
+
+        # Shaded fill under series_a (loan - darker blue)
+        fill_a = [pad_l, bottom_y] + pts_a + [xs[-1], bottom_y]
+        cv.create_polygon(fill_a, fill="#C8D0F5", outline="", smooth=True)
+
         cv.create_line(*pts_b, fill="#89D6E9", width=2, smooth=True)
         cv.create_line(*pts_a, fill="#4A63D9", width=2, smooth=True)
         for x, va in zip(xs, series_a):
             y = _to_y(va)
             cv.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#4A63D9", outline="#4A63D9")
+        for x, vb in zip(xs, series_b):
+            y = _to_y(vb)
+            cv.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#89D6E9", outline="#89D6E9")
 
     lchart.bind("<Configure>", _draw_line_chart)
     self._dash_draw_line = _draw_line_chart
@@ -224,8 +237,8 @@ def _build_dashboard_panel(self, parent):
         ("Client", "w"),
         ("Industry", "w"),
         ("Risk", "center"),
-        ("Loan Balance", "e"),
-        ("Net Income", "e"),
+        ("Loan Balance", "center"),
+        ("Net Income", "center"),
     ]
     self._dash_table_col_weights = (32, 34, 10, 12, 12)
     for i, w in enumerate(self._dash_table_col_weights):
@@ -420,8 +433,8 @@ def _render_high_risk_table(self, rows):
             (str(rec.get("client") or "—"), "w"),
             (str(rec.get("industry") or "—"), "w"),
             ("HIGH", "center"),
-            (f"P{float(rec.get('loan_balance') or 0.0):,.0f}", "e"),
-            (f"P{float(rec.get('net_income') or 0.0):,.0f}", "e"),
+            (f"P{float(rec.get('loan_balance') or 0.0):,.0f}", "center"),
+            (f"P{float(rec.get('net_income') or 0.0):,.0f}", "center"),
         ]
         for c, (text, anchor) in enumerate(vals):
             fg = ACCENT_RED if c == 2 else TXT_NAVY

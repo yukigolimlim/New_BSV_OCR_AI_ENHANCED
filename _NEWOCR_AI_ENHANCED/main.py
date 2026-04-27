@@ -44,3 +44,4 @@ def launch_main_app(user_id=None, username=None):
 if __name__ == "__main__":
     login = LoginWindow(on_success=launch_main_app)
     login.mainloop()
+    
