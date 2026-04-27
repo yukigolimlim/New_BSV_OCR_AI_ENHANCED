@@ -534,6 +534,8 @@ def _open_add_dialog(self):
         email    = fields["email"].get().strip()
         password = fields["password"].get().strip()
         position = fields["position"].get().strip()
+        role     = role_var.get().strip()
+        status   = status_var.get().strip()
 
         if not username or not email or not password:
             messagebox.showwarning("Missing Fields",
@@ -543,14 +545,18 @@ def _open_add_dialog(self):
         try:
             conn = self.get_conn()
             cur  = conn.cursor()
+            
+            # Get next available ID
+            cur.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM users")
+            next_id = cur.fetchone()[0]
+            
             cur.execute(
                 """INSERT INTO users
-                (username, email, password, position, role, status,
+                (id, username, email, password, position, role, status,
                     created_at, updated_at)
-                VALUES (%s, %s, crypt(%s, gen_salt('bf')), %s, %s, %s, NOW(), NOW())""",
-                (username, email, password,
-                position or None,
-                role_var.get().strip(), status_var.get().strip()),
+                VALUES (%s, %s, %s, crypt(%s, gen_salt('bf')), %s, %s, %s, NOW(), NOW())""",
+                (next_id, username, email, password,
+                position or None, role, status),
             )
             conn.commit()
             cur.close()
@@ -559,11 +565,16 @@ def _open_add_dialog(self):
             _log_action(self, "add_user",
                         f"Created new user: username='{username}', "
                         f"email='{email}', "
-                        f"role='{role_var.get().strip()}', "
-                        f"status='{status_var.get().strip()}'")
+                        f"role='{role}', "
+                        f"status='{status}'")
 
             messagebox.showinfo("Created",
                                 f"User '{username}' created successfully.", parent=dlg)
+            dlg.destroy()
+            _load_users(self)
+        except Exception as e:
+            messagebox.showerror("DB Error",
+                                f"Could not create user:\n{e}", parent=dlg)
             dlg.destroy()
             _load_users(self)
         except Exception as e:
