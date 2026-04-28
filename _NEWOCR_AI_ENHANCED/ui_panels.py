@@ -441,6 +441,29 @@ def _build_left(self, p):
             except Exception:
                 pass
 
+        try:
+            from admin_logs import insert_log
+            insert_log(self, "LOGGED OUT", f"User '{getattr(self, '_current_username', '')}' logged out")
+        except Exception:
+            pass
+
+        # ── Clear active session flag ──────────────────────────────────
+        try:
+            _conn = self.get_conn()
+            if _conn:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "UPDATE public.users SET is_logged_in = FALSE WHERE id = %s",
+                    (getattr(self, '_current_user_id', None),)
+                )
+                _conn.commit()
+                _cur.close()
+        except Exception as ex:
+            print(f"Logout session clear error: {ex}")
+        # ──────────────────────────────────────────────────────────────
+
+        self._is_closing = True
+
         self._is_closing = True
 
         # Cancel any pending jobs

@@ -70,6 +70,24 @@ def db_check_login(email: str, password: str):
         if row:
             user_id, username = row
 
+            # ── Check if already logged in ─────────────────────────────
+            cur.execute(
+                "SELECT is_logged_in FROM public.users WHERE id = %s",
+                (user_id,)
+            )
+            status = cur.fetchone()
+            if status and status[0]:  # is_logged_in is True
+                cur.close()
+                conn.close()
+                return "ALREADY_LOGGED_IN"
+            # ──────────────────────────────────────────────────────────
+
+            # Set is_logged_in to True
+            cur.execute(
+                "UPDATE public.users SET is_logged_in = TRUE WHERE id = %s",
+                (user_id,)
+            )
+
             # Update last login timestamp
             cur.execute(
                 "UPDATE public.users SET last_login_at = NOW() WHERE id = %s",
@@ -464,13 +482,41 @@ class LoginWindow(tk.Tk):
             self._after_id = None
         self._btn.config(text="Sign In  →", state="normal",
                          bg=APP_BG, fg=WHITE)
-        if result:
+        if result == "ALREADY_LOGGED_IN":
+            self._show_popup("Account is already logged in.")
+        elif result:
             user_id, username = result
             self.destroy()
             self._ok(user_id, username)
         else:
             self._errlbl.config(
                 text="⚠  Incorrect username or password.")
+    
+    def _show_popup(self, message: str):
+        popup = tk.Toplevel(self)
+        popup.title("")
+        popup.configure(bg=APP_BG)
+        popup.resizable(False, False)
+        popup.overrideredirect(True)
+
+        pw, ph = 320, 130
+        x = self.winfo_x() + (self.W - pw) // 2
+        y = self.winfo_y() + (self.H - ph) // 2
+        popup.geometry(f"{pw}x{ph}+{x}+{y}")
+
+        tk.Frame(popup, bg=ERROR, height=3).pack(fill="x")
+        tk.Label(popup, text="⚠  Access Denied",
+                 bg=APP_BG, fg=ERROR,
+                 font=(FUI, 10, "bold")).pack(pady=(14, 4))
+        tk.Label(popup, text=message,
+                 bg=APP_BG, fg=TEXT_MED_LIGHT,
+                 font=(FUI, 9)).pack()
+        tk.Button(popup, text="OK", bg=APP_BG_HOVER, fg=WHITE,
+                  font=(FUI, 9, "bold"), bd=0, cursor="hand2",
+                  width=10, command=popup.destroy).pack(pady=14)
+
+        popup.grab_set()
+        popup.lift()
 
     def _ds(self, e):
         self._dx = e.x_root - self.winfo_x()

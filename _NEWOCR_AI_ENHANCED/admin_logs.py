@@ -111,6 +111,15 @@ def _build_logs_panel(self, parent):
     self._logs_count_lbl.pack(side="right", padx=(8, 0))
 
     ctk.CTkButton(
+        right_hdr, text="📊  Generate Report",
+        command=lambda: _export_logs_excel(self),
+        width=140, height=32, corner_radius=6,
+        fg_color=LIME_DARK, hover_color=_SB_ACCENT,
+        text_color=WHITE, font=_F(self, 9, "bold"),
+        border_width=0
+    ).pack(side="right", padx=(0, 8))
+
+    ctk.CTkButton(
         right_hdr, text="↻  Refresh",
         command=lambda: _load_logs(self),
         width=100, height=32, corner_radius=6,
@@ -638,7 +647,144 @@ def insert_log(app, action: str, description: str = ""):
 # ─────────────────────────────────────────────────────────────────────────────
 #  ATTACH
 # ─────────────────────────────────────────────────────────────────────────────
+def _export_logs_excel(self):
+    import os
+    import tkinter.filedialog as fd
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
 
+    rows = self._logs_filtered if self._logs_filtered else self._logs_all_rows
+    if not rows:
+        _set_status(self, "✘ No data to export", ACCENT_RED)
+        return
+
+    save_path = fd.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")],
+        initialfile=f"system_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        title="Save Report As"
+    )
+    if not save_path:
+        return
+
+    _set_status(self, "Generating report…", ACCENT_GOLD)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "System Logs"
+
+    # ── Styles ──────────────────────────────────────────────────────
+    hdr_font    = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+    hdr_fill    = PatternFill("solid", start_color="0B1F3A")
+    hdr_align   = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell_font   = Font(name="Arial", size=9)
+    cell_align  = Alignment(vertical="center")
+    center_align = Alignment(horizontal="center", vertical="center")
+    thin = Side(style="thin", color="C8D8EC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    alt_fill = PatternFill("solid", start_color="F6F9FF")
+
+    # ── Title block ─────────────────────────────────────────────────
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "Banco San Vicente — System Logs Report"
+    ws["A1"].font = Font(name="Arial", bold=True, size=14, color="0B1F3A")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells("A2:F2")
+    ws["A2"] = f"Generated: {datetime.now().strftime('%B %d, %Y  %H:%M:%S')}   |   Total Records: {len(rows):,}"
+    ws["A2"].font = Font(name="Arial", size=9, color="7A94B0")
+    ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 18
+
+    ws.row_dimensions[3].height = 6   # spacer
+
+    # ── Column headers ───────────────────────────────────────────────
+    headers = ["ID", "User ID", "Email", "Action", "Description", "Timestamp"]
+    col_widths = [8, 10, 34, 18, 60, 22]
+
+    for col_i, (hdr, width) in enumerate(zip(headers, col_widths), start=1):
+        cell = ws.cell(row=4, column=col_i, value=hdr)
+        cell.font    = hdr_font
+        cell.fill    = hdr_fill
+        cell.alignment = hdr_align
+        cell.border  = border
+        ws.column_dimensions[get_column_letter(col_i)].width = width
+
+    ws.row_dimensions[4].height = 22
+
+    # ── Data rows ────────────────────────────────────────────────────
+    for row_i, row in enumerate(rows, start=5):
+        is_alt = (row_i % 2 == 0)
+        row_data = [
+            row["id"], row["user_id"], row["email"],
+            row["action"], row["description"], row["time"]
+        ]
+        for col_i, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_i, column=col_i, value=value)
+            cell.font   = cell_font
+            cell.border = border
+            if col_i in (1, 2, 4, 6):   # ID, User ID, Action, Timestamp → centred
+                cell.alignment = center_align
+            else:
+                cell.alignment = cell_align
+            if is_alt:
+                cell.fill = alt_fill
+        ws.row_dimensions[row_i].height = 16
+
+    # ── Summary sheet ─────────────────────────────────────────────────
+    ws2 = wb.create_sheet("Summary")
+    ws2.column_dimensions["A"].width = 28
+    ws2.column_dimensions["B"].width = 18
+
+    ws2["A1"] = "Report Summary"
+    ws2["A1"].font = Font(name="Arial", bold=True, size=13, color="0B1F3A")
+    ws2.row_dimensions[1].height = 26
+
+    summary_data = [
+        ("Total Records",   len(rows)),
+        ("Unique Users",    len({r["user_id"] for r in rows})),
+        ("Action Types",    len({r["action"]  for r in rows})),
+        ("Generated At",    datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    ]
+
+    # Action breakdown
+    from collections import Counter
+    action_counts = Counter(r["action"] for r in rows)
+
+    summary_data.append(("", ""))
+    summary_data.append(("Action", "Count"))
+    for action, count in sorted(action_counts.items(), key=lambda x: -x[1]):
+        summary_data.append((action, count))
+
+    for s_i, (label, value) in enumerate(summary_data, start=3):
+        ca = ws2.cell(row=s_i, column=1, value=label)
+        cb = ws2.cell(row=s_i, column=2, value=value)
+        if label in ("Action", ""):
+            ca.font = Font(name="Arial", bold=True, size=9, color="FFFFFF")
+            cb.font = Font(name="Arial", bold=True, size=9, color="FFFFFF")
+            ca.fill = PatternFill("solid", start_color="1E3A5F")
+            cb.fill = PatternFill("solid", start_color="1E3A5F")
+            ca.alignment = center_align
+            cb.alignment = center_align
+        else:
+            ca.font = Font(name="Arial", size=9, color="1A2E42")
+            cb.font = Font(name="Arial", size=9, color="2E5C8A")
+            cb.alignment = center_align
+        ca.border = border
+        cb.border = border
+
+    # ── Freeze panes & auto-filter ───────────────────────────────────
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A4:F{4 + len(rows)}"
+
+    try:
+        wb.save(save_path)
+        _set_status(self, f"✔  Report saved: {os.path.basename(save_path)}", ACCENT_SUCCESS)
+    except Exception as e:
+        _set_status(self, f"✘ Save failed: {e}", ACCENT_RED)
 def attach(cls):
     """Called by ui_panels.attach() — injects _build_logs_panel into the app class."""
     cls._build_logs_panel = _build_logs_panel
