@@ -62,13 +62,20 @@ def db_check_login(email: str, password: str):
         conn = psycopg2.connect(**DB_CONFIG)
         cur  = conn.cursor()
         cur.execute(
-            "SELECT id, username FROM users WHERE email = %s "
+            "SELECT id, username, status FROM users WHERE email = %s "  # ← add status
             "AND password = crypt(%s, password)",
             (email, password)
         )
         row = cur.fetchone()
         if row:
-            user_id, username = row
+            user_id, username, status = row  # ← unpack status
+
+            # ── Check account status first ─────────────────────────────
+            if status != 'active':
+                cur.close()
+                conn.close()
+                return "INACTIVE"
+            # ──────────────────────────────────────────────────────────
 
             # ── Check if already logged in ─────────────────────────────
             cur.execute(
@@ -82,19 +89,14 @@ def db_check_login(email: str, password: str):
                 return "ALREADY_LOGGED_IN"
             # ──────────────────────────────────────────────────────────
 
-            # Set is_logged_in to True
             cur.execute(
                 "UPDATE public.users SET is_logged_in = TRUE WHERE id = %s",
                 (user_id,)
             )
-
-            # Update last login timestamp
             cur.execute(
                 "UPDATE public.users SET last_login_at = NOW() WHERE id = %s",
                 (user_id,)
             )
-
-            # Insert audit log entry
             cur.execute(
                 """
                 INSERT INTO logs (user_id, email, action, description, time)
@@ -113,11 +115,10 @@ def db_check_login(email: str, password: str):
 
         cur.close()
         conn.close()
-        return row  # (id, display_name) or None
+        return row
     except Exception as ex:
         print(f"DB error: {ex}")
         return None
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 class LeftCanvas(tk.Canvas):
@@ -483,7 +484,9 @@ class LoginWindow(tk.Tk):
         self._btn.config(text="Sign In  →", state="normal",
                          bg=APP_BG, fg=WHITE)
         if result == "ALREADY_LOGGED_IN":
-            self._show_popup("Account is already logged in.")
+            self._show_popup("Account is already logged in.\nReport to administrator if this is a mistake.")
+        elif result == "INACTIVE":
+            self._show_popup("Your account is inactive.\nPlease contact the administrator.")
         elif result:
             user_id, username = result
             self.destroy()
@@ -499,7 +502,7 @@ class LoginWindow(tk.Tk):
         popup.resizable(False, False)
         popup.overrideredirect(True)
 
-        pw, ph = 320, 130
+        pw, ph = 350, 150
         x = self.winfo_x() + (self.W - pw) // 2
         y = self.winfo_y() + (self.H - ph) // 2
         popup.geometry(f"{pw}x{ph}+{x}+{y}")
