@@ -2,7 +2,7 @@
 lu_tab_charts.py — Charts Tab
 ================================
 Renders matplotlib charts:
-  1. Client risk mix — HIGH / MODERATE / LOW / other (donut, % of clients in view)
+  1. Client risk mix — HIGH / MEDIUM / LOW / other (donut, % of clients in view)
   2. Client count per sector (bar)
   3. Risk distribution per sector (stacked horizontal bar)
   4. Total loan balance per sector (bar)
@@ -233,22 +233,22 @@ def _charts_render(self):
         bg=_CARD_WHITE,
     ).pack(anchor="w", pady=(0, 8))
 
-    risk_counts = {"HIGH": 0, "MODERATE": 0, "LOW": 0, "OTHER": 0}
+    risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0, "OTHER": 0}
     for r in general:
         lab = str(r.get("score_label") or "N/A").strip().upper()
         if lab == "HIGH":
             risk_counts["HIGH"] += 1
         elif lab == "LOW":
             risk_counts["LOW"] += 1
-        elif lab == "MODERATE":
-            risk_counts["MODERATE"] += 1
+        elif lab in ("MODERATE", "MEDIUM"):
+            risk_counts["MEDIUM"] += 1
         else:
             risk_counts["OTHER"] += 1
     n_clients_view = len(general)
 
     _risk_order = (
         ("HIGH", _ACCENT_RED),
-        ("MODERATE", _ACCENT_GOLD),
+        ("MEDIUM", _ACCENT_GOLD),
         ("LOW", _ACCENT_SUCCESS),
         ("OTHER", "#9AAACE"),
     )
@@ -395,11 +395,11 @@ def _charts_render(self):
             for ind in industry_names:
                 recs = industry_map[ind]
                 highs.append(sum(1 for r in recs if r.get("score_label") == "HIGH"))
-                mods.append(sum(1 for r in recs if r.get("score_label") == "MODERATE"))
-                lows.append(sum(1 for r in recs if r.get("score_label") not in ("HIGH", "MODERATE")))
+                mods.append(sum(1 for r in recs if str(r.get("score_label") or "").strip().upper() in ("MEDIUM", "MODERATE")))
+                lows.append(sum(1 for r in recs if str(r.get("score_label") or "").strip().upper() not in ("HIGH", "MEDIUM", "MODERATE")))
             y = list(range(len(industry_names)))
             ax2.barh(y, highs, color=_MPL_HIGH, label="HIGH")
-            ax2.barh(y, mods, left=highs, color=_MPL_MOD, label="MODERATE")
+            ax2.barh(y, mods, left=highs, color=_MPL_MOD, label="MEDIUM")
             ax2.barh(y, lows, left=[h + m for h, m in zip(highs, mods)], color=_MPL_LOW, label="LOW")
             ax2.set_yticks(y, industry_names, fontsize=8)
             ax2.tick_params(axis="x", labelsize=8)
@@ -505,7 +505,7 @@ def _charts_render(self):
 
                     legend_patches = [
                         mpatches.Patch(color=_MPL_HIGH, label="HIGH risk"),
-                        mpatches.Patch(color=_MPL_MOD,  label="MODERATE risk"),
+                        mpatches.Patch(color=_MPL_MOD,  label="MEDIUM risk"),
                         mpatches.Patch(color=_MPL_LOW,  label="LOW risk"),
                     ]
                     ax4.legend(handles=legend_patches, fontsize=8, frameon=False, loc="lower right")

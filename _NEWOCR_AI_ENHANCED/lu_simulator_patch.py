@@ -19,9 +19,11 @@ Key improvements over original lu_ui
 """
 
 import tkinter as tk
+from tkinter import messagebox
 import customtkinter as ctk
+import re
 
-from lu_core import GENERAL_CLIENT, _RISK_ORDER, _fmt_value
+from lu_core import GENERAL_CLIENT, _RISK_ORDER, _fmt_value, get_high_risk_industries
 from lu_shared import (
     F, FF, _bind_mousewheel,
     _NAVY_DEEP, _NAVY_MID, _NAVY_LIGHT, _NAVY_MIST, _NAVY_GHOST, _NAVY_PALE,
@@ -108,6 +110,23 @@ def _build_simulator_panel(self, parent):
     self._sim_match_lbl = tk.Label(
         ctrl, text="", font=F(8, "bold"), fg=_WHITE, bg=_OFF_WHITE, padx=8, pady=3)
     self._sim_match_lbl.pack(side="left", padx=(8, 0), pady=10)
+    self._sim_industry_filter_btn = ctk.CTkButton(
+        ctrl,
+        text="Industry Checklist",
+        command=lambda: _sim_open_industry_checklist(self),
+        width=150,
+        height=32,
+        corner_radius=5,
+        fg_color=_NAVY_LIGHT,
+        hover_color=_NAVY_MID,
+        text_color=_WHITE,
+        font=FF(10, "bold"),
+    )
+    self._sim_industry_filter_btn.pack(side="left", padx=(8, 0), pady=10)
+    self._sim_industry_filter_lbl = tk.Label(
+        ctrl, text="", font=F(8, "bold"), fg=_TXT_SOFT, bg=_OFF_WHITE
+    )
+    self._sim_industry_filter_lbl.pack(side="left", padx=(8, 0), pady=10)
     tk.Frame(parent, bg=_BORDER_LIGHT, height=1).pack(fill="x")
 
     cards_frame = tk.Frame(parent, bg=_NAVY_MIST)
@@ -171,7 +190,352 @@ def _build_simulator_panel(self, parent):
     self._sim_expenses   = []
     self._sim_build_job  = None
     self._sim_net_income = 0.0
+    self._sim_selected_industries = set()
+    self._sim_manual_industries = set()
     _sim_show_placeholder(self)
+def _sim_filter_data_by_industry_checklist(all_data, selected_industries):
+    selected = {str(x).strip().lower() for x in (selected_industries or set()) if str(x).strip()}
+    if not selected:
+        return all_data
+
+    splitter = re.compile(r"\s*(?:,|/|;|&|\band\b)\s*", re.I)
+
+    def _industry_tokens(rec: dict) -> set[str]:
+        tags = rec.get("industry_tags") or []
+        if tags:
+            return {str(x).strip().lower() for x in tags if str(x).strip()}
+        raw = str((rec or {}).get("industry") or "").strip()
+        if not raw:
+            return set()
+        return {tok.strip().lower() for tok in splitter.split(raw) if tok.strip()}
+
+    base_general = list((all_data or {}).get("general", []))
+    kept_general = [
+        rec for rec in base_general
+        if _industry_tokens(rec) & selected
+    ]
+    kept_clients = {str((r or {}).get("client") or ""): r for r in kept_general if (r or {}).get("client")}
+
+    patched = dict(all_data or {})
+    patched["general"] = kept_general
+    patched["clients"] = kept_clients
+    return patched
+
+
+def _sim_open_industry_checklist(self):
+    all_data = getattr(self, "_lu_all_data", None) or {}
+    base_industries = {str(x).strip() for x in all_data.get("unique_industries", []) if str(x).strip()}
+    manual_industries = set(getattr(self, "_sim_manual_industries", set()) or set())
+    industries = sorted(base_industries | manual_industries, key=str.lower)
+    if not industries:
+        messagebox.showwarning("No Data", "Load and run LU analysis first.")
+        return
+
+    selected = set(getattr(self, "_sim_selected_industries", set()) or set())
+    high_defaults = {str(x).strip().lower() for x in get_high_risk_industries() if str(x).strip()}
+    if not selected:
+        selected = {name for name in industries if name.lower() in high_defaults}
+
+    dialog = ctk.CTkToplevel(self)
+    dialog.title("Risk Simulator Industry Checklist")
+    dialog.geometry("620x620")
+    dialog.minsize(520, 480)
+    dialog.transient(self)
+    dialog.grab_set()
+    dialog.configure(fg_color=_CARD_WHITE)
+
+    hdr = tk.Frame(dialog, bg=_NAVY_MID, height=52)
+    hdr.pack(fill="x")
+    hdr.pack_propagate(False)
+    tk.Label(
+        hdr,
+        text="☑  Risk Simulator Industry Checklist",
+        font=F(11, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+    ).pack(side="left", padx=16, pady=12)
+
+    info = tk.Frame(dialog, bg=_NAVY_MIST, highlightbackground=_BORDER_MID, highlightthickness=1)
+    info.pack(fill="x", padx=16, pady=(10, 6))
+    tk.Label(
+        info,
+        text=(
+            "Use checkboxes to filter the Risk Simulator by industry. "
+            "By default, this follows HIGH industries from Risk Settings."
+        ),
+        font=F(8),
+        fg=_TXT_SOFT,
+        bg=_NAVY_MIST,
+        anchor="w",
+        justify="left",
+    ).pack(fill="x", padx=10, pady=8)
+
+    search_row = tk.Frame(dialog, bg=_CARD_WHITE)
+    search_row.pack(fill="x", padx=16, pady=(4, 6))
+    tk.Label(search_row, text="🔍", font=F(10), fg=_TXT_SOFT, bg=_CARD_WHITE).pack(side="left")
+    search_var = tk.StringVar(value="")
+    search_entry = ctk.CTkEntry(
+        search_row,
+        textvariable=search_var,
+        width=380,
+        height=28,
+        corner_radius=4,
+        fg_color=_WHITE,
+        text_color=_TXT_NAVY,
+        border_color=_BORDER_MID,
+        font=FF(9),
+        placeholder_text="Search industry...",
+    )
+    search_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    add_row = tk.Frame(dialog, bg=_CARD_WHITE)
+    add_row.pack(fill="x", padx=16, pady=(0, 6))
+    tk.Label(
+        add_row, text="Add Industry:", font=F(8, "bold"),
+        fg=_NAVY_MID, bg=_CARD_WHITE
+    ).pack(side="left", padx=(0, 6))
+    add_var = tk.StringVar(value="")
+    add_entry = ctk.CTkEntry(
+        add_row,
+        textvariable=add_var,
+        width=260,
+        height=28,
+        corner_radius=4,
+        fg_color=_WHITE,
+        text_color=_TXT_NAVY,
+        border_color=_BORDER_MID,
+        font=FF(9),
+        placeholder_text="e.g. Logistics",
+    )
+    add_entry.pack(side="left", padx=(0, 6))
+    add_hint_lbl = tk.Label(add_row, text="", font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE)
+    add_hint_lbl.pack(side="left", padx=(4, 0))
+
+    list_wrap = tk.Frame(dialog, bg=_CARD_WHITE)
+    list_wrap.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+    sb = tk.Scrollbar(list_wrap, relief="flat", troughcolor=_OFF_WHITE, bg=_BORDER_LIGHT, width=8, bd=0)
+    sb.pack(side="right", fill="y")
+    canvas = tk.Canvas(list_wrap, bg=_CARD_WHITE, highlightthickness=0, yscrollcommand=sb.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    sb.config(command=canvas.yview)
+    rows_frame = tk.Frame(canvas, bg=_CARD_WHITE)
+    win = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+    rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+    canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", lambda ev: canvas.yview_scroll(int(-1 * (ev.delta / 120)), "units")))
+    canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+    row_widgets = []
+    var_map = {}
+    row_by_industry = {}
+
+    def _add_industry_row(industry: str, preselect: bool = False):
+        if industry in var_map:
+            if preselect:
+                var_map[industry].set(True)
+            return
+        idx = len(row_widgets)
+        row_bg = _WHITE if idx % 2 == 0 else _OFF_WHITE
+        row = tk.Frame(rows_frame, bg=row_bg)
+        row.pack(fill="x")
+        tk.Frame(row, bg=_BORDER_LIGHT, height=1).pack(fill="x")
+        inner = tk.Frame(row, bg=row_bg)
+        inner.pack(fill="x", padx=8, pady=4)
+        var = tk.BooleanVar(value=preselect)
+        var_map[industry] = var
+        chk = tk.Checkbutton(
+            inner,
+            text=industry,
+            variable=var,
+            onvalue=True,
+            offvalue=False,
+            font=F(9),
+            fg=_TXT_NAVY,
+            bg=row_bg,
+            activebackground=row_bg,
+            anchor="w",
+            justify="left",
+            relief="flat",
+            highlightthickness=0,
+        )
+        chk.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        row_widgets.append((row, industry))
+        row_by_industry[industry] = row
+
+    for industry in industries:
+        _add_industry_row(industry, preselect=(industry in selected))
+
+    def _apply_search(*_args):
+        q = search_var.get().strip().lower()
+        for row, industry in row_widgets:
+            show = (not q) or (q in industry.lower())
+            if show and not row.winfo_ismapped():
+                row.pack(fill="x")
+            elif (not show) and row.winfo_ismapped():
+                row.pack_forget()
+
+    search_var.trace_add("write", _apply_search)
+
+    def _add_manual_industry():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter an industry name.", fg=_ACCENT_RED)
+            return
+        existing = {k.lower(): k for k in var_map.keys()}
+        if name.lower() in existing:
+            _add_industry_row(existing[name.lower()], preselect=True)
+            add_hint_lbl.config(text="Already exists; selected.", fg=_ACCENT_SUCCESS)
+        else:
+            _add_industry_row(name, preselect=True)
+            add_hint_lbl.config(text=f"Added '{name}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _apply_search()
+        add_entry.focus_set()
+
+    def _remove_manual_industry():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter an industry to remove.", fg=_ACCENT_RED)
+            return
+        existing = {k.lower(): k for k in var_map.keys()}
+        canonical = existing.get(name.lower())
+        if not canonical:
+            add_hint_lbl.config(text="Industry not found.", fg=_ACCENT_RED)
+            return
+        if canonical in base_industries:
+            add_hint_lbl.config(text="Cannot remove base industry from data.", fg=_ACCENT_RED)
+            return
+        row = row_by_industry.pop(canonical, None)
+        if row is not None:
+            try:
+                row.destroy()
+            except Exception:
+                pass
+        row_widgets[:] = [(r, n) for (r, n) in row_widgets if n != canonical]
+        var_map.pop(canonical, None)
+        selected.discard(canonical)
+        add_hint_lbl.config(text=f"Removed '{canonical}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _apply_search()
+        add_entry.focus_set()
+
+    tk.Button(
+        add_row,
+        text="Add",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+        activebackground=_NAVY_LIGHT,
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_add_manual_industry,
+    ).pack(side="left")
+    tk.Button(
+        add_row,
+        text="Remove",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_ACCENT_RED,
+        activebackground="#C53030",
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_remove_manual_industry,
+    ).pack(side="left", padx=(4, 0))
+    add_entry.bind("<Return>", lambda _e: _add_manual_industry())
+
+    def _set_all(v: bool):
+        for _name, vv in var_map.items():
+            vv.set(v)
+
+    def _use_high_defaults():
+        for name, vv in var_map.items():
+            vv.set(name.lower() in high_defaults)
+
+    def _apply_and_close():
+        chosen = {name for name, vv in var_map.items() if vv.get()}
+        self._sim_selected_industries = chosen
+        self._sim_manual_industries = set(var_map.keys()) - base_industries
+        _sim_populate(self)
+        dialog.destroy()
+
+    footer = tk.Frame(dialog, bg=_OFF_WHITE, highlightbackground=_BORDER_MID, highlightthickness=1)
+    footer.pack(fill="x", padx=16, pady=(2, 14))
+    tk.Button(
+        footer,
+        text="Select All",
+        font=F(8, "bold"),
+        fg=_TXT_NAVY,
+        bg=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=6,
+        cursor="hand2",
+        command=lambda: _set_all(True),
+    ).pack(side="left", padx=(12, 4), pady=8)
+    tk.Button(
+        footer,
+        text="Clear All",
+        font=F(8, "bold"),
+        fg=_TXT_SOFT,
+        bg=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=6,
+        cursor="hand2",
+        command=lambda: _set_all(False),
+    ).pack(side="left", padx=4, pady=8)
+    tk.Button(
+        footer,
+        text="Use HIGH from Settings",
+        font=F(8, "bold"),
+        fg=_ACCENT_RED,
+        bg="#FFE8E8",
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=6,
+        cursor="hand2",
+        command=_use_high_defaults,
+    ).pack(side="left", padx=4, pady=8)
+    tk.Button(
+        footer,
+        text="Cancel",
+        font=F(9),
+        fg=_TXT_SOFT,
+        bg=_OFF_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=8,
+        cursor="hand2",
+        command=dialog.destroy,
+    ).pack(side="right", padx=(0, 4), pady=8)
+    tk.Button(
+        footer,
+        text="  ✔  Apply Filter  ",
+        font=F(9, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+        activebackground=_NAVY_LIGHT,
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=14,
+        pady=8,
+        cursor="hand2",
+        command=_apply_and_close,
+    ).pack(side="right", padx=12, pady=8)
+
 
 
 def _build_sim_summary_cards(self, parent):
@@ -222,10 +586,22 @@ def _sim_populate(self):
         self._sim_build_job = None
 
     filtered_data  = _lu_get_filtered_all_data(self)
+    selected_inds  = getattr(self, "_sim_selected_industries", set()) or set()
+    filtered_data  = _sim_filter_data_by_industry_checklist(filtered_data, selected_inds)
     q              = getattr(self, "_sim_search_var", tk.StringVar(value="")).get().strip()
     filtered_data  = _lu_filter_data_by_query(filtered_data, q)
     match_count    = len(filtered_data.get("general", []))
     match_lbl      = getattr(self, "_sim_match_lbl", None)
+    filter_lbl     = getattr(self, "_sim_industry_filter_lbl", None)
+    if filter_lbl is not None:
+        if selected_inds:
+            selected_sorted = sorted(selected_inds, key=str.lower)
+            preview = ", ".join(selected_sorted[:2])
+            extra_count = len(selected_sorted) - 2
+            suffix = f" (+{extra_count} more)" if extra_count > 0 else ""
+            filter_lbl.config(text=f"Industry filter: {preview}{suffix}")
+        else:
+            filter_lbl.config(text="")
     if match_lbl is not None:
         if q:
             client_names = sorted({

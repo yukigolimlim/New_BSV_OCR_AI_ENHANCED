@@ -34,6 +34,8 @@ from lu_core import (
     run_lu_analysis,
     get_high_risk_industries,
     set_high_risk_industries,
+    get_medium_risk_industries,
+    set_medium_risk_industries,
     get_product_risk_overrides,
     set_product_risk_overrides,
     get_expense_risk_overrides,
@@ -79,6 +81,14 @@ from lu_loanbal_export_patch import (
     _loanbal_show_export_menu, _loanbal_export_pdf, _loanbal_export_excel,
     _generate_loanbal_pdf, _generate_loanbal_excel,
 )
+
+_RISK_PRIORITY = {"HIGH": 0, "MEDIUM": 1, "MODERATE": 1, "LOW": 2}
+_RISK_SCORE_BY_LABEL = {"HIGH": 1.8, "MEDIUM": 1.2, "LOW": 0.0}
+_RISK_STYLE_BY_LABEL = {
+    "HIGH": ("#E53E3E", "#FFF5F5"),
+    "MEDIUM": ("#D4A017", "#FFFBF0"),
+    "LOW": ("#2E7D32", "#F0FBE8"),
+}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -360,51 +370,67 @@ def _lu_rescore_all(self):
         # Determine product override (any atomic product in the cell may match)
         pr, _pr_matched = lookup_product_risk_override(product_name)
 
-        # Determine industry high
+        # Determine industry risk
         high_ind_set = {str(x).strip().lower() for x in get_high_risk_industries()}
+        medium_ind_set = {str(x).strip().lower() for x in get_medium_risk_industries()}
         tags = rec.get("industry_tags") or _lu_core._extract_industry_tags(industry)
         high_ind = any(str(t or "").strip().lower() in high_ind_set for t in tags)
+        medium_ind = (not high_ind) and any(str(t or "").strip().lower() in medium_ind_set for t in tags)
 
         # Determine expense override
         exp_overrides = get_expense_risk_overrides()
         high_exp_name = ""
+        medium_exp_name = ""
         exp_override_result = None
         for e in expenses or []:
             nm = str((e or {}).get("name") or "").strip()
             if not nm:
                 continue
-            lvl = next(
-                (exp_overrides.get(k) for k in _lu_core._expense_override_lookup_keys(nm) if exp_overrides.get(k) == "HIGH"),
-                None,
-            )
+            lvl = None
+            for key in _lu_core._expense_override_lookup_keys(nm):
+                v = str(exp_overrides.get(key) or "").upper()
+                if v == "MODERATE":
+                    v = "MEDIUM"
+                if not v:
+                    continue
+                if lvl is None or _RISK_PRIORITY.get(v, 99) < _RISK_PRIORITY.get(lvl, 99):
+                    lvl = v
             if lvl == "HIGH":
                 high_exp_name = nm
                 exp_override_result = "HIGH"
                 e["risk"] = "HIGH"
                 break
+            if lvl == "MEDIUM":
+                medium_exp_name = medium_exp_name or nm
+                exp_override_result = "MEDIUM"
+                e["risk"] = "MEDIUM"
 
-        # Apply precedence: Product > user expense HIGH > Industry
-        if pr == "HIGH":
+        # Apply precedence: Product > Expense > Industry
+        label_val = "LOW"
+        if high_ind:
             label_val = "HIGH"
-        elif exp_override_result == "HIGH":
-            label_val = "HIGH"
-        elif high_ind:
-            label_val = "HIGH"
-        else:
-            label_val = "LOW"
+        elif medium_ind:
+            label_val = "MEDIUM"
+        if exp_override_result and _RISK_PRIORITY.get(exp_override_result, 99) < _RISK_PRIORITY.get(label_val, 99):
+            label_val = exp_override_result
+        if pr and _RISK_PRIORITY.get(pr, 99) < _RISK_PRIORITY.get(label_val, 99):
+            label_val = pr
 
-        score_val = 1.8 if label_val == "HIGH" else 0.0
+        score_val = _RISK_SCORE_BY_LABEL.get(label_val, 0.0)
         rec["score"]       = score_val
         rec["score_label"] = label_val
         rec["risk"]        = label_val
-        rec["score_fg"]    = "#E53E3E" if label_val == "HIGH" else "#2E7D32"
-        rec["score_bg"]    = "#FFF5F5" if label_val == "HIGH" else "#F0FBE8"
+        fg, bg = _RISK_STYLE_BY_LABEL.get(label_val, _RISK_STYLE_BY_LABEL["LOW"])
+        rec["score_fg"]    = fg
+        rec["score_bg"]    = bg
         rec["risk_reasoning"] = _lu_core._compute_risk_reasoning(
             industry=industry,
             product_name=product_name,
             product_override=pr,
             expense_high_name=high_exp_name,
+            expense_medium_name=medium_exp_name,
             is_high_industry=high_ind,
+            is_medium_industry=medium_ind,
             product_matched_token=_pr_matched,
         )
     # Keep the clients dict in sync
@@ -424,8 +450,11 @@ def _open_industry_risk_dialog(self):
         messagebox.showwarning("No Data", "Load an Excel file first to see industries.")
         return
 
-    industries = sorted(self._lu_all_data["unique_industries"], key=str.lower)
+    base_industries = {str(x).strip() for x in self._lu_all_data["unique_industries"] if str(x).strip()}
+    manual_industries = set(getattr(self, "_lu_manual_industries", set()) or set())
+    industries = sorted(base_industries | manual_industries, key=str.lower)
     high_set = {str(x).strip().lower() for x in get_high_risk_industries()}
+    medium_set = {str(x).strip().lower() for x in get_medium_risk_industries()}
 
     dialog = ctk.CTkToplevel(self)
     dialog.title("Industry Risk Settings")
@@ -452,7 +481,7 @@ def _open_industry_risk_dialog(self):
     tk.Label(
         note,
         text=(
-            "Set industry overrides. HIGH forces HIGH risk. "
+            "Set industry overrides. HIGH forces HIGH risk, MEDIUM forces MEDIUM risk. "
             "LOW means no industry override (falls back to other rules). "
             "Changes apply to all LU tabs after saving."
         ),
@@ -482,6 +511,32 @@ def _open_industry_risk_dialog(self):
     )
     search_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
+    add_row = tk.Frame(dialog, bg=_CARD_WHITE)
+    add_row.pack(fill="x", padx=16, pady=(0, 6))
+    tk.Label(
+        add_row,
+        text="Add Industry:",
+        font=F(8, "bold"),
+        fg=_NAVY_MID,
+        bg=_CARD_WHITE,
+    ).pack(side="left", padx=(0, 6))
+    add_var = tk.StringVar(value="")
+    add_entry = ctk.CTkEntry(
+        add_row,
+        textvariable=add_var,
+        width=280,
+        height=28,
+        corner_radius=4,
+        fg_color=_WHITE,
+        text_color=_TXT_NAVY,
+        border_color=_BORDER_MID,
+        font=FF(9),
+        placeholder_text="e.g. Logistics",
+    )
+    add_entry.pack(side="left", padx=(0, 6))
+    add_hint_lbl = tk.Label(add_row, text="", font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE)
+    add_hint_lbl.pack(side="left", padx=(4, 0))
+
     # Column header
     col_hdr = tk.Frame(dialog, bg=_NAVY_MID, height=30)
     col_hdr.pack(fill="x", padx=16)
@@ -507,13 +562,19 @@ def _open_industry_risk_dialog(self):
     row_state = {}
     row_widgets = []
 
-    def _paint_buttons(var, high_btn, low_btn):
+    def _paint_buttons(var, high_btn, med_btn, low_btn):
         if var.get() == "HIGH":
             high_btn.configure(bg="#FFB3B3", fg=_ACCENT_RED, relief="sunken", font=F(8, "bold"))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
+            low_btn.configure(bg="#F0FBE8", fg=_TXT_MUTED, relief="flat", font=F(8))
+        elif var.get() == "MEDIUM":
+            med_btn.configure(bg="#FFE8A8", fg=_ACCENT_GOLD, relief="sunken", font=F(8, "bold"))
+            high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED, relief="flat", font=F(8))
             low_btn.configure(bg="#F0FBE8", fg=_TXT_MUTED, relief="flat", font=F(8))
         else:
             low_btn.configure(bg="#B7E8A0", fg=_ACCENT_SUCCESS, relief="sunken", font=F(8, "bold"))
             high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED, relief="flat", font=F(8))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
 
     def _build_rows():
         for w in rows_frame.winfo_children():
@@ -522,7 +583,9 @@ def _open_industry_risk_dialog(self):
         for idx, industry in enumerate(industries):
             risk_var = row_state.get(industry)
             if risk_var is None:
-                risk_var = tk.StringVar(value="HIGH" if industry.strip().lower() in high_set else "LOW")
+                key = industry.strip().lower()
+                default_lvl = "HIGH" if key in high_set else ("MEDIUM" if key in medium_set else "LOW")
+                risk_var = tk.StringVar(value=default_lvl)
                 row_state[industry] = risk_var
 
             row_bg = _WHITE if idx % 2 == 0 else _OFF_WHITE
@@ -550,15 +613,21 @@ def _open_industry_risk_dialog(self):
                 relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#FFB3B3",
                 command=lambda v=risk_var: v.set("HIGH")
             )
+            med_btn = tk.Button(
+                btn_wrap, text="🟡 MEDIUM", font=F(8), fg=_TXT_MUTED, bg="#FFF3CD",
+                relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#FFE8A8",
+                command=lambda v=risk_var: v.set("MEDIUM")
+            )
             low_btn = tk.Button(
                 btn_wrap, text="🟢 LOW", font=F(8), fg=_TXT_MUTED, bg="#F0FBE8",
                 relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#B7E8A0",
                 command=lambda v=risk_var: v.set("LOW")
             )
             high_btn.pack(side="left", padx=(0, 4))
+            med_btn.pack(side="left", padx=(0, 4))
             low_btn.pack(side="left")
-            risk_var.trace_add("write", lambda *_a, v=risk_var, hb=high_btn, lb=low_btn: _paint_buttons(v, hb, lb))
-            _paint_buttons(risk_var, high_btn, low_btn)
+            risk_var.trace_add("write", lambda *_a, v=risk_var, hb=high_btn, mb=med_btn, lb=low_btn: _paint_buttons(v, hb, mb, lb))
+            _paint_buttons(risk_var, high_btn, med_btn, low_btn)
             row_widgets.append((row, industry))
 
     def _apply_filter(*_args):
@@ -573,13 +642,86 @@ def _open_industry_risk_dialog(self):
 
     search_var.trace_add("write", _apply_filter)
 
+    def _add_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter an industry name.", fg=_ACCENT_RED)
+            return
+        existing = {s.lower(): s for s in industries}
+        if name.lower() in existing:
+            add_hint_lbl.config(text="Already in list.", fg=_ACCENT_SUCCESS)
+            return
+        industries.append(name)
+        industries.sort(key=str.lower)
+        add_hint_lbl.config(text=f"Added '{name}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _build_rows()
+        _apply_filter()
+        add_entry.focus_set()
+
+    def _remove_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter an industry to remove.", fg=_ACCENT_RED)
+            return
+        existing = {s.lower(): s for s in industries}
+        canonical = existing.get(name.lower())
+        if not canonical:
+            add_hint_lbl.config(text="Industry not found.", fg=_ACCENT_RED)
+            return
+        if canonical in base_industries:
+            add_hint_lbl.config(text="Cannot remove base industry from data.", fg=_ACCENT_RED)
+            return
+        industries[:] = [s for s in industries if s.lower() != canonical.lower()]
+        row_state.pop(canonical, None)
+        add_hint_lbl.config(text=f"Removed '{canonical}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _build_rows()
+        _apply_filter()
+        add_entry.focus_set()
+
+    tk.Button(
+        add_row,
+        text="Add",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+        activebackground=_NAVY_LIGHT,
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_add_manual_param,
+    ).pack(side="left")
+    tk.Button(
+        add_row,
+        text="Remove",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_ACCENT_RED,
+        activebackground="#C53030",
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_remove_manual_param,
+    ).pack(side="left", padx=(4, 0))
+    add_entry.bind("<Return>", lambda _e: _add_manual_param())
+
     def _set_all(val: str):
         for v in row_state.values():
             v.set(val)
 
     def save():
         new_high = [industry for industry, var in row_state.items() if var.get() == "HIGH"]
+        new_medium = [industry for industry, var in row_state.items() if var.get() == "MEDIUM"]
         set_high_risk_industries(new_high)
+        set_medium_risk_industries(new_medium)
+        self._lu_manual_industries = set(industries) - base_industries
         _lu_rescore_all(self)
         _lu_render_results(self, self._lu_all_data.get("general", []))
         dialog.destroy()
@@ -592,6 +734,10 @@ def _open_industry_risk_dialog(self):
         footer, text="Set ALL -> HIGH", font=F(8, "bold"), fg=_ACCENT_RED, bg="#FFE8E8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("HIGH")
     ).pack(side="left", padx=(12, 4), pady=8)
+    tk.Button(
+        footer, text="Set ALL -> MEDIUM", font=F(8, "bold"), fg=_ACCENT_GOLD, bg="#FFF3CD",
+        relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("MEDIUM")
+    ).pack(side="left", padx=4, pady=8)
     tk.Button(
         footer, text="Set ALL -> LOW", font=F(8, "bold"), fg=_ACCENT_SUCCESS, bg="#DCEDC8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("LOW")
@@ -617,7 +763,9 @@ def _open_product_risk_dialog(self):
 
     _detected = (self._lu_all_data or {}).get("unique_product_names", [])
     current = get_product_risk_overrides()
-    products = sorted({str(x).strip() for x in _detected if str(x).strip()}, key=str.lower)
+    base_products = {str(x).strip() for x in _detected if str(x).strip()}
+    manual_products = set(getattr(self, "_lu_manual_products", set()) or set())
+    products = sorted(base_products | manual_products, key=str.lower)
 
     dialog = ctk.CTkToplevel(self)
     dialog.title("Product Name Risk Settings")
@@ -644,7 +792,7 @@ def _open_product_risk_dialog(self):
         note,
         text=(
             "Set overrides per atomic product (comma-separated names in Excel are split). "
-            "HIGH forces HIGH risk if any listed product appears in a client's Product Name cell. "
+            "HIGH or MEDIUM overrides if any listed product appears in a client's Product Name cell. "
             "LOW means no product override (falls back to Expense/Industry rules). "
             "Applies to all LU tabs after saving (re-scan)."
         ),
@@ -673,6 +821,32 @@ def _open_product_risk_dialog(self):
     )
     search_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
+    add_row = tk.Frame(dialog, bg=_CARD_WHITE)
+    add_row.pack(fill="x", padx=16, pady=(0, 6))
+    tk.Label(
+        add_row,
+        text="Add Product:",
+        font=F(8, "bold"),
+        fg=_NAVY_MID,
+        bg=_CARD_WHITE,
+    ).pack(side="left", padx=(0, 6))
+    add_var = tk.StringVar(value="")
+    add_entry = ctk.CTkEntry(
+        add_row,
+        textvariable=add_var,
+        width=280,
+        height=28,
+        corner_radius=4,
+        fg_color=_WHITE,
+        text_color=_TXT_NAVY,
+        border_color=_BORDER_MID,
+        font=FF(9),
+        placeholder_text="e.g. New Product Name",
+    )
+    add_entry.pack(side="left", padx=(0, 6))
+    add_hint_lbl = tk.Label(add_row, text="", font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE)
+    add_hint_lbl.pack(side="left", padx=(4, 0))
+
     col_hdr = tk.Frame(dialog, bg=_NAVY_MID, height=30)
     col_hdr.pack(fill="x", padx=16)
     col_hdr.pack_propagate(False)
@@ -700,13 +874,19 @@ def _open_product_risk_dialog(self):
     row_state = {}
     row_widgets = []
 
-    def _paint_buttons(var, high_btn, low_btn):
+    def _paint_buttons(var, high_btn, med_btn, low_btn):
         if var.get() == "HIGH":
             high_btn.configure(bg="#FFB3B3", fg=_ACCENT_RED, relief="sunken", font=F(8, "bold"))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
+            low_btn.configure(bg="#F0FBE8", fg=_TXT_MUTED, relief="flat", font=F(8))
+        elif var.get() == "MEDIUM":
+            med_btn.configure(bg="#FFE8A8", fg=_ACCENT_GOLD, relief="sunken", font=F(8, "bold"))
+            high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED, relief="flat", font=F(8))
             low_btn.configure(bg="#F0FBE8", fg=_TXT_MUTED, relief="flat", font=F(8))
         else:
             low_btn.configure(bg="#B7E8A0", fg=_ACCENT_SUCCESS, relief="sunken", font=F(8, "bold"))
             high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED, relief="flat", font=F(8))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
 
     def _build_rows():
         for w in rows_frame.winfo_children():
@@ -715,7 +895,9 @@ def _open_product_risk_dialog(self):
         for idx, product in enumerate(products):
             pk = product.strip().lower()
             lvl = current.get(pk, "LOW")
-            risk_var = tk.StringVar(value="HIGH" if lvl == "HIGH" else "LOW")
+            if str(lvl).upper() == "MODERATE":
+                lvl = "MEDIUM"
+            risk_var = tk.StringVar(value=lvl if lvl in ("HIGH", "MEDIUM") else "LOW")
             row_state[product] = risk_var
 
             row_bg = _WHITE if idx % 2 == 0 else _OFF_WHITE
@@ -743,15 +925,21 @@ def _open_product_risk_dialog(self):
                 relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#FFB3B3",
                 command=lambda v=risk_var: v.set("HIGH"),
             )
+            med_btn = tk.Button(
+                btn_wrap, text="🟡 MEDIUM", font=F(8), fg=_TXT_MUTED, bg="#FFF3CD",
+                relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#FFE8A8",
+                command=lambda v=risk_var: v.set("MEDIUM"),
+            )
             low_btn = tk.Button(
                 btn_wrap, text="🟢 LOW", font=F(8), fg=_TXT_MUTED, bg="#F0FBE8",
                 relief="flat", bd=1, padx=8, pady=3, cursor="hand2", activebackground="#B7E8A0",
                 command=lambda v=risk_var: v.set("LOW"),
             )
             high_btn.pack(side="left", padx=(0, 4))
+            med_btn.pack(side="left", padx=(0, 4))
             low_btn.pack(side="left")
-            risk_var.trace_add("write", lambda *_a, v=risk_var, hb=high_btn, lb=low_btn: _paint_buttons(v, hb, lb))
-            _paint_buttons(risk_var, high_btn, low_btn)
+            risk_var.trace_add("write", lambda *_a, v=risk_var, hb=high_btn, mb=med_btn, lb=low_btn: _paint_buttons(v, hb, mb, lb))
+            _paint_buttons(risk_var, high_btn, med_btn, low_btn)
             row_widgets.append((row, product))
 
     def _apply_filter(*_args):
@@ -766,15 +954,88 @@ def _open_product_risk_dialog(self):
 
     search_var.trace_add("write", _apply_filter)
 
+    def _add_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter a product name.", fg=_ACCENT_RED)
+            return
+        existing = {s.lower(): s for s in products}
+        if name.lower() in existing:
+            add_hint_lbl.config(text="Already in list.", fg=_ACCENT_SUCCESS)
+            return
+        products.append(name)
+        products.sort(key=str.lower)
+        add_hint_lbl.config(text=f"Added '{name}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _build_rows()
+        _apply_filter()
+        add_entry.focus_set()
+
+    def _remove_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter a product to remove.", fg=_ACCENT_RED)
+            return
+        existing = {s.lower(): s for s in products}
+        canonical = existing.get(name.lower())
+        if not canonical:
+            add_hint_lbl.config(text="Product not found.", fg=_ACCENT_RED)
+            return
+        if canonical in base_products:
+            add_hint_lbl.config(text="Cannot remove base product from data.", fg=_ACCENT_RED)
+            return
+        products[:] = [s for s in products if s.lower() != canonical.lower()]
+        row_state.pop(canonical, None)
+        add_hint_lbl.config(text=f"Removed '{canonical}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _build_rows()
+        _apply_filter()
+        add_entry.focus_set()
+
+    tk.Button(
+        add_row,
+        text="Add",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+        activebackground=_NAVY_LIGHT,
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_add_manual_param,
+    ).pack(side="left")
+    tk.Button(
+        add_row,
+        text="Remove",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_ACCENT_RED,
+        activebackground="#C53030",
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_remove_manual_param,
+    ).pack(side="left", padx=(4, 0))
+    add_entry.bind("<Return>", lambda _e: _add_manual_param())
+
     def _set_all(val: str):
         for v in row_state.values():
             v.set(val)
 
     def save():
-        # Store HIGH-only product overrides so default LOW state does not
-        # unintentionally force all clients to LOW and block other rules.
-        mapping = {name: row_state[name].get() for name in row_state if row_state[name].get() == "HIGH"}
+        mapping = {
+            name: row_state[name].get()
+            for name in row_state
+            if row_state[name].get() in ("HIGH", "MEDIUM")
+        }
         set_product_risk_overrides(mapping)
+        self._lu_manual_products = set(products) - base_products
         _lu_rescore_all(self)
         _lu_render_results(self, self._lu_all_data.get("general", []))
         dialog.destroy()
@@ -787,6 +1048,10 @@ def _open_product_risk_dialog(self):
         footer, text="Set ALL -> HIGH", font=F(8, "bold"), fg=_ACCENT_RED, bg="#FFE8E8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("HIGH"),
     ).pack(side="left", padx=(12, 4), pady=8)
+    tk.Button(
+        footer, text="Set ALL -> MEDIUM", font=F(8, "bold"), fg=_ACCENT_GOLD, bg="#FFF3CD",
+        relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("MEDIUM"),
+    ).pack(side="left", padx=4, pady=8)
     tk.Button(
         footer, text="Set ALL -> LOW", font=F(8, "bold"), fg=_ACCENT_SUCCESS, bg="#DCEDC8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("LOW"),
@@ -898,7 +1163,7 @@ def _open_expense_risk_dialog(self):
         note,
         text=(
             "Each row represents a canonical expense category from the PDF reference. "
-            "Set to HIGH or LOW.  Precedence: Product Risk > Expense Risk > Industry Risk.  "
+            "Set to HIGH, MEDIUM, or LOW.  Precedence: Product Risk > Expense Risk > Industry Risk.  "
             "Changes apply to all LU tabs after saving."
         ),
         font=F(8),
@@ -926,6 +1191,32 @@ def _open_expense_risk_dialog(self):
         font=FF(9),
         placeholder_text="Search expense category…",
     ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    add_row = tk.Frame(dialog, bg=_CARD_WHITE)
+    add_row.pack(fill="x", padx=16, pady=(0, 4))
+    tk.Label(
+        add_row,
+        text="Add Parameter:",
+        font=F(8, "bold"),
+        fg=_NAVY_MID,
+        bg=_CARD_WHITE,
+    ).pack(side="left", padx=(0, 6))
+    add_var = tk.StringVar(value="")
+    add_entry = ctk.CTkEntry(
+        add_row,
+        textvariable=add_var,
+        width=320,
+        height=28,
+        corner_radius=4,
+        fg_color=_WHITE,
+        text_color=_TXT_NAVY,
+        border_color=_BORDER_MID,
+        font=FF(9),
+        placeholder_text="e.g. Permit Renewal",
+    )
+    add_entry.pack(side="left", padx=(0, 6))
+    add_hint_lbl = tk.Label(add_row, text="", font=F(7), fg=_TXT_MUTED, bg=_CARD_WHITE)
+    add_hint_lbl.pack(side="left", padx=(4, 0))
 
     # ── Column header ──────────────────────────────────────────────────
     col_hdr = tk.Frame(dialog, bg=_NAVY_MID, height=30)
@@ -955,16 +1246,30 @@ def _open_expense_risk_dialog(self):
         "<MouseWheel>", lambda ev: canvas.yview_scroll(int(-1 * (ev.delta / 120)), "units")))
     canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
+    base_expense_names = {
+        str(cat).strip()
+        for _section, _bg, _fg, cats in _PDF_EXPENSE_SECTIONS
+        for cat in cats
+        if str(cat).strip()
+    }
+    manual_expenses = set(getattr(self, "_lu_manual_expense_params", set()) or set())
+
     row_state   = {}   # row_id -> {"name": category_name, "var": tk.StringVar}
     row_widgets = []   # list of (frame_widget, exp_name, section_title)
 
-    def _paint_buttons(var, high_btn, low_btn):
+    def _paint_buttons(var, high_btn, med_btn, low_btn):
         if var.get() == "HIGH":
             high_btn.configure(bg="#FFB3B3", fg=_ACCENT_RED, relief="sunken", font=F(8, "bold"))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
             low_btn.configure( bg="#F0FBE8", fg=_TXT_MUTED,  relief="flat",   font=F(8))
+        elif var.get() == "MEDIUM":
+            med_btn.configure(bg="#FFE8A8", fg=_ACCENT_GOLD, relief="sunken", font=F(8, "bold"))
+            high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED, relief="flat", font=F(8))
+            low_btn.configure( bg="#F0FBE8", fg=_TXT_MUTED, relief="flat", font=F(8))
         else:
             low_btn.configure( bg="#B7E8A0", fg=_ACCENT_SUCCESS, relief="sunken", font=F(8, "bold"))
             high_btn.configure(bg="#FFE8E8", fg=_TXT_MUTED,      relief="flat",   font=F(8))
+            med_btn.configure(bg="#FFF3CD", fg=_TXT_MUTED, relief="flat", font=F(8))
 
     def _build_rows():
         for w in rows_frame.winfo_children():
@@ -972,7 +1277,15 @@ def _open_expense_risk_dialog(self):
         row_widgets.clear()
 
         row_idx = 0  # alternating bg counter across all sections
-        for section_title, sec_hdr_bg, sec_hdr_fg, categories in _PDF_EXPENSE_SECTIONS:
+        sections = list(_PDF_EXPENSE_SECTIONS)
+        if manual_expenses:
+            sections.append((
+                "✍️  Manual Parameters",
+                "#FFF3CD",
+                "#8A6D00",
+                sorted(manual_expenses, key=str.lower),
+            ))
+        for section_title, sec_hdr_bg, sec_hdr_fg, categories in sections:
             # Section divider label
             sec_frame = tk.Frame(rows_frame, bg=sec_hdr_bg)
             sec_frame.pack(fill="x")
@@ -990,7 +1303,9 @@ def _open_expense_risk_dialog(self):
             for cat_name in categories:
                 ek  = _lu_core._expense_override_key(cat_name)
                 lvl = current.get(ek, "LOW")
-                risk_var = tk.StringVar(value="HIGH" if lvl == "HIGH" else "LOW")
+                if str(lvl).upper() == "MODERATE":
+                    lvl = "MEDIUM"
+                risk_var = tk.StringVar(value=lvl if lvl in ("HIGH", "MEDIUM") else "LOW")
                 row_id = f"{section_title}::{cat_name}"
                 row_state[row_id] = {"name": cat_name, "var": risk_var}
 
@@ -1021,6 +1336,12 @@ def _open_expense_risk_dialog(self):
                     activebackground="#FFB3B3",
                     command=lambda v=risk_var: v.set("HIGH"),
                 )
+                med_btn = tk.Button(
+                    btn_wrap, text="🟡 MEDIUM", font=F(8), fg=_TXT_MUTED, bg="#FFF3CD",
+                    relief="flat", bd=1, padx=8, pady=3, cursor="hand2",
+                    activebackground="#FFE8A8",
+                    command=lambda v=risk_var: v.set("MEDIUM"),
+                )
                 low_btn = tk.Button(
                     btn_wrap, text="🟢 LOW", font=F(8), fg=_TXT_MUTED, bg="#F0FBE8",
                     relief="flat", bd=1, padx=8, pady=3, cursor="hand2",
@@ -1028,12 +1349,13 @@ def _open_expense_risk_dialog(self):
                     command=lambda v=risk_var: v.set("LOW"),
                 )
                 high_btn.pack(side="left", padx=(0, 4))
+                med_btn.pack(side="left", padx=(0, 4))
                 low_btn.pack(side="left")
                 risk_var.trace_add(
                     "write",
-                    lambda *_a, v=risk_var, hb=high_btn, lb=low_btn: _paint_buttons(v, hb, lb),
+                    lambda *_a, v=risk_var, hb=high_btn, mb=med_btn, lb=low_btn: _paint_buttons(v, hb, mb, lb),
                 )
-                _paint_buttons(risk_var, high_btn, low_btn)
+                _paint_buttons(risk_var, high_btn, med_btn, low_btn)
                 # Store (row_frame, cat_name, section_title) for filtering
                 row_widgets.append((row, cat_name, section_title))
 
@@ -1072,18 +1394,87 @@ def _open_expense_risk_dialog(self):
 
     search_var.trace_add("write", _apply_filter)
 
+    def _add_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter an expense parameter.", fg=_ACCENT_RED)
+            return
+        existing = {str(row["name"]).strip().lower() for row in row_state.values()}
+        if name.lower() in existing:
+            add_hint_lbl.config(text="Already in list.", fg=_ACCENT_SUCCESS)
+            return
+        manual_expenses.add(name)
+        add_hint_lbl.config(text=f"Added '{name}'.", fg=_ACCENT_SUCCESS)
+        add_var.set("")
+        _build_rows()
+        _apply_filter()
+        add_entry.focus_set()
+
+    def _remove_manual_param():
+        name = add_var.get().strip()
+        if not name:
+            add_hint_lbl.config(text="Enter a parameter to remove.", fg=_ACCENT_RED)
+            return
+        existing = {str(n).strip().lower(): n for n in manual_expenses}
+        canonical = existing.get(name.lower())
+        if canonical:
+            manual_expenses.discard(canonical)
+            add_hint_lbl.config(text=f"Removed '{canonical}'.", fg=_ACCENT_SUCCESS)
+            add_var.set("")
+            _build_rows()
+            _apply_filter()
+            add_entry.focus_set()
+            return
+        if name.lower() in {n.lower() for n in base_expense_names}:
+            add_hint_lbl.config(text="Cannot remove base expense category.", fg=_ACCENT_RED)
+            return
+        add_hint_lbl.config(text="Parameter not found.", fg=_ACCENT_RED)
+
+    tk.Button(
+        add_row,
+        text="Add",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_NAVY_MID,
+        activebackground=_NAVY_LIGHT,
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_add_manual_param,
+    ).pack(side="left")
+    tk.Button(
+        add_row,
+        text="Remove",
+        font=F(8, "bold"),
+        fg=_WHITE,
+        bg=_ACCENT_RED,
+        activebackground="#C53030",
+        activeforeground=_WHITE,
+        relief="flat",
+        bd=0,
+        padx=10,
+        pady=5,
+        cursor="hand2",
+        command=_remove_manual_param,
+    ).pack(side="left", padx=(4, 0))
+    add_entry.bind("<Return>", lambda _e: _add_manual_param())
+
     def _set_all(val: str):
         for row in row_state.values():
             row["var"].set(val)
 
     def save():
-        # Save HIGH-only flags (LOW = not set)
+        # Save HIGH/MEDIUM flags (LOW = not set)
         mapping = {
             row["name"]: row["var"].get()
             for row in row_state.values()
-            if row["var"].get() == "HIGH"
+            if row["var"].get() in ("HIGH", "MEDIUM")
         }
         set_expense_risk_overrides(mapping)
+        self._lu_manual_expense_params = set(manual_expenses)
         _lu_rescore_all(self)
         _lu_render_results(self, self._lu_all_data.get("general", []))
         dialog.destroy()
@@ -1098,6 +1489,10 @@ def _open_expense_risk_dialog(self):
         footer, text="Set ALL → HIGH", font=F(8, "bold"), fg=_ACCENT_RED, bg="#FFE8E8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("HIGH"),
     ).pack(side="left", padx=(12, 4), pady=8)
+    tk.Button(
+        footer, text="Set ALL → MEDIUM", font=F(8, "bold"), fg=_ACCENT_GOLD, bg="#FFF3CD",
+        relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("MEDIUM"),
+    ).pack(side="left", padx=4, pady=8)
     tk.Button(
         footer, text="Set ALL → LOW", font=F(8, "bold"), fg=_ACCENT_SUCCESS, bg="#DCEDC8",
         relief="flat", bd=0, padx=10, pady=6, cursor="hand2", command=lambda: _set_all("LOW"),

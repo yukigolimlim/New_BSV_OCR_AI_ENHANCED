@@ -15,6 +15,8 @@ Export behaviour
   • On-screen table respects the active sector filter.
   • PDF and Excel exports always use the FULL unfiltered dataset
     (by design — a notice is shown when a filter is active).
+  • Excel workbook includes an **Export settings** sheet (first tab): plain-language
+    summary of risk rules and what subset of clients was exported.
 
 Public surface
 --------------
@@ -32,6 +34,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 import customtkinter as ctk
 import re
+import getpass
 from pathlib import Path
 from datetime import datetime
 from tkinter import filedialog, messagebox
@@ -39,6 +42,10 @@ from tkinter import filedialog, messagebox
 from lu_core import (
     _parse_numeric,
     SECTOR_OTHER,
+    get_high_risk_industries,
+    get_medium_risk_industries,
+    get_product_risk_overrides,
+    get_expense_risk_overrides,
 )
 from lu_shared import (
     F, FF,
@@ -110,8 +117,8 @@ def _risk_label_from_recs(recs: list[dict]) -> str:
     labels = {str(r.get("score_label") or "LOW").strip().upper() for r in recs}
     if "HIGH" in labels:
         return "HIGH"
-    if "MODERATE" in labels:
-        return "MODERATE"
+    if "MEDIUM" in labels or "MODERATE" in labels:
+        return "MEDIUM"
     return "LOW"
 
 
@@ -548,12 +555,13 @@ def _loanbal_render(self):
     clients_sorted = sorted(general, key=lambda r: -(r.get("loan_balance") or 0))
     for idx, rec in enumerate(clients_sorted):
         rl = rec.get("score_label", "N/A")
-        tag = rl if rl in ("HIGH", "LOW") else "NA"
+        tag = rl if rl in ("HIGH", "MEDIUM", "LOW") else "NA"
         if tag == "NA" and idx % 2 == 1:
             tag = "alt"
         cli_tree.insert("", "end", values=lu_client_row_tuple(rec), tags=(tag,))
 
     cli_tree.tag_configure("HIGH", background="#FFF5F5", foreground=_ACCENT_RED)
+    cli_tree.tag_configure("MEDIUM", background="#FFFBF0", foreground=_ACCENT_GOLD)
     cli_tree.tag_configure("LOW", background="#F0FBE8", foreground=_ACCENT_SUCCESS)
     cli_tree.tag_configure("NA", background=_WHITE, foreground=_TXT_MUTED)
     cli_tree.tag_configure("alt", background=_OFF_WHITE)
@@ -652,7 +660,7 @@ def _generate_loanbal_pdf(all_data, out_path, filepath=""):
     muted_s = ParagraphStyle("LBMuted", parent=styles["Normal"],
                               fontSize=7,  textColor=rl_colors.HexColor("#9AAACE"), leading=10)
 
-    RISK_RL = {"HIGH": red, "MODERATE": gold, "LOW": green, "N/A": rl_colors.grey}
+    RISK_RL = {"HIGH": red, "MODERATE": gold, "MEDIUM": gold, "LOW": green, "N/A": rl_colors.grey}
 
     general    = all_data.get("general", [])
     unique_industries = all_data.get("unique_industries", [])
@@ -864,8 +872,30 @@ def _loanbal_export_excel(self):
         initialfile=default_name)
     if not path:
         return
+    parts_desc = []
+    if q:
+        parts_desc.append(f'search text "{q}"')
+    if active_sectors:
+        parts_desc.append("sectors: " + ", ".join(active_sectors))
+    if parts_desc:
+        export_scope = (
+            "Loan Balance export — includes only rows that match "
+            + " and ".join(parts_desc)
+            + "."
+        )
+    else:
+        export_scope = (
+            "Loan Balance export — everyone in the loaded file "
+            "(no sector filter and no search filter on that tab)."
+        )
     try:
-        _generate_loanbal_excel(filtered_data, path, filepath=self._lu_filepath or "")
+        _generate_loanbal_excel(
+            filtered_data,
+            path,
+            filepath=self._lu_filepath or "",
+            export_scope_note=export_scope,
+            exported_by=getattr(self, "_current_username", None),
+        )
         messagebox.showinfo("Export Complete", f"Excel saved to:\n{path}")
     except Exception as ex:
         messagebox.showerror("Excel Export Error", str(ex))
@@ -906,6 +936,200 @@ def _build_loanbal_export_payload_from_records(records: list[dict]) -> dict:
     }
 
 
+def _friendly_risk_overview_lines() -> str:
+    """Plain-language bullet list of active risk counts for the Excel config sheet."""
+    n_hi = len(get_high_risk_industries())
+    n_med = len(get_medium_risk_industries())
+    n_prod = len(get_product_risk_overrides())
+    n_exp = len(get_expense_risk_overrides())
+    bullets = []
+    if n_hi:
+        bullets.append(f"{n_hi} industry name(s) are set to high risk (Industry Risk).")
+    else:
+        bullets.append("No industries are manually set to high risk.")
+    if n_med:
+        bullets.append(f"{n_med} industry name(s) are set to medium risk.")
+    else:
+        bullets.append("No industries are manually set to medium risk.")
+    if n_prod:
+        bullets.append(f"{n_prod} loan product name(s) have a custom risk level (Product Risk).")
+    else:
+        bullets.append("No extra rules by loan product name.")
+    if n_exp:
+        bullets.append(f"{n_exp} expense label(s) have a custom risk level (Expense Risk).")
+    else:
+        bullets.append("No extra rules by expense category.")
+    bullets.append(
+        "Fuel, transport, and LPG-type expenses may still affect risk from how they appear in the data."
+    )
+    return "\n".join(f"• {b}" for b in bullets)
+
+
+def _write_configuration_settings_sheet(
+    ws,
+    *,
+    fname: str,
+    generated_at: str,
+    exported_by: str,
+    export_scope_note: str | None,
+) -> None:
+    """First worksheet: persisted LU risk settings from lu_core (same as Analysis / dialogs)."""
+    hdr_fill = PatternFill("solid", fgColor="1A3A6B")
+    sec_fill = PatternFill("solid", fgColor="EEF3FB")
+    thin = Side(style="thin", color="C5D0E8")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.column_dimensions["A"].width = 36
+    ws.column_dimensions["B"].width = 78
+
+    def hdr_row(r: int, text: str) -> None:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
+        c = ws.cell(r, 1, text)
+        c.fill = hdr_fill
+        c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        c.border = border
+        ws.row_dimensions[r].height = 22
+
+    r = 1
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
+    t = ws.cell(r, 1, "Settings for this export")
+    t.fill = hdr_fill
+    t.font = Font(bold=True, size=14, color="FFFFFF")
+    t.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[r].height = 26
+    r += 1
+
+    scope = (export_scope_note or "").strip() or "Not specified."
+    overview = _friendly_risk_overview_lines()
+    meta_rows = [
+        ("When exported", generated_at),
+        ("Exported by", exported_by),
+        ("Portfolio file used", fname),
+        ("What this workbook is", scope),
+        ("Risk rules in effect", overview),
+        (
+            "Saving your settings",
+            "Changes from Industry Risk, Product Risk, and Expense Risk are remembered for next time you use the app.",
+        ),
+    ]
+    for label, val in meta_rows:
+        a = ws.cell(r, 1, label)
+        a.font = Font(bold=True, size=9, color="1A2B4A")
+        a.alignment = Alignment(vertical="top", wrap_text=True, indent=1)
+        a.fill = PatternFill("solid", fgColor="FAFBFD")
+        a.border = border
+        b = ws.cell(r, 2, val)
+        b.font = Font(size=9, color="4A5568")
+        b.alignment = Alignment(vertical="top", wrap_text=True)
+        b.border = border
+        lines = str(val).count("\n") + max(1, (len(str(val)) // 90) + 1)
+        ws.row_dimensions[r].height = min(160, 14 + lines * 13)
+        r += 1
+
+    r += 1
+    hdr_row(r, "Industries with a custom risk level")
+    r += 1
+    ws.cell(r, 1, "Industry name").fill = sec_fill
+    ws.cell(r, 1).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 1).border = border
+    ws.cell(r, 2, "Risk").fill = sec_fill
+    ws.cell(r, 2).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 2).border = border
+    ws.row_dimensions[r].height = 20
+    r += 1
+    highs = sorted(get_high_risk_industries(), key=str.lower)
+    meds = sorted(get_medium_risk_industries(), key=str.lower)
+    industry_levels: dict[str, str] = {}
+    for ind in highs:
+        industry_levels[ind] = "HIGH"
+    for ind in meds:
+        # HIGH wins if somehow present in both lists.
+        industry_levels.setdefault(ind, "MEDIUM")
+
+    if not industry_levels:
+        c = ws.cell(r, 2, "— None —")
+        c.font = Font(size=9, italic=True, color="9AAACE")
+        c.border = border
+        ws.row_dimensions[r].height = 18
+        r += 1
+    else:
+        for ind in sorted(industry_levels.keys(), key=str.lower):
+            ws.cell(r, 1, ind).font = Font(size=9, color="1A2B4A")
+            ws.cell(r, 1).border = border
+            lvl = industry_levels[ind]
+            ws.cell(r, 2, lvl).font = Font(bold=True, size=9, color="1A2B4A")
+            ws.cell(r, 2).border = border
+            ws.row_dimensions[r].height = 18
+            r += 1
+
+    r += 1
+    hdr_row(r, "Loan products with a custom risk level")
+    r += 1
+    ws.cell(r, 1, "Product name (matched text)").fill = sec_fill
+    ws.cell(r, 1).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 1).border = border
+    ws.cell(r, 2, "Risk").fill = sec_fill
+    ws.cell(r, 2).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 2).border = border
+    ws.row_dimensions[r].height = 20
+    r += 1
+    prod_ov = get_product_risk_overrides()
+    if not prod_ov:
+        ws.cell(r, 2, "— None —").font = Font(size=9, italic=True, color="9AAACE")
+        ws.cell(r, 2).border = border
+        ws.row_dimensions[r].height = 18
+        r += 1
+    else:
+        for key in sorted(prod_ov.keys(), key=str.lower):
+            ws.cell(r, 1, key).font = Font(size=9, color="1A2B4A")
+            ws.cell(r, 1).border = border
+            lvl = str(prod_ov[key] or "").upper()
+            ws.cell(r, 2, lvl).font = Font(bold=True, size=9, color="1A2B4A")
+            ws.cell(r, 2).border = border
+            ws.row_dimensions[r].height = 18
+            r += 1
+
+    r += 1
+    hdr_row(r, "Expense types with a custom risk level")
+    r += 1
+    ws.cell(r, 1, "Expense name / category").fill = sec_fill
+    ws.cell(r, 1).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 1).border = border
+    ws.cell(r, 2, "Risk").fill = sec_fill
+    ws.cell(r, 2).font = Font(bold=True, size=9, color="1A2B4A")
+    ws.cell(r, 2).border = border
+    ws.row_dimensions[r].height = 20
+    r += 1
+    exp_ov = get_expense_risk_overrides()
+    if not exp_ov:
+        ws.cell(r, 2, "— None —").font = Font(size=9, italic=True, color="9AAACE")
+        ws.cell(r, 2).border = border
+        ws.row_dimensions[r].height = 18
+        r += 1
+    else:
+        for key in sorted(exp_ov.keys(), key=str.lower):
+            ws.cell(r, 1, key).font = Font(size=9, color="1A2B4A")
+            ws.cell(r, 1).border = border
+            lvl = str(exp_ov[key] or "").upper()
+            ws.cell(r, 2, lvl).font = Font(bold=True, size=9, color="1A2B4A")
+            ws.cell(r, 2).border = border
+            ws.row_dimensions[r].height = 18
+            r += 1
+
+    r += 1
+    note = ws.cell(r, 1, (
+        "Risk Simulator uses these same rules. Percent sliders there are only for “what-if” on screen "
+        "and are not saved into this file."
+    ))
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
+    note.font = Font(size=8, italic=True, color="9AAACE")
+    note.alignment = Alignment(wrap_text=True, vertical="top", indent=1)
+    ws.row_dimensions[r].height = 36
+
+    ws.freeze_panes = "A2"
+
+
 def _generate_loanbal_excel(
     all_data,
     out_path,
@@ -914,12 +1138,32 @@ def _generate_loanbal_excel(
     document_title: str | None = None,
     client_sheet_title: str | None = None,
     client_sheet_subtitle_suffix: str = "",
+    export_scope_note: str | None = None,
+    exported_by: str | None = None,
 ):
     wb  = openpyxl.Workbook()
     now = datetime.now().strftime("%B %d, %Y  %H:%M")
+    by_name = str(exported_by or "").strip()
+    if not by_name:
+        try:
+            by_name = (getpass.getuser() or "").strip()
+        except Exception:
+            by_name = ""
+    if not by_name:
+        by_name = "Unknown user"
     fname = Path(filepath).name if filepath else "—"
     main_title = document_title or "Sector vs Loan Balance — Exposure Analysis"
     cli_title = client_sheet_title or "Client Loan Balance — Individual Breakdown"
+
+    ws_cfg = wb.active
+    ws_cfg.title = "Export settings"
+    _write_configuration_settings_sheet(
+        ws_cfg,
+        fname=fname,
+        generated_at=now,
+        exported_by=by_name,
+        export_scope_note=export_scope_note,
+    )
 
     general    = all_data.get("general", [])
     unique_industries = all_data.get("unique_industries", [])
@@ -928,7 +1172,7 @@ def _generate_loanbal_excel(
     grand_lb   = totals.get("loan_balance", 0) or 0
 
     NUM_FMT = '#,##0.00'
-    RISK_FC = {"HIGH": "E53E3E", "MODERATE": "D4A017", "LOW": "2E7D32", "N/A": "9AAACE"}
+    RISK_FC = {"HIGH": "E53E3E", "MODERATE": "D4A017", "MEDIUM": "D4A017", "LOW": "2E7D32", "N/A": "9AAACE"}
 
     def fill(hex_str):
         return PatternFill("solid", fgColor=hex_str.lstrip("#"))
@@ -949,9 +1193,8 @@ def _generate_loanbal_excel(
         bot = Side(style="medium", color="1A3A6B")
         return Border(left=s, right=s, top=s, bottom=bot)
 
-    # ── Sheet 1: Sector Summary ───────────────────────────────────────
-    ws1 = wb.active
-    ws1.title = "Sector Summary"
+    # ── Sector Summary (after Export settings sheet) ────────────────────
+    ws1 = wb.create_sheet("Sector Summary", 1)
 
     ws1.merge_cells("A1:G1")
     ws1["A1"] = main_title
@@ -1075,7 +1318,7 @@ def _generate_loanbal_excel(
     ]
 
     _cli_end = get_column_letter(len(cli_cols))
-    ws2 = wb.create_sheet("Client Breakdown")
+    ws2 = wb.create_sheet("Client Breakdown", 2)
     ws2.merge_cells(f"A1:{_cli_end}1")
     ws2["A1"] = cli_title
     ws2["A1"].font      = Font(bold=True, size=14, color="0A1628")
@@ -1228,3 +1471,4 @@ def attach(cls):
     cls._generate_loanbal_pdf     = staticmethod(_generate_loanbal_pdf)
     cls._generate_loanbal_excel   = staticmethod(_generate_loanbal_excel)
     cls._loanbal_export_btn       = None   # placeholder; set by _build_loanbal_panel
+    

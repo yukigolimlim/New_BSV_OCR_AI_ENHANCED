@@ -53,17 +53,17 @@ _ACCENT_RED   = "#E53E3E"
 _ACCENT_GOLD  = "#D4A017"
 _ACCENT_SUCCESS = "#2E7D32"
 
-_RISK_COLOR    = {"HIGH": _ACCENT_RED, "MODERATE": _ACCENT_GOLD, "LOW": _ACCENT_SUCCESS}
-_RISK_BG       = {"HIGH": "#FFF5F5",   "MODERATE": "#FFFBF0",    "LOW": "#F0FBE8"}
-_RISK_BADGE_BG = {"HIGH": "#FFE8E8",   "MODERATE": "#FFF3CD",    "LOW": "#DCEDC8"}
+_RISK_COLOR    = {"HIGH": _ACCENT_RED, "MODERATE": _ACCENT_GOLD, "MEDIUM": _ACCENT_GOLD, "LOW": _ACCENT_SUCCESS}
+_RISK_BG       = {"HIGH": "#FFF5F5",   "MODERATE": "#FFFBF0",    "MEDIUM": "#FFFBF0",    "LOW": "#F0FBE8"}
+_RISK_BADGE_BG = {"HIGH": "#FFE8E8",   "MODERATE": "#FFF3CD",    "MEDIUM": "#FFF3CD",    "LOW": "#DCEDC8"}
 
 _CLIENT_HERO_BG = {
     "CRITICAL": "#2D0A0A", "HIGH": "#1E0A0A",
-    "MODERATE": "#1A1400", "LOW":  "#0A1A0A", "N/A": "#0A1628",
+    "MODERATE": "#1A1400", "MEDIUM": "#1A1400", "LOW":  "#0A1A0A", "N/A": "#0A1628",
 }
 _CLIENT_HERO_ACCENT = {
     "CRITICAL": "#FF4444", "HIGH": "#E53E3E",
-    "MODERATE": "#D4A017", "LOW":  "#2E7D32", "N/A": "#4A6FA5",
+    "MODERATE": "#D4A017", "MEDIUM": "#D4A017", "LOW":  "#2E7D32", "N/A": "#4A6FA5",
 }
 
 _MPL_HIGH = "#E53E3E"
@@ -184,7 +184,7 @@ def lu_format_lu_cell(rec: dict, field: str, kind: str, text_limit: int = 56) ->
         rl = str(rec.get("score_label") or "").strip()
         if not rl:
             return "⚪ —"
-        icon = {"HIGH": "🟠", "LOW": "🟢", "MODERATE": "🟡", "N/A": "⚪"}.get(rl.upper(), "⚪")
+        icon = {"HIGH": "🟠", "LOW": "🟢", "MODERATE": "🟡", "MEDIUM": "🟡", "N/A": "⚪"}.get(rl.upper(), "⚪")
         return f"{icon} {rl}"
     s = str(raw or "").strip()
     if not s:

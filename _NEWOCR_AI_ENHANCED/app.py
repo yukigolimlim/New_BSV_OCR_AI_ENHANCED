@@ -390,6 +390,17 @@ class DocExtractorApp(DocClassifierTabMixin, ctk.CTk):
                     setattr(self, attr, None)
                 except Exception:
                     pass
+        # Cancel any remaining Tk/CustomTkinter scheduled callbacks so Tcl
+        # does not try to run them after the root window has been destroyed.
+        try:
+            pending = self.tk.splitlist(self.tk.call("after", "info"))
+        except Exception:
+            pending = ()
+        for job in pending:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
         # ── Close shared DB connection ─────────────────────────────
         # ── Close matplotlib figures (dashboard) ───────────────────
         try:

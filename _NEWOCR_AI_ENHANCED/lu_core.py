@@ -33,12 +33,13 @@ except ImportError:
 #  GLOBAL HIGH‑RISK INDUSTRY SET (can be modified by UI)
 # ─────────────────────────────────────────────────────────────────────
 _HIGH_RISK_INDUSTRIES = set()
+_MEDIUM_RISK_INDUSTRIES = set()
 _SETTINGS_PATH = Path(__file__).with_name("lu_risk_settings.json")
 
 
 def _load_risk_settings() -> None:
     """Best-effort load of persisted risk settings from JSON."""
-    global _HIGH_RISK_INDUSTRIES, _PRODUCT_RISK_OVERRIDES, _EXPENSE_RISK_OVERRIDES
+    global _HIGH_RISK_INDUSTRIES, _MEDIUM_RISK_INDUSTRIES, _PRODUCT_RISK_OVERRIDES, _EXPENSE_RISK_OVERRIDES
     try:
         if not _SETTINGS_PATH.exists():
             return
@@ -46,6 +47,9 @@ def _load_risk_settings() -> None:
         inds = data.get("high_risk_industries") or []
         if isinstance(inds, list):
             _HIGH_RISK_INDUSTRIES = set(str(x) for x in inds if str(x).strip())
+        med_inds = data.get("medium_risk_industries") or []
+        if isinstance(med_inds, list):
+            _MEDIUM_RISK_INDUSTRIES = set(str(x) for x in med_inds if str(x).strip())
         prod = data.get("product_risk_overrides") or {}
         if isinstance(prod, dict):
             set_product_risk_overrides(prod)
@@ -62,6 +66,7 @@ def _save_risk_settings() -> None:
     try:
         payload = {
             "high_risk_industries": sorted({str(x) for x in _HIGH_RISK_INDUSTRIES if str(x).strip()}),
+            "medium_risk_industries": sorted({str(x) for x in _MEDIUM_RISK_INDUSTRIES if str(x).strip()}),
             "product_risk_overrides": get_product_risk_overrides(),
             "expense_risk_overrides": get_expense_risk_overrides(),
         }
@@ -71,8 +76,17 @@ def _save_risk_settings() -> None:
 
 def set_high_risk_industries(industries):
     """Replace the high‑risk industry set with a new list."""
-    global _HIGH_RISK_INDUSTRIES
+    global _HIGH_RISK_INDUSTRIES, _MEDIUM_RISK_INDUSTRIES
     _HIGH_RISK_INDUSTRIES = set(industries)
+    _MEDIUM_RISK_INDUSTRIES = {x for x in _MEDIUM_RISK_INDUSTRIES if x not in _HIGH_RISK_INDUSTRIES}
+    _save_risk_settings()
+
+
+def set_medium_risk_industries(industries):
+    """Replace the medium-risk industry set with a new list."""
+    global _MEDIUM_RISK_INDUSTRIES
+    _MEDIUM_RISK_INDUSTRIES = set(industries)
+    _MEDIUM_RISK_INDUSTRIES.difference_update(_HIGH_RISK_INDUSTRIES)
     _save_risk_settings()
 
 def add_high_risk_industry(industry):
@@ -90,17 +104,24 @@ def get_high_risk_industries():
     return list(_HIGH_RISK_INDUSTRIES)
 
 
+def get_medium_risk_industries():
+    """Return the current list of medium-risk industries."""
+    return list(_MEDIUM_RISK_INDUSTRIES)
+
+
 def format_lu_active_risk_settings_summary(max_len: int = 200) -> str:
     """
     Short description of active risk rules for export titles (not exhaustive).
     """
     n_ind = len(_HIGH_RISK_INDUSTRIES)
+    n_mid_ind = len(_MEDIUM_RISK_INDUSTRIES)
     n_prod = len(_PRODUCT_RISK_OVERRIDES)
     n_exp = len(_EXPENSE_RISK_OVERRIDES)
     parts = [
         f"{n_ind} HI industry tag(s)" if n_ind else "0 HI industry tags",
-        f"{n_prod} HI product override(s)" if n_prod else "0 HI product overrides",
-        f"{n_exp} HI expense override(s)" if n_exp else "0 HI expense overrides",
+        f"{n_mid_ind} MED industry tag(s)" if n_mid_ind else "0 MED industry tags",
+        f"{n_prod} product override(s)" if n_prod else "0 product overrides",
+        f"{n_exp} expense override(s)" if n_exp else "0 expense overrides",
         "auto fuel/LPG signal",
     ]
     s = "; ".join(parts)
@@ -481,21 +502,36 @@ def split_product_name_tokens(product_name: str) -> list[str]:
 
 def lookup_product_risk_override(product_name: str) -> tuple[str | None, str]:
     """
-    Match HIGH overrides against each atomic product in the cell.
-    Returns ('HIGH' or None, matched_atomic_name for messaging).
+    Match risk overrides against each atomic product in the cell.
+    Returns ('HIGH'|'MEDIUM'|None, matched_atomic_name for messaging).
     Also accepts legacy keys where the entire cell was stored as one string.
     """
     raw = str(product_name or "").strip()
     if not raw:
         return (None, "")
     keys = _PRODUCT_RISK_OVERRIDES
+    order = {"HIGH": 0, "MEDIUM": 1, "MODERATE": 1, "LOW": 2}
+    best_lvl = None
+    best_tok = ""
     for tok in split_product_name_tokens(raw):
         k = tok.strip().lower()
-        if k and keys.get(k) == "HIGH":
-            return ("HIGH", tok.strip())
-    if keys.get(raw.lower()) == "HIGH":
-        return ("HIGH", raw)
-    return (None, "")
+        if not k:
+            continue
+        lvl = str(keys.get(k) or "").upper()
+        if lvl not in ("HIGH", "MEDIUM", "MODERATE", "LOW"):
+            continue
+        lvl = "MEDIUM" if lvl == "MODERATE" else lvl
+        if best_lvl is None or order[lvl] < order[best_lvl]:
+            best_lvl = lvl
+            best_tok = tok.strip()
+            if best_lvl == "HIGH":
+                break
+    if best_lvl is None:
+        lvl = str(keys.get(raw.lower()) or "").upper()
+        if lvl in ("HIGH", "MEDIUM", "MODERATE", "LOW"):
+            best_lvl = "MEDIUM" if lvl == "MODERATE" else lvl
+            best_tok = raw
+    return (best_lvl, best_tok)
 
 
 def set_product_risk_overrides(mapping: dict) -> None:
@@ -503,15 +539,15 @@ def set_product_risk_overrides(mapping: dict) -> None:
     Replace product overrides.
 
     Keys should be atomic product names (comma-separated cells are split for matching).
-    Product settings are HIGH-only flags:
-    - HIGH entries are stored
-    - LOW entries are treated as "not set"
+    Product settings accept HIGH/MEDIUM; LOW is treated as "not set".
     """
     global _PRODUCT_RISK_OVERRIDES
     out: dict[str, str] = {}
     for k, v in (mapping or {}).items():
         val = str(v or "").strip().upper()
-        if val != "HIGH":
+        if val == "MODERATE":
+            val = "MEDIUM"
+        if val not in ("HIGH", "MEDIUM"):
             continue
         raw = str(k or "").strip()
         if not raw:
@@ -519,7 +555,7 @@ def set_product_risk_overrides(mapping: dict) -> None:
         for part in split_product_name_tokens(raw):
             ks = part.strip().lower()
             if ks:
-                out[ks] = "HIGH"
+                out[ks] = val
     _PRODUCT_RISK_OVERRIDES = out
     _save_risk_settings()
 
@@ -533,9 +569,8 @@ def set_expense_risk_overrides(mapping: dict) -> None:
     """
     Replace expense risk settings.
 
-    Note: Expense settings are treated as HIGH-only flags.
-    - HIGH entries are stored
-    - LOW entries are treated as "not set" and are not stored
+    Expense settings accept HIGH/MEDIUM.
+    LOW entries are treated as "not set" and are not stored.
     This avoids a default-LOW for every category accidentally overriding
     other risk sources (like Industry HIGH).
     """
@@ -546,8 +581,10 @@ def set_expense_risk_overrides(mapping: dict) -> None:
         if not ks:
             continue
         val = str(v or "").strip().upper()
-        if val == "HIGH":
-            out[ks] = "HIGH"
+        if val == "MODERATE":
+            val = "MEDIUM"
+        if val in ("HIGH", "MEDIUM"):
+            out[ks] = val
     _EXPENSE_RISK_OVERRIDES = out
     _save_risk_settings()
 
@@ -732,7 +769,7 @@ SECTOR_OTHER      = "Other"
 # ─────────────────────────────────────────────────────────────────────
 #  RISK SCORE CONSTANTS (for backward compatibility)
 # ─────────────────────────────────────────────────────────────────────
-_RISK_ORDER = {"HIGH": 0, "MODERATE": 1, "LOW": 2}
+_RISK_ORDER = {"HIGH": 0, "MODERATE": 1, "MEDIUM": 1, "LOW": 2}
 _SCORE_BANDS = [
     (2.5, "CRITICAL", "#B71C1C", "#FFEBEE"),
     (1.8, "HIGH",     "#E53E3E", "#FFF5F5"),
@@ -944,9 +981,9 @@ def _make_compat_expenses(rec: dict) -> list[dict]:
     base_amount = rec.get("total_source")
     has_values = base_amount is not None and base_amount > 0
     reason = (
-        f"Industry '{industry}' is marked as HIGH risk."
-        if risk == "HIGH"
-        else f"Industry '{industry}' is not in the HIGH-risk list."
+        f"Industry '{industry}' is marked as {risk} risk."
+        if risk in ("HIGH", "MEDIUM", "MODERATE")
+        else f"Industry '{industry}' is not in the high/medium-risk lists."
     )
     return [{
         "name": "Total Source of Income",
@@ -1113,9 +1150,9 @@ def _build_client_expenses(
     risk = rec.get("score_label", "LOW")
     industry = rec.get("industry") or "Unspecified Industry"
     reason = (
-        f"Industry '{industry}' is marked as HIGH risk."
-        if risk == "HIGH"
-        else f"Industry '{industry}' is not in the HIGH-risk list."
+        f"Industry '{industry}' is marked as {risk} risk."
+        if risk in ("HIGH", "MEDIUM", "MODERATE")
+        else f"Industry '{industry}' is not in the high/medium-risk lists."
     )
 
     expenses = []
@@ -1163,24 +1200,29 @@ def _build_client_expenses(
 
 def _apply_expense_overrides(expenses: list[dict], industry: str) -> str | None:
     """
-    Apply per-expense HIGH overrides and return aggregate client override:
+    Apply per-expense risk overrides and return aggregate client override:
       - "HIGH" if any matched expense is HIGH
+      - "MEDIUM" if no HIGH match but any MEDIUM match
       - None otherwise
     """
     if not expenses or not _EXPENSE_RISK_OVERRIDES:
         return None
+    best = None
     for item in expenses:
         name = str((item or {}).get("name") or "").strip()
         for key in _expense_override_lookup_keys(name):
             lvl = _EXPENSE_RISK_OVERRIDES.get(key)
-            if lvl != "HIGH":
+            if lvl not in ("HIGH", "MEDIUM", "MODERATE"):
                 continue
+            if lvl == "MODERATE":
+                lvl = "MEDIUM"
             item["risk"] = lvl
-            item["reason"] = (
-                f"Expense '{name}' is set as HIGH."
-            )
-            return "HIGH"
-    return None
+            item["reason"] = f"Expense '{name}' is set as {lvl}."
+            if lvl == "HIGH":
+                return "HIGH"
+            if best != "HIGH":
+                best = "MEDIUM"
+    return best
 
 
 def _matched_high_expense_name(expenses: list[dict]) -> str:
@@ -1199,16 +1241,34 @@ def _matched_high_expense_name(expenses: list[dict]) -> str:
     return ""
 
 
+def _matched_medium_expense_name(expenses: list[dict]) -> str:
+    """Return first matched MEDIUM expense override name, else empty string."""
+    if not expenses or not _EXPENSE_RISK_OVERRIDES:
+        return ""
+    for item in expenses:
+        name = str((item or {}).get("name") or "").strip()
+        if not name:
+            continue
+        if any(
+            str(_EXPENSE_RISK_OVERRIDES.get(k) or "").upper() in ("MEDIUM", "MODERATE")
+            for k in _expense_override_lookup_keys(name)
+        ):
+            return name
+    return ""
+
+
 def _compute_risk_reasoning(
     *,
     industry: str,
     product_name: str,
     product_override: str | None,
     expense_high_name: str,
+    expense_medium_name: str = "",
     is_high_industry: bool,
+    is_medium_industry: bool = False,
     product_matched_token: str = "",
 ) -> str:
-    """Human-readable explanation for why final risk is HIGH/LOW."""
+    """Human-readable explanation for why final risk is HIGH/MEDIUM/LOW."""
     if product_override == "HIGH":
         detail = (product_matched_token or product_name).strip()
         return (
@@ -1222,8 +1282,12 @@ def _compute_risk_reasoning(
         )
     if expense_high_name:
         return f"This client is HIGH RISK because they are using '{expense_high_name}' expenses."
+    if expense_medium_name:
+        return f"This client is MEDIUM RISK because they are using '{expense_medium_name}' expenses."
     if is_high_industry:
         return f"This client is HIGH RISK because they are under the industry '{industry}'."
+    if is_medium_industry:
+        return f"This client is MEDIUM RISK because they are under the industry '{industry}'."
     return "This client is LOW RISK because they do not fall in under any HIGH RISK category."
 def _normalize_header_cell(val) -> str:
     """Normalize Excel header text (NBSP, unicode spaces, NFKC) for reliable matching."""
@@ -1342,16 +1406,18 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
     loan_status = str(get("loan_status") or "").strip()
     ao_name = str(get("ao_name") or "").strip()
 
-    # Industry: HIGH if any split tag is in the global high-risk set.
+    # Industry: HIGH/MEDIUM if any split tag is in configured risk sets.
     industry_tags = _extract_industry_tags(industry)
     high_risk_norm = {str(i).strip().lower() for i in _HIGH_RISK_INDUSTRIES}
+    medium_risk_norm = {str(i).strip().lower() for i in _MEDIUM_RISK_INDUSTRIES}
     is_high_ind = any(tag.lower() in high_risk_norm for tag in industry_tags)
+    is_medium_ind = (not is_high_ind) and any(tag.lower() in medium_risk_norm for tag in industry_tags)
     # Product Name override: any atomic product in the cell may match HIGH.
     pr, pr_matched = lookup_product_risk_override(product_name)
-    risk_label = "HIGH" if is_high_ind else "LOW"
-    score = 1.8 if risk_label == "HIGH" else 0.0
-    score_fg = "#E53E3E" if risk_label == "HIGH" else "#2E7D32"
-    score_bg = "#FFF5F5" if risk_label == "HIGH" else "#F0FBE8"
+    risk_label = "HIGH" if is_high_ind else ("MEDIUM" if is_medium_ind else "LOW")
+    score = 1.8 if risk_label == "HIGH" else (1.2 if risk_label == "MEDIUM" else 0.0)
+    score_fg = "#E53E3E" if risk_label == "HIGH" else ("#D4A017" if risk_label == "MEDIUM" else "#2E7D32")
+    score_bg = "#FFF5F5" if risk_label == "HIGH" else ("#FFFBF0" if risk_label == "MEDIUM" else "#F0FBE8")
 
     rec = {
         "client_id":      client_id,
@@ -1407,16 +1473,19 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
     )
     expense_override = _apply_expense_overrides(rec["expenses"], industry)
     expense_high_name = _matched_high_expense_name(rec["expenses"])
+    expense_medium_name = _matched_medium_expense_name(rec["expenses"])
 
-    # Precedence: Product HIGH > user expense HIGH > industry.
-    if pr == "HIGH":
+    # Precedence: Product > Expense > Industry.
+    if pr in ("HIGH", "MEDIUM"):
         risk_label = pr
     elif expense_override == "HIGH":
         risk_label = "HIGH"
+    elif expense_override == "MEDIUM":
+        risk_label = "MEDIUM"
 
-    score = 1.8 if risk_label == "HIGH" else 0.0
-    score_fg = "#E53E3E" if risk_label == "HIGH" else "#2E7D32"
-    score_bg = "#FFF5F5" if risk_label == "HIGH" else "#F0FBE8"
+    score = 1.8 if risk_label == "HIGH" else (1.2 if risk_label == "MEDIUM" else 0.0)
+    score_fg = "#E53E3E" if risk_label == "HIGH" else ("#D4A017" if risk_label == "MEDIUM" else "#2E7D32")
+    score_bg = "#FFF5F5" if risk_label == "HIGH" else ("#FFFBF0" if risk_label == "MEDIUM" else "#F0FBE8")
     rec["score"] = score
     rec["score_label"] = risk_label
     rec["score_fg"] = score_fg
@@ -1426,7 +1495,9 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
         product_name=product_name,
         product_override=pr,
         expense_high_name=expense_high_name,
+        expense_medium_name=expense_medium_name,
         is_high_industry=is_high_ind,
+        is_medium_industry=is_medium_ind,
         product_matched_token=pr_matched,
     )
     return rec

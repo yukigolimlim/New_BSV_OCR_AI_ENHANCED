@@ -1,7 +1,21 @@
 {
   "high_risk_industries": [
+    "Agriculture, Forestry and Fishing",
     "Mining and Quarrying"
   ],
-  "product_risk_overrides": {},
-  "expense_risk_overrides": {}
+  "medium_risk_industries": [
+    "Construction"
+  ],
+  "product_risk_overrides": {
+    "business loan": "HIGH",
+    "salary loan": "MEDIUM",
+    "salary loan -bonus": "MEDIUM",
+    "truck loan": "MEDIUM"
+  },
+  "expense_risk_overrides": {
+    "utilities – gas / lpg": "HIGH",
+    "fuel & transportation": "HIGH",
+    "utilities – electricity & water": "HIGH",
+    "insurance (business)": "MEDIUM"
+  }
 }

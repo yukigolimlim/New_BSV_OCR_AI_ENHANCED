@@ -59,6 +59,10 @@ _LU_SEARCH_LOW_RISK = frozenset({
     "low risk", "all low risk", "risk:low", "risk low", "all low",
     "#low", "!low", "clients low", "only low risk", "low risk only",
 })
+_LU_SEARCH_MEDIUM_RISK = frozenset({
+    "medium risk", "all medium risk", "risk:medium", "risk medium",
+    "#medium", "!medium", "clients medium", "only medium risk", "medium risk only",
+})
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -98,14 +102,20 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
     # - canonical industry HIGH list from lu_core
     # - legacy local dialog overrides (if used)
     high_ind_set = {str(x).strip().lower() for x in lu_core.get_high_risk_industries()}
+    medium_ind_set = {str(x).strip().lower() for x in lu_core.get_medium_risk_industries()}
     tags = lu_core._extract_industry_tags(industry) if hasattr(lu_core, "_extract_industry_tags") else [industry]
     industry_is_high = any(str(t or "").strip().lower() in high_ind_set for t in tags)
+    industry_is_medium = (not industry_is_high) and any(str(t or "").strip().lower() in medium_ind_set for t in tags)
 
     override = _INDUSTRY_RISK_OVERRIDES.get(industry, "").upper()
     if override == "HIGH" or industry_is_high:
         label = "HIGH"
         if score < 0.6:
             score = 0.75
+    elif override == "MEDIUM" or industry_is_medium:
+        label = "MEDIUM"
+        if score < 0.3:
+            score = 0.45
 
     # Product Name risk (lu_core registry) wins over expense/industry when set.
     pr, _pr_tok = lu_core.lookup_product_risk_override(str(product_name or ""))
@@ -113,6 +123,11 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
         label = "HIGH"
         if score < 0.6:
             score = 0.75
+    elif pr == "MEDIUM":
+        if label != "HIGH":
+            label = "MEDIUM"
+        if score < 0.3:
+            score = 0.45
     else:
         # Expense risk overrides industry when product risk is not set.
         er = lu_core.get_expense_risk_overrides()
@@ -122,7 +137,7 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
             if not nm:
                 continue
             lvl = next(
-                (er.get(k) for k in lu_core._expense_override_lookup_keys(nm) if er.get(k) == "HIGH"),
+                (er.get(k) for k in lu_core._expense_override_lookup_keys(nm) if er.get(k) in ("HIGH", "MEDIUM", "MODERATE")),
                 None,
             )
             if lvl == "HIGH":
@@ -130,6 +145,11 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
                 if score < 0.6:
                     score = 0.75
                 break
+            if lvl in ("MEDIUM", "MODERATE"):
+                if label != "HIGH":
+                    label = "MEDIUM"
+                if score < 0.3:
+                    score = 0.45
             if lvl == "LOW":
                 has_low = True
         else:
@@ -139,8 +159,8 @@ def _patched_compute_risk_score(expenses: list, industry: str = "", product_name
                     score = 0.20
 
     if is_tuple:
-        fg = "#E53E3E" if label == "HIGH" else "#2E7D32"
-        bg = "#FFF5F5" if label == "HIGH" else "#F0FBE8"
+        fg = "#E53E3E" if label == "HIGH" else ("#D4A017" if label in ("MEDIUM", "MODERATE") else "#2E7D32")
+        bg = "#FFF5F5" if label == "HIGH" else ("#FFFBF0" if label in ("MEDIUM", "MODERATE") else "#F0FBE8")
         return (score, label, fg, bg)
 
     result["label"] = label
@@ -189,10 +209,11 @@ def _lu_apply_risk_overrides(self):
         rec["score_label"] = label_val
         rec["risk"] = label_val
         # Keep color fields in sync so the treeview tag picks up the right color.
-        rec["score_fg"] = "#E53E3E" if label_val == "HIGH" else "#2E7D32"
-        rec["score_bg"] = "#FFF5F5" if label_val == "HIGH" else "#F0FBE8"
+        rec["score_fg"] = "#E53E3E" if label_val == "HIGH" else ("#D4A017" if label_val in ("MEDIUM", "MODERATE") else "#2E7D32")
+        rec["score_bg"] = "#FFF5F5" if label_val == "HIGH" else ("#FFFBF0" if label_val in ("MEDIUM", "MODERATE") else "#F0FBE8")
         pr, pr_matched = lu_core.lookup_product_risk_override(product_name)
         high_exp = ""
+        medium_exp = ""
         exp_overrides = lu_core.get_expense_risk_overrides()
         for e in expenses or []:
             nm = str((e or {}).get("name") or "").strip()
@@ -202,15 +223,24 @@ def _lu_apply_risk_overrides(self):
             ):
                 high_exp = nm
                 break
+            if nm and not medium_exp and any(
+                str(exp_overrides.get(k) or "").upper() in ("MEDIUM", "MODERATE")
+                for k in lu_core._expense_override_lookup_keys(nm)
+            ):
+                medium_exp = nm
         high_ind_set = {str(x).strip().lower() for x in lu_core.get_high_risk_industries()}
+        medium_ind_set = {str(x).strip().lower() for x in lu_core.get_medium_risk_industries()}
         tags = rec.get("industry_tags") or [industry]
         high_ind = any(str(t or "").strip().lower() in high_ind_set for t in tags)
+        medium_ind = (not high_ind) and any(str(t or "").strip().lower() in medium_ind_set for t in tags)
         rec["risk_reasoning"] = lu_core._compute_risk_reasoning(
             industry=industry,
             product_name=product_name,
             product_override=pr,
             expense_high_name=high_exp,
+            expense_medium_name=medium_exp,
             is_high_industry=high_ind,
+            is_medium_industry=medium_ind,
             product_matched_token=pr_matched,
         )
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}
@@ -559,6 +589,8 @@ def _lu_on_client_change(self, value: str):
             parts = []
             if risk_f == "HIGH":
                 parts.append("HIGH RISK")
+            elif risk_f == "MEDIUM":
+                parts.append("MEDIUM RISK")
             elif risk_f == "LOW":
                 parts.append("LOW RISK")
             if active_sectors:
@@ -606,6 +638,14 @@ def _lu_filter_by_search(self):
         self._lu_analysis_filtered_sectors = None
         self._lu_analysis_product_substr = None
         self._lu_analysis_risk_filter = "LOW"
+        _lu_update_filter_pill(self)
+        _lu_on_client_change(self, GENERAL_CLIENT)
+        return
+
+    if query in _LU_SEARCH_MEDIUM_RISK:
+        self._lu_analysis_filtered_sectors = None
+        self._lu_analysis_product_substr = None
+        self._lu_analysis_risk_filter = "MEDIUM"
         _lu_update_filter_pill(self)
         _lu_on_client_change(self, GENERAL_CLIENT)
         return
@@ -695,11 +735,12 @@ def _lu_populate_client_dropdown(self):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  EXPORT — same sector / client Excel as Loan Balance tab, HIGH clients only
+#  EXPORT — same sector / client Excel as Loan Balance tab,
+#  including HIGH + MEDIUM risk clients from Analysis data.
 # ══════════════════════════════════════════════════════════════════════
 
 def _lu_analysis_export_high_risk_sector_excel(self):
-    """Sector summary + client breakdown for HIGH-risk rows only (Analysis tab)."""
+    """Sector summary + client breakdown for HIGH and MEDIUM risk rows (Analysis tab)."""
     try:
         import openpyxl  # noqa: F401
     except ImportError:
@@ -711,11 +752,14 @@ def _lu_analysis_export_high_risk_sector_excel(self):
         return
     all_data = getattr(self, "_lu_all_data", None) or {}
     general = all_data.get("general") or []
-    high_only = [r for r in general if str(r.get("score_label") or "").strip().upper() == "HIGH"]
-    if not high_only:
+    export_rows = [
+        r for r in general
+        if str(r.get("score_label") or "").strip().upper() in ("HIGH", "MEDIUM", "MODERATE")
+    ]
+    if not export_rows:
         messagebox.showinfo(
-            "No HIGH-risk clients",
-            "There are no clients with Risk = HIGH in the loaded data.",
+            "No HIGH/MEDIUM risk clients",
+            "There are no clients with Risk = HIGH or MEDIUM in the loaded data.",
             parent=self,
         )
         return
@@ -724,13 +768,11 @@ def _lu_analysis_export_high_risk_sector_excel(self):
         _generate_loanbal_excel,
     )
 
-    settings_x = lu_core.format_lu_active_risk_settings_summary()
-    safe_x = settings_x.replace("'", "′")
-    doc_title = f"High Risk Clients - '{safe_x}'"
-    default_name = f"HighRiskClients_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    doc_title = "Risk Clients (High + Medium)"
+    default_name = f"RiskClients_HighMedium_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     path = filedialog.asksaveasfilename(
         parent=self,
-        title="Save HIGH-risk sector export",
+        title="Save Risk clients export",
         defaultextension=".xlsx",
         filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         initialfile=default_name,
@@ -738,14 +780,19 @@ def _lu_analysis_export_high_risk_sector_excel(self):
     if not path:
         return
     try:
-        payload = _build_loanbal_export_payload_from_records(high_only)
+        payload = _build_loanbal_export_payload_from_records(export_rows)
         _generate_loanbal_excel(
             payload,
             path,
             filepath=getattr(self, "_lu_filepath", "") or "",
             document_title=doc_title,
-            client_sheet_title="High Risk Clients — Individual Breakdown",
-            client_sheet_subtitle_suffix="Subset: HIGH risk only.",
+            client_sheet_title="Risk Clients (High + Medium) — Individual Breakdown",
+            client_sheet_subtitle_suffix="Subset: clients with HIGH or MEDIUM risk.",
+            export_scope_note=(
+                "Analysis export — includes only clients with HIGH or MEDIUM risk. "
+                "Detailed rules follow on this sheet."
+            ),
+            exported_by=getattr(self, "_current_username", None),
         )
         messagebox.showinfo("Export Complete", f"Excel saved to:\n{path}", parent=self)
     except Exception as ex:
@@ -830,7 +877,7 @@ def _build_analysis_view(self, parent):
     if toolbar is not None and not getattr(self, "_analysis_sector_export_btn", None):
         self._analysis_sector_export_btn = tk.Button(
             toolbar,
-            text="💾  HIGH sector Excel",
+            text="💾  Risk Clients Excel",
             font=F(8, "bold"),
             fg=_LIME_MID,
             bg=_NAVY_LIGHT,
@@ -931,6 +978,10 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
         1 for r in results
         if str(r.get("score_label") or "").strip().upper() == "HIGH"
     )
+    medium_risk_clients = sum(
+        1 for r in results
+        if str(r.get("score_label") or "").strip().upper() in ("MEDIUM", "MODERATE")
+    )
 
     active_industries = getattr(self, "_lu_analysis_filtered_sectors", None)
     stats_bg     = "#0E2040" if active_industries else _NAVY_MIST
@@ -955,6 +1006,7 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
         ("📈 Total Net Income",     f"₱{total_net:,.2f}"),
         ("🏭 Industries",          str(len(industry_counts))),
         ("🟠 High Risk Clients",    str(high_risk_clients)),
+        ("🟡 Medium Risk Clients",  str(medium_risk_clients)),
     ]:
         c = tk.Frame(stats_bar, bg=stats_bg)
         c.pack(side="left", padx=20, pady=10)
@@ -1010,6 +1062,7 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
                     anchor=COL_ANCHOR[col], stretch=(col in _stretch_cols))
 
     tree.tag_configure("HIGH",     background="#FFF5F5", foreground=_ACCENT_RED)
+    tree.tag_configure("MEDIUM",   background="#FFFBF0", foreground=_ACCENT_GOLD)
     tree.tag_configure("LOW",      background="#F0FBE8", foreground=_ACCENT_SUCCESS)
     tree.tag_configure("NA",       background=_WHITE,    foreground=_TXT_MUTED)
     tree.tag_configure("alt",      background=_OFF_WHITE)
@@ -1018,7 +1071,7 @@ def _lu_render_general_view(self, results: list, parent: tk.Frame):
     for idx, rec in enumerate(results):
         rl = rec.get("score_label", "N/A")
         values = lu_client_row_tuple(rec)
-        tag = rl if rl in ("HIGH", "LOW") else "NA"
+        tag = rl if rl in ("HIGH", "MEDIUM", "LOW") else "NA"
         if tag == "NA" and idx % 2 == 1:
             tag = "alt"
         iid = tree.insert("", "end", values=values, tags=(tag,))
@@ -1087,7 +1140,7 @@ def _lu_render_client_view(self, results: list):
 
     right = tk.Frame(hi, bg=hero_bg)
     right.pack(side="right", fill="y")
-    score_icons = {"HIGH": "🟠", "LOW": "🟢", "N/A": "⚪"}
+    score_icons = {"HIGH": "🟠", "MEDIUM": "🟡", "MODERATE": "🟡", "LOW": "🟢", "N/A": "⚪"}
     tk.Label(right, text=score_icons.get(label, "⚪"),
              font=("Segoe UI Emoji", 32), bg=hero_bg).pack()
     tk.Label(right, text=label, font=F(16, "bold"), fg=hero_accent, bg=hero_bg).pack()
