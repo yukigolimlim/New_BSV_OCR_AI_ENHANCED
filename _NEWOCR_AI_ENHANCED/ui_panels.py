@@ -75,7 +75,7 @@ def _build_topbar(self):
                          width=3, anchor="center")
     close_btn.bind("<Enter>",    lambda e: close_btn.config(fg=WHITE, bg=ACCENT_RED))
     close_btn.bind("<Leave>",    lambda e: close_btn.config(fg="#7A94B0", bg=_SB_BG))
-    close_btn.bind("<Button-1>", lambda e: self._safe_close() if hasattr(self, "_safe_close") else self.destroy())
+    close_btn.bind("<Button-1>", lambda e: self._confirm_close())
     close_btn.pack(side="right", padx=(4, 2), fill="y")
 
     min_btn = tk.Label(ctrl, text="─", font=F(10, "bold"),
@@ -1307,6 +1307,42 @@ def _copy(self):
         self._copy_btn.configure(text="✓  Copied!")
         self.after(2200, lambda: self._copy_btn.configure(text="⎘  Copy"))
 
+def _confirm_close(self):
+    import tkinter.messagebox as mb
+    confirmed = mb.askyesno(
+        "Close System",
+        "Are you sure you want to close the system?",
+        icon="warning"
+    )
+    if not confirmed:
+        return
+
+    # ── Clear active session flag ──────────────────────────────────
+    try:
+        _conn = self.get_conn()
+        if _conn:
+            _cur = _conn.cursor()
+            _cur.execute(
+                "UPDATE public.users SET is_logged_in = FALSE WHERE id = %s",
+                (getattr(self, '_current_user_id', None),)
+            )
+            _conn.commit()
+            _cur.close()
+    except Exception as ex:
+        print(f"Close session clear error: {ex}")
+    # ──────────────────────────────────────────────────────────────
+
+    try:
+        from admin_logs import insert_log
+        insert_log(self, "CLOSED APP", f"User '{getattr(self, '_current_username', '')}' closed the system")
+    except Exception:
+        pass
+
+    if hasattr(self, "_safe_close"):
+        self._safe_close()
+    else:
+        self.destroy()
+
 
 # ═════════════════════════════════════════════════════════════════════
 #  ATTACH ALL METHODS TO DocExtractorApp
@@ -1358,6 +1394,8 @@ def attach(cls):
 
     # Copy
     cls._copy                    = _copy
+    # Close confirmation
+    cls._confirm_close           = _confirm_close
 
     # External tab modules
     _attach_lookup(cls)
