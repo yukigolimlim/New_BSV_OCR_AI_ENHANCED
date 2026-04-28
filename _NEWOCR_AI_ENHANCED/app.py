@@ -409,6 +409,27 @@ class DocExtractorApp(DocClassifierTabMixin, ctk.CTk):
         except Exception:
             pass
 
+        # ── Clear active session flag ──────────────────────────────
+        try:
+            _conn = self.get_conn()
+            if _conn:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "UPDATE public.users SET is_logged_in = FALSE WHERE id = %s",
+                    (getattr(self, '_current_user_id', None),)
+                )
+                _conn.commit()
+                _cur.close()
+        except Exception as ex:
+            print(f"Force-close session clear error: {ex}")
+        # ──────────────────────────────────────────────────────────
+
+        try:
+            from admin_logs import insert_log
+            insert_log(self, "FORCE CLOSED", f"User '{getattr(self, '_current_username', '')}' force-closed the app")
+        except Exception:
+            pass
+
         # ── Close shared DB connection ─────────────────────────────
         if getattr(self, "db_conn", None) and not self.db_conn.closed:
             try:
