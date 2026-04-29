@@ -28,6 +28,7 @@ from lu_analysis_tab import attach as _attach_lu_analysis
 from dashboard_tab import attach as _attach_dashboard
 import admin_logs as _admin_logs_mod
 import admin_account as _admin_account_mod
+import approval_tab as _approval_tab_mod
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -130,6 +131,7 @@ _NAV_ITEMS_2 = [
     ("lu_analysis",    "📈",  "LU Analysis",  None),
     ("logs",           "🗒",  "Logs",         "ADMIN"),
     ("accounts",       "👤",  "Accounts",     "ADMIN"),
+    ("approvals", "✅", "Approvals", "ADMIN"),
 ]
 
 
@@ -367,7 +369,7 @@ def _build_left(self, p):
         "super admin": {
             "dashboard",
             "lookup_summary", "lu_analysis",
-            "logs", "accounts",
+            "logs", "accounts", "approvals",
         },
         "account officer": {
             "cibi", "extract", "analysis", "summary",
@@ -718,6 +720,7 @@ def _build_right(self, p):
     self._build_lu_analysis_panel(card)
     self._build_logs_panel(card)
     self._build_accounts_panel(card)
+    self._build_approval_panel(card)
 
     self._put_placeholder()
     self._current_tab = "dashboard"
@@ -1035,6 +1038,7 @@ _TAB_TITLES = {
     "lu_analysis":     "LU Analysis",
     "logs":            "System Logs",
     "accounts":        "Accounts",
+    "approvals": "Edit Approvals",
 }
 
 def _switch_tab(self, tab):
@@ -1058,6 +1062,7 @@ def _switch_tab(self, tab):
     self._lu_analysis_frame.pack_forget()
     self._logs_frame.pack_forget()
     self._accounts_frame.pack_forget()
+    self._approval_frame.pack_forget()
 
     if tab == "dashboard":
         self._refresh_dashboard_from_lu()
@@ -1077,10 +1082,12 @@ def _switch_tab(self, tab):
         _refresh_summary(self)
     elif tab == "lu_analysis":
         self._lu_analysis_frame.pack(fill="both", expand=True)
-    elif tab == "logs":                                        # ← NEW
+    elif tab == "logs":                                       
         self._logs_frame.pack(fill="both", expand=True)
-    elif tab == "accounts":                                    # ← ADD THIS
+    elif tab == "accounts":                                    
         self._accounts_frame.pack(fill="both", expand=True)
+    elif tab == "approvals":                               
+        self._approval_frame.pack(fill="both", expand=True)
     else:
         # Default/fallback: return to CIBI Mode if an unknown tab key is requested.
         self._cibi_output_frame.pack(fill="both", expand=True)
@@ -1138,10 +1145,12 @@ def _show_loader(self, show, stage_text="Processing…"):
             self._lookup_summary_frame.pack(fill="both", expand=True)
         elif self._current_tab == "lu_analysis":
             self._lu_analysis_frame.pack(fill="both", expand=True)
-        elif self._current_tab == "logs":                      # ← NEW
+        elif self._current_tab == "logs":                      
             self._logs_frame.pack(fill="both", expand=True)
-        elif self._current_tab == "accounts":                      # ← ADD THIS
+        elif self._current_tab == "accounts":                      
             self._accounts_frame.pack(fill="both", expand=True)
+        elif self._current_tab == "approvals":                               
+            self._approval_frame.pack(fill="both", expand=True)
         else:
             self._cibi_output_frame.pack(fill="both", expand=True)
         self._status_lbl.config(text="●  Ready", fg=LIME_DARK)
@@ -1404,3 +1413,4 @@ def attach(cls):
     _attach_dashboard(cls)
     _admin_logs_mod.attach(cls)
     _admin_account_mod.attach(cls)
+    _approval_tab_mod.attach(cls)

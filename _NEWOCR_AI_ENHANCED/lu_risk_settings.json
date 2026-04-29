@@ -12,10 +12,5 @@
     "salary loan -bonus": "MEDIUM",
     "truck loan": "MEDIUM"
   },
-  "expense_risk_overrides": {
-    "utilities – gas / lpg": "HIGH",
-    "fuel & transportation": "HIGH",
-    "utilities – electricity & water": "HIGH",
-    "insurance (business)": "MEDIUM"
-  }
+  "expense_risk_overrides": {}
 }
