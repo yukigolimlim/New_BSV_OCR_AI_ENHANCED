@@ -1592,6 +1592,7 @@ def _open_advanced_filter(self):
 
 def _build_lookup_summary_panel(self, parent):
     _db_init()
+    _db_init_custom_docs()
     _apply_tree_style()
 
     # Thread-safe UI callback channel for background DB writes
@@ -1674,6 +1675,14 @@ def _build_lookup_summary_panel(self, parent):
     hover_color="#7A2020", text_color="#FF8A80",
     font=FF(8, "bold"), border_width=0)
     self._sum_adv_delete_btn.pack(side="left", padx=(4, 0))
+    self._sum_add_doc_btn = ctk.CTkButton(
+    btn_block, text="📄  Add Doc",
+    command=lambda: _open_add_doc_dialog(self),
+    width=82, height=30, corner_radius=6,
+    fg_color="#1A2E5C", hover_color="#243E7A",
+    text_color="#A0C8FF",
+    font=FF(8, "bold"), border_width=0)
+    self._sum_add_doc_btn.pack(side="left", padx=(4, 0))
 
     # ── Controls row ──────────────────────────────────────────────────
     controls_row = tk.Frame(main, bg="#F0F4FA",
@@ -1847,6 +1856,38 @@ def _load_and_render(self):
     # If the grid is about to re-render (sort/search/paginate), close any
     # inline editor so it can't "float" over the refreshed Treeview.
     _teardown_summary_cell_entry(self, getattr(self, "_sum_active_cell_entry", None))
+    # ── Sync custom columns into tree definition ───────────────────────
+    try:
+        custom_cols = _db_get_custom_columns()
+    except Exception:
+        custom_cols = []
+
+    prev_custom = getattr(self, "_sum_custom_cols", [])
+    self._sum_custom_cols = custom_cols
+
+    # If custom columns changed, rebuild the Treeview column definitions
+    if [c[0] for c in custom_cols] != [c[0] for c in prev_custom]:
+        new_tree_cols = (
+            [c[0] for c in TABLE_COLS]
+            + [c[0] for c in custom_cols]
+            + [_EDIT_ACTION_COL]
+        )
+        self._sum_tree.configure(columns=new_tree_cols)
+        # Re-apply standard headings
+        for db_col, label, width_px, is_mon, _ in TABLE_COLS:
+            self._sum_tree.heading(db_col, text=label,
+                command=lambda c=db_col: _sort_by(self, c))
+            self._sum_tree.column(db_col, width=width_px, minwidth=60,
+                anchor="e" if is_mon else "w", stretch=False)
+        # Apply custom headings
+        for db_col, display_label, _cid in custom_cols:
+            self._sum_tree.heading(db_col, text=display_label)
+            self._sum_tree.column(db_col, width=180, minwidth=80,
+                anchor="w", stretch=False)
+        # Re-apply edit column
+        self._sum_tree.heading(_EDIT_ACTION_COL, text="Edit")
+        self._sum_tree.column(_EDIT_ACTION_COL, width=64, minwidth=54,
+            anchor="center", stretch=False)
     raw    = self._sum_search_var.get().strip()
     search = "" if "separate terms with commas" in raw else raw
     offset = self._sum_page * PAGE_SIZE
@@ -1955,6 +1996,12 @@ def _render_tree(self, rows):
                 values.append(str(raw).replace("\n", "  ·  "))
             else:
                 values.append(str(raw))
+
+        # ── NEW: append custom extraction columns ──────────────────────
+        custom_cols = getattr(self, "_sum_custom_cols", [])
+        for db_col, _label, _cid in custom_cols:
+            values.append(str(row.get(db_col, "") or ""))
+
         values.append("✏")
         self._sum_tree.insert("", "end", iid=str(row_id),
                               values=values, tags=(tag,))
@@ -2234,6 +2281,113 @@ def _confirm_cell_modify(self) -> bool:
             pass
     return result[0]
 
+def _ask_edit_reason(self, col_label: str) -> str | None:
+    """
+    Show a pop-up asking the user for a reason before submitting an edit for approval.
+    Returns the reason string, or None if the user cancelled.
+    """
+    result = [None]
+    win = tk.Toplevel(self)
+    win.configure(bg=CARD_WHITE)
+    win.resizable(False, False)
+    win.overrideredirect(True)
+    win.transient(self)
+    win.grab_set()
+    win.lift(self)
+    win.focus_force()
+
+    p_x = self.winfo_rootx()
+    p_y = self.winfo_rooty()
+    p_w = self.winfo_width()
+    p_h = self.winfo_height()
+    w_w, w_h = 460, 230
+    win.geometry(f"{w_w}x{w_h}+{p_x + (p_w - w_w) // 2}+{p_y + (p_h - w_h) // 2}")
+
+    shell = tk.Frame(win, bg=BORDER_MID)
+    shell.pack(fill="both", expand=True, padx=1, pady=1)
+    root = tk.Frame(shell, bg=CARD_WHITE)
+    root.pack(fill="both", expand=True)
+
+    hdr = tk.Frame(root, bg="#E8EEF8")
+    hdr.pack(fill="x")
+    tk.Label(hdr, text=f"Reason for changing: {col_label}",
+             font=("Segoe UI", 10, "bold"), fg=NAVY_MID,
+             bg="#E8EEF8", padx=14, pady=8, anchor="w").pack(fill="x")
+
+    body = tk.Frame(root, bg=CARD_WHITE)
+    body.pack(fill="both", expand=True, padx=18, pady=(10, 0))
+
+    tk.Label(body, text="Please provide a reason. Your edit will be sent for approval.",
+             font=("Segoe UI", 9), fg=TXT_MUTED, bg=CARD_WHITE,
+             wraplength=420, justify="left").pack(anchor="w")
+
+    reason_var = tk.StringVar()
+    reason_entry = tk.Entry(body, textvariable=reason_var,
+                            font=("Segoe UI", 10), fg=TXT_NAVY, bg=WHITE,
+                            relief="solid", bd=1, insertbackground=NAVY_MID)
+    reason_entry.pack(fill="x", pady=(8, 0), ipady=5)
+    reason_entry.focus_set()
+
+    err_lbl = tk.Label(body, text="", font=("Segoe UI", 8),
+                       fg=ACCENT_RED, bg=CARD_WHITE)
+    err_lbl.pack(anchor="w")
+
+    btn_f = tk.Frame(body, bg=CARD_WHITE)
+    btn_f.pack(fill="x", pady=(8, 0))
+
+    def _submit():
+        if not reason_var.get().strip():
+            err_lbl.config(text="Reason is required.")
+            reason_entry.focus_set()
+            return
+        result[0] = reason_var.get().strip()
+        try: win.grab_release()
+        except Exception: pass
+        win.destroy()
+
+    def _cancel():
+        result[0] = None
+        try: win.grab_release()
+        except Exception: pass
+        win.destroy()
+
+    ctk.CTkButton(btn_f, text="Cancel", command=_cancel,
+                  width=92, height=30, corner_radius=6,
+                  fg_color="#E8ECF2", hover_color="#DDE2EA",
+                  text_color=TXT_NAVY, font=FF(8, "bold")).pack(side="right", padx=(8, 0))
+    ctk.CTkButton(btn_f, text="📨  Send for Approval", command=_submit,
+                  width=150, height=30, corner_radius=6,
+                  fg_color=LIME_MID, hover_color=LIME_BRIGHT,
+                  text_color=TXT_ON_LIME, font=FF(8, "bold")).pack(side="right")
+
+    win.bind("<Return>", lambda e: _submit())
+    win.bind("<Escape>", lambda e: _cancel())
+
+    try:
+        win.wait_window(win)
+    finally:
+        try: win.grab_release()
+        except Exception: pass
+
+    return result[0]
+
+def _db_submit_edit_request(row_id: int, applicant_name: str,
+                             col_name: str, old_value: str,
+                             new_value: str, reason: str,
+                             requested_by: str):
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO edit_requests "
+            "(applicant_id, applicant_name, col_name, old_value, new_value, "
+            " reason, requested_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (row_id, applicant_name, col_name,
+             old_value, new_value, reason, requested_by)
+        )
+        conn.commit()
+        cur.close()
+
 
 # ── CHANGE 3 (add _start_cell_edit) ───────────────────────────────────
 def _start_cell_edit(self, iid: str, col_id: str):
@@ -2324,6 +2478,65 @@ def _start_cell_edit(self, iid: str, col_id: str):
         if not _confirm_cell_modify(self):
             _cancel()
             return
+
+        # ── Ask for reason; submit for approval instead of direct write ──
+        col_label = next(
+            (label for db_col, label, *_ in TABLE_COLS if db_col == col_id),
+            col_id)
+        reason = _ask_edit_reason(self, col_label)
+        if reason is None:
+            _cancel()
+            return
+
+        # Queue the edit request and show pending notice — do NOT write to DB yet
+        committed[0] = True
+        applicant = (self._sum_row_data.get(iid, {})
+                     .get("applicant_name", "") or f"id={row_id}")
+        requested_by = getattr(self, "_current_username", "") or "unknown"
+
+        try:
+            if col_id in _VIRTUAL_TO_JSON:
+                display_val, store_raw = _summary_virtual_display_and_store(new_raw)
+            else:
+                display_val, _ = _summary_display_from_raw(col_id, new_raw)
+                store_raw = new_raw
+        except ValueError as exc:
+            entry.config(bg="#FFE0E0", highlightbackground=ACCENT_RED)
+            messagebox.showerror("Invalid Value", str(exc))
+            entry.focus_set()
+            return
+
+        entry.destroy()
+
+        def _submit_worker():
+            try:
+                _db_submit_edit_request(
+                    row_id, applicant, col_id,
+                    cur_display, display_val, reason, requested_by)
+                def _done():
+                    if hasattr(self, "_sum_save_status_lbl"):
+                        self._sum_save_status_lbl.config(
+                            text="Edit submitted for approval", fg=ACCENT_GOLD)
+                        try:
+                            if getattr(self, "_sum_save_status_after", None):
+                                self.after_cancel(self._sum_save_status_after)
+                        except Exception:
+                            pass
+                        self._sum_save_status_after = self.after(
+                            3000, lambda: self._sum_save_status_lbl.config(text=""))
+                    _log_action(self, "edit_requested",
+                                f"[{col_id}] '{cur_display}' → '{display_val}' "
+                                f"reason='{reason}' ({applicant})")
+                _summary_ui_dispatch(self, _done)
+            except Exception as exc:
+                err = str(exc)
+                _summary_ui_dispatch(self,
+                    lambda: messagebox.showerror("Submit Failed", err))
+
+        threading.Thread(target=_submit_worker, daemon=True).start()
+        return   # stop here — skip the rest of _commit (no live DB write)
+
+        # ── Optimistic UI update (fast) + background DB write (no UI freeze) ──
 
         # ── Optimistic UI update (fast) + background DB write (no UI freeze) ──
         try:
@@ -2598,40 +2811,72 @@ def _open_row_edit_dialog(self, row_id: int):
             if db_col in _VIRTUAL_TO_JSON or db_col in list_like_cols:
                 before_raw = before_raw.replace("\n", "  ·  ")
             if not _summary_edit_values_equivalent(db_col, before_raw, after_raw):
-                changes.append((db_col, after_raw))
+                # Format old value the same way as display so the approval panel shows "P12,345.67" not "12345.67"
+                if db_col in _MONETARY_COLS:
+                    try:
+                        old_display = f"P{float(before_raw):,.2f}" if before_raw.strip() else "—"
+                    except Exception:
+                        old_display = before_raw
+                elif db_col in _VIRTUAL_TO_JSON or db_col in list_like_cols:
+                    old_display = before_raw.replace("\n", "  ·  ")
+                else:
+                    old_display = before_raw or "—"
+                changes.append((db_col, after_raw, old_display))
 
         if not changes:
             dlg.destroy()
             return
 
-        self._sum_save_inflight = True
-        _set_summary_edit_lock(self, True, "row_edit_save")
-        try:
-            for db_col, new_raw in changes:
-                if db_col in _VIRTUAL_TO_JSON:
-                    _db_update_virtual_cell(row_id, db_col, new_raw)
+        # ── Ask reason once for all changes ──────────────────────────────
+        col_labels_changed = ", ".join(
+            label_by_col.get(db_col, db_col) for db_col, _, __ in changes)
+        reason = _ask_edit_reason(self, col_labels_changed)
+        if reason is None:
+            return   # user cancelled — keep dialog open
+
+        requested_by = getattr(self, "_current_username", "") or "unknown"
+        applicant    = row.get("applicant_name", "") or f"id={row_id}"
+
+        def _submit_worker():
+            errors = []
+            for db_col, new_raw, old_raw in changes:
+                try:
+                    if db_col in _VIRTUAL_TO_JSON:
+                        display_val, _ = _summary_virtual_display_and_store(new_raw)
+                        old_display    = old_raw
+                    else:
+                        display_val, _ = _summary_display_from_raw(db_col, new_raw)
+                        old_display    = old_raw
+
+                    _db_submit_edit_request(
+                        row_id, applicant, db_col,
+                        old_display, display_val, reason, requested_by)
+                except Exception as exc:
+                    errors.append(f"{db_col}: {exc}")
+
+            def _done():
+                if errors:
+                    messagebox.showerror("Submit Failed",
+                                        "Some fields failed:\n" + "\n".join(errors))
                 else:
-                    _db_update_cell(row_id, db_col, new_raw)
+                    if hasattr(self, "_sum_save_status_lbl"):
+                        self._sum_save_status_lbl.config(
+                            text="Edit(s) submitted for approval", fg=ACCENT_GOLD)
+                        try:
+                            if getattr(self, "_sum_save_status_after", None):
+                                self.after_cancel(self._sum_save_status_after)
+                        except Exception:
+                            pass
+                        self._sum_save_status_after = self.after(
+                            3000, lambda: self._sum_save_status_lbl.config(text=""))
+                    _log_action(self, "edit_requested",
+                                f"({applicant}) — {len(changes)} field(s) submitted via row edit dialog "
+                                f"reason='{reason}'")
+                dlg.destroy()
 
-            try:
-                applicant = row.get("applicant_name", "") or f"id={row_id}"
-                changed_labels = [label_by_col.get(c, c) for c, _ in changes]
-                _log_action(
-                    self,
-                    "edit_row",
-                    f"Updated {len(changes)} fields ({', '.join(changed_labels[:6])}"
-                    f"{' …' if len(changed_labels) > 6 else ''}) ({applicant})",
-                )
-            except Exception:
-                pass
+            _summary_ui_dispatch(self, _done)
 
-            dlg.destroy()
-            _refresh_summary(self)
-        except Exception as exc:
-            messagebox.showerror("Save Failed", str(exc))
-        finally:
-            self._sum_save_inflight = False
-            _set_summary_edit_lock(self, False)
+        threading.Thread(target=_submit_worker, daemon=True).start()
 
     ctk.CTkButton(
         btn_row, text="💾  Save Changes", command=_save,
@@ -4898,7 +5143,7 @@ def _validate_clients(self):
                 db_cid_set.add(db_cid_up)
 
                 if db_cid_up not in ref_map:
-                    unmatched.append((db_cid, db_name, "Client ID not in Loan Listing"))
+                    unmatched.append((db_cid, db_name, "Client ID not in reference"))
                     continue
 
                 ref_name = ref_map[db_cid_up]
@@ -5013,8 +5258,8 @@ def _validate_clients(self):
             # ── Sheet 1: Summary ───────────────────────────────────────
             ws1 = wb_out.active
             ws1.title = "Summary"
-            ws1.column_dimensions["A"].width = 43
-            ws1.column_dimensions["B"].width = 15
+            ws1.column_dimensions["A"].width = 38
+            ws1.column_dimensions["B"].width = 18
 
             ws1.cell(row=1, column=1,
                      value="Validation Report — Summary").font = \
@@ -5042,13 +5287,13 @@ def _validate_clients(self):
             ws1.row_dimensions[3].height = 22
 
             for ri, (label, count, fill) in enumerate([
-                ("👤 Total Records in DB",                                total_db,     fill_section),
-                ("✓  Matched Records (ID + Name Correct)",             n_matched,    fill_match),
-                ("✗  Unmatched Records (ID or Name Mismatch)",         n_unmatched,  fill_unmatch),
-                ("⚠  Missing in LL (Client Missing in Loan Listing)",  n_no_cid,     fill_nocid),
-                ("⚠  Missing in DB (No CIBI in Database)",             n_notindb,    fill_notindb),
-                ("⚠  Missing Info (Clients with Incomplete Data)",     n_miss_rows,  fill_missing),
-                ("👤 Total Unique Clients in Loan Listing",               len(ref_map), fill_section),
+                ("Total Records in DB",                  total_db,     fill_section),
+                ("✓  Matched (ID + Name correct)",        n_matched,    fill_match),
+                ("✗  Unmatched (ID or Name mismatch)",    n_unmatched,  fill_unmatch),
+                ("⚠  No Client ID in DB (unvalidatable)", n_no_cid,     fill_nocid),
+                ("—  In Reference but not in DB",         n_notindb,    fill_notindb),
+                ("⚠  Records with missing column data",   n_miss_rows,  fill_missing),
+                ("Total Unique Entries in Reference",     len(ref_map), fill_section),
             ], 4):
                 _bc(ws1, ri, 1, label, fill, bold_f, left_c)
                 _bc(ws1, ri, 2, count, fill, bold_f, ctr_al)
@@ -5064,14 +5309,14 @@ def _validate_clients(self):
             ws1.row_dimensions[rate_row].height = 22
             ws1.freeze_panes = "A4"
 
-            # ── Sheet 2: Unmatched ─────────────────────────────────────
-            ws2 = wb_out.create_sheet("Unmatched Records")
+            # ── Sheet 2: Unmatched & Not in DB ─────────────────────────
+            ws2 = wb_out.create_sheet("Unmatched & Not In DB")
             ws2.column_dimensions["A"].width = 18
             ws2.column_dimensions["B"].width = 30
             ws2.column_dimensions["C"].width = 38
             ws2.column_dimensions["D"].width = 16
             _hc(ws2, 1, 1, "Client ID",     fill_hdr_red)
-            _hc(ws2, 1, 2, "Client Name",   fill_hdr_red)
+            _hc(ws2, 1, 2, "Applicant",     fill_hdr_red)
             _hc(ws2, 1, 3, "Reason / Note", fill_hdr_red)
             _hc(ws2, 1, 4, "Issue Type",    fill_hdr_red)
             ws2.row_dimensions[1].height = 24
@@ -5079,9 +5324,13 @@ def _validate_clients(self):
             ri = 2
 
             # ── SECTION A: DB records unmatched ────────────────────────
+            _section_label(ws2, ri,
+                "SECTION A — DB Records: Unmatched (Client ID or Name mismatch)",
+                PatternFill("solid", fgColor="FFE8E8"), "9B2226", 4)
+            ri += 1
             if unmatched:
                 for db_cid, db_name, reason in unmatched:
-                    issue = "Name Mismatch" if "mismatch" in reason.lower() else "ID Not in LL"
+                    issue = "Name Mismatch" if "mismatch" in reason.lower() else "ID Not in Ref"
                     _bc(ws2, ri, 1, db_cid,  fill_unmatch, bold_f)
                     _bc(ws2, ri, 2, db_name, fill_unmatch)
                     _bc(ws2, ri, 3, reason,  fill_unmatch)
@@ -5094,38 +5343,55 @@ def _validate_clients(self):
                 c.fill = fill_unmatch; c.alignment = wrap_al
                 ws2.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=4)
                 ws2.row_dimensions[ri].height = 18
+                ri += 1
 
-            ws2.freeze_panes = "A2"
-
-            # ── Sheet 3 (new): No Client ID ────────────────────────────
-            ws_nocid = wb_out.create_sheet("Missing in LL")
-            ws_nocid.column_dimensions["A"].width = 22
-            ws_nocid.column_dimensions["B"].width = 38
-            ws_nocid.column_dimensions["C"].width = 25
-            _hc(ws_nocid, 1, 1, "Client ID",     fill_hdr_gray)
-            _hc(ws_nocid, 1, 2, "Client Name",   fill_hdr_gray)
-            _hc(ws_nocid, 1, 3, "Status",        fill_hdr_gray)
-            ws_nocid.row_dimensions[1].height = 24
-
-            ri_nocid = 2
+            # ── SECTION A2: DB records with no client ID ───────────────
+            ri += 1  # blank spacer row
+            _section_label(ws2, ri,
+                "SECTION A2 — DB Records with No Client ID (cannot be validated)",
+                PatternFill("solid", fgColor="FFF3CD"), "7D5A00", 4)
+            ri += 1
             if no_cid:
                 for raw_cid, name in no_cid:
-                    _bc(ws_nocid, ri_nocid, 1, raw_cid or "(empty)",    fill_nocid, bold_f)
-                    _bc(ws_nocid, ri_nocid, 2, name,                    fill_nocid)
-                    _bc(ws_nocid, ri_nocid, 3, "Not in Loan Listing",   fill_nocid, bold_f, ctr_al)
-                    ws_nocid.row_dimensions[ri_nocid].height = 18
-                    ri_nocid += 1
+                    _bc(ws2, ri, 1, raw_cid or "(empty)",      fill_nocid, bold_f)
+                    _bc(ws2, ri, 2, name,                       fill_nocid)
+                    _bc(ws2, ri, 3, "Missing Client ID in DB",  fill_nocid)
+                    _bc(ws2, ri, 4, "No ID",                    fill_nocid, bold_f, ctr_al)
+                    ws2.row_dimensions[ri].height = 18
+                    ri += 1
             else:
-                c = ws_nocid.cell(row=ri_nocid, column=1,
-                                value="✓  All DB records have a Client ID.")
+                c = ws2.cell(row=ri, column=1, value="✓  All DB records have a Client ID.")
                 c.font = Font(name="Segoe UI", bold=True, size=9, color="1F6B28")
-                c.fill = fill_nocid; 
-                c.alignment = wrap_al
-                ws_nocid.merge_cells(start_row=ri_nocid, start_column=1,
-                                    end_row=ri_nocid, end_column=4)
-                ws_nocid.row_dimensions[ri_nocid].height = 18
+                c.fill = fill_nocid; c.alignment = wrap_al
+                ws2.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=4)
+                ws2.row_dimensions[ri].height = 18
+                ri += 1
 
-            ws_nocid.freeze_panes = "A2"
+            # ── SECTION B: Reference entries NOT found in DB ───────────
+            # This is the key section — shows EVERY reference client whose
+            # client_id does not exist anywhere in the DB table.
+            ri += 1  # blank spacer row
+            _section_label(ws2, ri,
+                f"SECTION B — Reference Entries with NO Matching Client ID in DB  ({len(ref_not_in_db):,} records)",
+                PatternFill("solid", fgColor="E8F0FF"), "1A3A5C", 4)
+            ri += 1
+            if ref_not_in_db:
+                for ref_cid, ref_name in ref_not_in_db:
+                    _bc(ws2, ri, 1, ref_cid,                         fill_notindb, bold_f)
+                    _bc(ws2, ri, 2, ref_name,                         fill_notindb)
+                    _bc(ws2, ri, 3, "Client ID not found in DB",      fill_notindb)
+                    _bc(ws2, ri, 4, "Not in DB",                      fill_notindb, bold_f, ctr_al)
+                    ws2.row_dimensions[ri].height = 18
+                    ri += 1
+            else:
+                c = ws2.cell(row=ri, column=1,
+                             value="✓  All reference entries exist in the DB.")
+                c.font = Font(name="Segoe UI", bold=True, size=9, color="1F6B28")
+                c.fill = fill_notindb; c.alignment = wrap_al
+                ws2.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=4)
+                ws2.row_dimensions[ri].height = 18
+
+            ws2.freeze_panes = "A2"
 
             # ── Sheet 3: Missing Info ───────────────────────────────────
             ws3 = wb_out.create_sheet("Missing Info")
@@ -5133,8 +5399,8 @@ def _validate_clients(self):
             ws3.column_dimensions["B"].width = 30
             ws3.column_dimensions["C"].width = 16
             ws3.column_dimensions["D"].width = 55
-            _hc(ws3, 1, 1, "Client ID",       fill_hdr_red)
-            _hc(ws3, 1, 2, "Client Name",     fill_hdr_red)
+            _hc(ws3, 1, 1, "Client ID",      fill_hdr_red)
+            _hc(ws3, 1, 2, "Applicant",       fill_hdr_red)
             _hc(ws3, 1, 3, "Missing Count",   fill_hdr_red)
             _hc(ws3, 1, 4, "Missing Columns", fill_hdr_red)
             ws3.row_dimensions[1].height = 24
@@ -5160,18 +5426,18 @@ def _validate_clients(self):
                 ws3.row_dimensions[2].height = 22
             ws3.freeze_panes = "A2"
 
-            # ── Sheet 4: Matched ─────────────────────────────
-            ws4 = wb_out.create_sheet("Matched Records")
+            # ── Sheet 4: Matched Comparison ─────────────────────────────
+            ws4 = wb_out.create_sheet("Matched Comparison")
             ws4.column_dimensions["A"].width = 20
             ws4.column_dimensions["B"].width = 32
             ws4.column_dimensions["C"].width = 20
             ws4.column_dimensions["D"].width = 32
             ws4.column_dimensions["E"].width = 18
 
-            _hc(ws4, 1, 1, "Client ID (DB)",           fill_hdr_green)
-            _hc(ws4, 1, 2, "Client Name(DB)",          fill_hdr_green)
-            _hc(ws4, 1, 3, "Client ID (LL)",           fill_hdr_green)
-            _hc(ws4, 1, 4, "Client Name (LL)",         fill_hdr_green)
+            _hc(ws4, 1, 1, "Client ID (DB)",          fill_hdr_green)
+            _hc(ws4, 1, 2, "Applicant (DB)",           fill_hdr_green)
+            _hc(ws4, 1, 3, "Client ID (Reference)",    fill_hdr_green)
+            _hc(ws4, 1, 4, "Client Name (Reference)",  fill_hdr_green)
             _hc(ws4, 1, 5, "Name Similarity %",        fill_hdr_green)
             ws4.row_dimensions[1].height = 24
 
@@ -5200,49 +5466,48 @@ def _validate_clients(self):
 
             # ── Sheet 5: Reference Not In DB (dedicated full sheet) ─────
             # Standalone sheet so it's never truncated or mixed with other data
-            ws5 = wb_out.create_sheet("Missing in DB")
+            ws5 = wb_out.create_sheet("Ref Not In DB")
             ws5.column_dimensions["A"].width = 22
             ws5.column_dimensions["B"].width = 38
             ws5.column_dimensions["C"].width = 20
 
-            _hc(ws5, 1, 1, "Client ID (LL)",   fill_hdr_blue)
-            _hc(ws5, 1, 2, "Client Name (LL)", fill_hdr_blue)
-            _hc(ws5, 1, 3, "Status",           fill_hdr_blue)
+            _hc(ws5, 1, 1, "Client ID (Reference)",  fill_hdr_blue)
+            _hc(ws5, 1, 2, "Client Name (Reference)", fill_hdr_blue)
+            _hc(ws5, 1, 3, "Status",                  fill_hdr_blue)
             ws5.row_dimensions[1].height = 24
 
+            ws5.cell(row=2, column=1,
+                     value=f"Total: {len(ref_not_in_db):,} reference entries have no matching Client ID in the DB.").font = \
+                Font(name="Segoe UI", bold=True, size=9, color="1A3A5C")
+            ws5.cell(row=2, column=1).alignment = wrap_al
+            ws5.merge_cells("A2:C2")
+            ws5.row_dimensions[2].height = 18
+
             if ref_not_in_db:
-                for ri5, (ref_cid, ref_name) in enumerate(ref_not_in_db, 2):
+                for ri5, (ref_cid, ref_name) in enumerate(ref_not_in_db, 3):
                     _bc(ws5, ri5, 1, ref_cid,              fill_notindb, bold_f)
                     _bc(ws5, ri5, 2, ref_name,              fill_notindb)
-                    _bc(ws5, ri5, 3, "Not in Database",           fill_notindb, bold_f, ctr_al)
+                    _bc(ws5, ri5, 3, "Not in DB",           fill_notindb, bold_f, ctr_al)
                     ws5.row_dimensions[ri5].height = 18
             else:
-                c = ws5.cell(row=2, column=1,
+                c = ws5.cell(row=3, column=1,
                              value="✓  All reference entries exist in the DB.")
                 c.font = Font(name="Segoe UI", bold=True, size=10, color="1F6B28")
                 c.alignment = wrap_al
+                ws5.merge_cells("A3:C3")
+                ws5.row_dimensions[3].height = 22
+            ws5.freeze_panes = "A3"
 
-            ws5.freeze_panes = "A2"
-
-            excel_order = [
-                "Summary",
-                "Matched Records",
-                "Unmatched Records",
-                "Missing in LL",
-                "Missing in DB",
-                "Missing Info",
-            ]
-            wb_out._sheets = [wb_out[name] for name in excel_order]
             wb_out.save(out_path)
 
-            msg  = "Validation Complete.\n\n"
-            msg += f"👤 Total DB records            : {total_db:,}\n"
-            msg += f" ✓   Matched Records          : {n_matched:,}\n"
-            msg += f" ✗   Unmatched Records      : {n_unmatched:,}\n"
-            msg += f"⚠  Missing in Loan Listing  : {n_no_cid:,}\n"
-            msg += f"⚠  Missing in Database      : {n_notindb:,}\n"
-            msg += f"⚠  Missing Column Info     : {n_miss_rows:,} record(s)\n"
-            msg += f"🎯  Match Rate                   : {rate}\n\n"
+            msg  = "Validation complete.\n\n"
+            msg += f"Total DB records           : {total_db:,}\n"
+            msg += f"✓  Matched                 : {n_matched:,}\n"
+            msg += f"✗  Unmatched               : {n_unmatched:,}\n"
+            msg += f"⚠  No Client ID in DB      : {n_no_cid:,}\n"
+            msg += f"—  In Ref, not in DB       : {n_notindb:,}\n"
+            msg += f"⚠  Missing col info        : {n_miss_rows:,} record(s)\n"
+            msg += f"Match Rate                 : {rate}\n\n"
             msg += f"Report saved to:\n{out_path}"
 
             self.after(0, lambda: (
@@ -5289,6 +5554,1047 @@ def lookup_summary_notify(self):
         _refresh_summary(self)
     elif hasattr(self, "_sum_stat_labels"):
         _update_stats(self)
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOM DOC — DB HELPERS
+# ═══════════════════════════════════════════════════════════════════════
+
+def _db_init_custom_docs():
+    """Tables already exist in DB — just verify connectivity."""
+    try:
+        with _db_connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM custom_doc_configs LIMIT 1")
+            cur.execute("SELECT 1 FROM custom_extractions LIMIT 1")
+            cur.close()
+    except Exception as e:
+        print(f"[_db_init_custom_docs] Warning: {e}")
+
+
+def _db_save_custom_doc_config(title: str, file_type: str,
+                                labels: list, col_titles: list) -> int:
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO custom_doc_configs (title, file_type, labels, col_titles) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (title, file_type,
+             json.dumps(labels), json.dumps(col_titles)))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+    return new_id
+
+
+def _db_load_custom_doc_configs() -> list:
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, file_type, labels, col_titles "
+            "FROM custom_doc_configs ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        cur.close()
+    return [
+        {"id": r[0], "title": r[1], "file_type": r[2],
+         "labels": r[3], "col_titles": r[4]}
+        for r in rows
+    ]
+
+
+def _db_delete_custom_doc_config(config_id: int):
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM custom_doc_configs WHERE id=%s", (config_id,))
+        conn.commit()
+        cur.close()
+
+
+def _db_upsert_custom_extraction(client_id: str, config_id: int,
+                                  config_title: str, data: dict):
+    with _db_connect() as conn:
+        cur = conn.cursor()
+
+        # ── Upsert into custom_extractions (existing logic) ────────────
+        cur.execute(
+            "SELECT id FROM custom_extractions "
+            "WHERE client_id=%s AND config_id=%s",
+            (client_id, config_id))
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                "UPDATE custom_extractions "
+                "SET data=%s, extracted_at=NOW() WHERE id=%s",
+                (json.dumps(data), existing[0]))
+        else:
+            cur.execute(
+                "INSERT INTO custom_extractions "
+                "(client_id, config_id, config_title, data) "
+                "VALUES (%s, %s, %s, %s)",
+                (client_id, config_id, config_title,
+                 json.dumps(data)))
+
+        # ── NEW: Ensure a column exists in applicants for each key ─────
+        # Column name format: custom_<config_id>_<snake_cased_key>
+        for col_title, value in data.items():
+            safe_col = "custom_" + re.sub(r"[^a-z0-9]", "_",
+                       f"{config_id}_{col_title}".lower()).strip("_")
+            # Add column if it doesn't exist yet
+            # Check if column exists first, then ALTER TABLE if needed
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='applicants' AND column_name=%s
+            """, (safe_col,))
+            if not cur.fetchone():
+                # safe_col is already sanitised by the regex above —
+                # only a-z, 0-9 and _ can appear in it, so f-string is safe here
+                cur.execute(f"ALTER TABLE applicants ADD COLUMN {safe_col} TEXT")
+
+            # Write the value into the matching applicant row
+            cur.execute(
+                f"UPDATE applicants SET {safe_col}=%s "
+                "WHERE TRIM(UPPER(client_id))=TRIM(UPPER(%s))",
+                (value, client_id))
+
+        conn.commit()
+        cur.close()
+
+def _db_get_custom_columns() -> list[tuple[str, str, int]]:
+    """
+    Returns list of (db_col, display_label, config_id) for all
+    custom columns that exist in the applicants table.
+    Format: custom_<config_id>_<key>
+    """
+    result = []
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        # Get all custom_* columns from applicants
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='applicants'
+            AND column_name LIKE 'custom_%'
+            ORDER BY column_name
+        """)
+        col_rows = [r[0] for r in cur.fetchall()]
+
+        # Get config titles for display labels
+        cur.execute("SELECT id, title FROM custom_doc_configs")
+        config_map = {r[0]: r[1] for r in cur.fetchall()}
+        cur.close()
+
+    for col_name in col_rows:
+        # Parse: custom_<config_id>_<rest>
+        parts = col_name.split("_", 2)  # ['custom', '<id>', '<key>']
+        if len(parts) < 3:
+            continue
+        try:
+            config_id = int(parts[1])
+        except ValueError:
+            continue
+        key_part      = parts[2].replace("_", " ").title()
+        config_title  = config_map.get(config_id, f"Config {config_id}")
+        display_label = config_title
+        result.append((col_name, display_label, config_id))
+
+    return result
+
+
+def _db_verify_client_id_exists(client_id: str) -> bool:
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM applicants "
+            "WHERE TRIM(UPPER(client_id))=TRIM(UPPER(%s)) LIMIT 1",
+            (client_id,))
+        result = cur.fetchone()
+        cur.close()
+    return result is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOM DOC — GEMINI EXTRACTION
+# ═══════════════════════════════════════════════════════════════════════
+
+def _gemini_extract_custom_labels(pdf_bytes: bytes,
+                                   labels: list,
+                                   file_type_hint: str,
+                                   api_key: str) -> dict:
+    try:
+        from google import genai
+        from google.genai import types as gt
+    except ImportError:
+        raise RuntimeError(
+            "google-genai not installed. Run: pip install google-genai")
+
+    client = genai.Client(api_key=api_key)
+    label_lines = "\n".join(
+        f'  {i+1}. "{lbl.strip()}"' for i, lbl in enumerate(labels))
+    file_hint = (
+        f"The document type is: {file_type_hint}.\n"
+        if file_type_hint else "")
+    json_template = "{\n" + ",\n".join(
+        f'  "{lbl.strip()}": ""' for lbl in labels) + "\n}"
+
+    prompt = f"""You are a data extraction assistant for a Philippine rural bank.
+This is a scanned loan-application document.
+{file_hint}
+Extract the following labelled fields. Each label is a printed field
+name on the form. Return the handwritten or typed value next to it.
+If a label is absent or its value is blank, return "".
+
+Fields to extract:
+{label_lines}
+
+Rules:
+- Copy values exactly as written on the document.
+- For multi-line values (e.g. addresses), join with a single space.
+- For amounts, include the peso sign and commas exactly as written.
+- NEVER invent or guess. Missing or blank = empty string "".
+- Return ONLY valid JSON — no explanation, no markdown fences.
+
+Required JSON format:
+{json_template}"""
+
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            gt.Part.from_bytes(
+                data=pdf_bytes, mime_type="application/pdf"),
+            prompt,
+        ],
+        config=gt.GenerateContentConfig(temperature=0.0),
+    )
+    raw     = resp.text or ""
+    cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
+    m       = re.search(r"\{[\s\S]*\}", cleaned)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CUSTOM DOC — ADD DOC DIALOG
+# ═══════════════════════════════════════════════════════════════════════
+
+# FILE TYPE CATEGORIES
+_DOC_FILE_TYPES = [
+    "PDF Document",
+    "Scanned Image (JPG/PNG)",
+    "Word Document (.docx)",
+    "Text File (.txt)",
+    "Other Document",
+]
+
+_DATA_FILE_TYPES = [
+    "Excel Spreadsheet (.xlsx)",
+    "CSV File (.csv)",
+]
+
+_ALL_FILE_TYPES = _DOC_FILE_TYPES + _DATA_FILE_TYPES
+
+
+def _open_add_doc_dialog(self):
+    _db_init_custom_docs()
+
+    api_key = None
+    for attr in ("_gemini_api_key", "gemini_api_key", "_api_key"):
+        if hasattr(self, attr):
+            api_key = getattr(self, attr)
+            break
+    if not api_key:
+        try:
+            from app_constants import GEMINI_API_KEY
+            api_key = GEMINI_API_KEY
+        except Exception:
+            pass
+    if not api_key:
+        import os
+        api_key = (os.environ.get("GEMINI_API_KEY") or
+                   os.environ.get("GOOGLE_API_KEY"))
+    if not api_key:
+        messagebox.showerror(
+            "Gemini Key Missing",
+            "No Gemini API key found.\n"
+            "Add GEMINI_API_KEY to app_constants.py or set the "
+            "GEMINI_API_KEY environment variable.")
+        return
+
+    win = tk.Toplevel(self)
+    win.overrideredirect(True)
+    win.configure(bg=LIME_MID)  # lime border outline
+    win.grab_set()
+
+    p_x = self.winfo_rootx(); p_y = self.winfo_rooty()
+    p_w = self.winfo_width();  p_h = self.winfo_height()
+    w_w, w_h = 820, 720
+    win.geometry(
+        f"{w_w}x{w_h}+{p_x + (p_w - w_w) // 2}"
+        f"+{p_y + (p_h - w_h) // 2}")
+    win.minsize(700, 600)
+
+    # ── Drag support ──────────────────────────────────────────────────
+    _drag = {"x": 0, "y": 0}
+    def _drag_start(e): _drag["x"] = e.x_root; _drag["y"] = e.y_root
+    def _drag_move(e):
+        dx = e.x_root - _drag["x"]; dy = e.y_root - _drag["y"]
+        x  = win.winfo_x() + dx;    y  = win.winfo_y() + dy
+        win.geometry(f"+{x}+{y}")
+        _drag["x"] = e.x_root;      _drag["y"] = e.y_root
+
+    # ── 2px lime border shell ─────────────────────────────────────────
+    border_shell = tk.Frame(win, bg=LIME_MID, padx=2, pady=2)
+    border_shell.pack(fill="both", expand=True)
+
+    # ── Sidebar + main layout ─────────────────────────────────────────
+    body_outer = tk.Frame(border_shell, bg=NAVY_DEEP)
+    body_outer.pack(fill="both", expand=True)
+
+    # Left sidebar (mirrors login screen sidebar)
+    sidebar = tk.Frame(body_outer, bg=NAVY_DEEP, width=220)
+    sidebar.pack(side="left", fill="y")
+    sidebar.pack_propagate(False)
+
+    # Sidebar logo block
+    # ── Sidebar logo block (draggable) ────────────────────────────────
+    logo_block = tk.Frame(sidebar, bg=NAVY_DEEP)
+    logo_block.pack(fill="x", padx=20, pady=(28, 0))
+    logo_block.bind("<ButtonPress-1>",   _drag_start)
+    logo_block.bind("<B1-Motion>",       _drag_move)
+
+    logo_circle = tk.Frame(logo_block, bg=LIME_MID, width=38, height=38)
+    logo_circle.pack(side="left")
+    logo_circle.pack_propagate(False)
+    lc_lbl = tk.Label(logo_circle, text="📄", font=("Segoe UI Emoji", 14),
+                      bg=LIME_MID, fg=NAVY_DEEP)
+    lc_lbl.place(relx=0.5, rely=0.5, anchor="center")
+    lc_lbl.bind("<ButtonPress-1>", _drag_start)
+    lc_lbl.bind("<B1-Motion>",     _drag_move)
+
+    title_block = tk.Frame(logo_block, bg=NAVY_DEEP)
+    title_block.pack(side="left", padx=(10, 0))
+    title_block.bind("<ButtonPress-1>", _drag_start)
+    title_block.bind("<B1-Motion>",     _drag_move)
+    for txt, fnt, clr in [
+        ("ADD DOC",          ("Segoe UI", 11, "bold"), WHITE),
+        ("Custom Extraction",("Segoe UI", 8),          "#8DA8C8"),
+    ]:
+        l = tk.Label(title_block, text=txt, font=fnt, fg=clr,
+                     bg=NAVY_DEEP, anchor="w")
+        l.pack(anchor="w")
+        l.bind("<ButtonPress-1>", _drag_start)
+        l.bind("<B1-Motion>",     _drag_move)
+
+    tk.Frame(sidebar, bg="#1E2D45", height=1).pack(fill="x", padx=20, pady=(18, 0))
+
+    # Sidebar description
+    desc_frame = tk.Frame(sidebar, bg=NAVY_DEEP)
+    desc_frame.pack(fill="x", padx=20, pady=(16, 0))
+    desc_frame.bind("<ButtonPress-1>", _drag_start)
+    desc_frame.bind("<B1-Motion>",     _drag_move)
+    dl = tk.Label(desc_frame,
+                  text="Configure labels,\nthen run against\nany file and link\nto a Client ID.",
+                  font=("Segoe UI", 8), fg="#6A84A0",
+                  bg=NAVY_DEEP, justify="left", anchor="w")
+    dl.pack(anchor="w")
+    dl.bind("<ButtonPress-1>", _drag_start)
+    dl.bind("<B1-Motion>",     _drag_move)
+
+    tk.Frame(sidebar, bg="#1E2D45", height=1).pack(fill="x", padx=20, pady=(20, 0))
+
+    # ── Clickable sidebar nav items ───────────────────────────────────
+    _sidebar_nav_frames: dict[str, tk.Frame] = {}
+    _sidebar_nav_labels: dict[str, tk.Label] = {}
+
+    def _update_sidebar_nav(active_name: str):
+        for n, f in _sidebar_nav_frames.items():
+            is_act = (n == active_name)
+            f.config(bg="#1E2D45" if is_act else NAVY_DEEP)
+            _sidebar_nav_labels[n].config(
+                bg="#1E2D45" if is_act else NAVY_DEEP,
+                fg=LIME_MID  if is_act else "#6A84A0",
+                font=("Segoe UI", 9, "bold" if is_act else "normal"))
+
+    for nav_label, nav_icon in [
+        ("Add Extraction",  "＋"),
+        ("Added Extracted", "≡"),
+    ]:
+        nav_f = tk.Frame(sidebar, bg=NAVY_DEEP, cursor="hand2")
+        nav_f.pack(fill="x", padx=10, pady=1)
+        nav_lbl = tk.Label(nav_f,
+                           text=f"  {nav_icon}  {nav_label}",
+                           font=("Segoe UI", 9), fg="#6A84A0",
+                           bg=NAVY_DEEP, padx=10, pady=8,
+                           anchor="w", cursor="hand2")
+        nav_lbl.pack(fill="x")
+        _sidebar_nav_frames[nav_label] = nav_f
+        _sidebar_nav_labels[nav_label] = nav_lbl
+        nav_f.bind("<Button-1>",   lambda e, n=nav_label: _switch_tab(n))
+        nav_lbl.bind("<Button-1>", lambda e, n=nav_label: _switch_tab(n))
+
+    # Spacer at bottom of sidebar + version tag
+    tk.Frame(sidebar, bg=NAVY_DEEP).pack(fill="both", expand=True)
+    tk.Frame(sidebar, bg="#1E2D45", height=1).pack(fill="x", padx=20, pady=(0, 8))
+    tk.Label(sidebar, text="DocExtract Pro  ·  v2.0",
+             font=("Segoe UI", 7), fg="#3A5070",
+             bg=NAVY_DEEP, pady=8).pack()
+
+    # Vertical divider
+    tk.Frame(body_outer, bg="#1E2D45", width=1).pack(side="left", fill="y")
+
+    # Right content panel
+    right_panel = tk.Frame(body_outer, bg=WHITE)
+    right_panel.pack(side="left", fill="both", expand=True)
+
+    # Content header
+    hdr = tk.Frame(right_panel, bg=WHITE)
+    hdr.pack(fill="x", padx=32, pady=(28, 0))
+    _right_title_lbl = tk.Label(hdr, text="Add Doc",
+             font=("Segoe UI", 20, "bold"), fg=NAVY_DEEP,
+             bg=WHITE, anchor="w")
+    _right_title_lbl.pack(anchor="w")
+    _right_sub_lbl = tk.Label(hdr,
+             text="Configure extraction labels and run against any document file.",
+             font=("Segoe UI", 9), fg="#6A84A0",
+             bg=WHITE, anchor="w")
+    _right_sub_lbl.pack(anchor="w", pady=(2, 0))
+
+    # Close button top-right of right panel
+    close_btn = tk.Label(right_panel, text="✕",
+                         font=("Segoe UI", 13), fg="#9AAFC5",
+                         bg=WHITE, cursor="hand2", padx=14, pady=10)
+    close_btn.place(relx=1.0, rely=0.0, anchor="ne")
+    close_btn.bind("<Button-1>",  lambda e: win.destroy())
+    close_btn.bind("<Enter>",     lambda e: close_btn.config(fg=ACCENT_RED))
+    close_btn.bind("<Leave>",     lambda e: close_btn.config(fg="#9AAFC5"))
+
+    # Make header draggable
+    for w in (hdr, _right_title_lbl, _right_sub_lbl):
+        w.bind("<ButtonPress-1>", _drag_start)
+        w.bind("<B1-Motion>",     _drag_move)
+    tk.Frame(right_panel, bg="#E8EEF8", height=1).pack(fill="x", padx=32, pady=(14, 0))
+
+    content_area = tk.Frame(right_panel, bg=WHITE)
+    content_area.pack(fill="both", expand=True)
+
+    tab_frames: dict[str, tk.Frame] = {}
+
+    def _switch_tab(name: str):
+        for f in tab_frames.values():
+            f.pack_forget()
+        tab_frames[name].pack(fill="both", expand=True)
+        _update_sidebar_nav(name)
+        # Update right-panel header title
+        _right_title_lbl.config(
+            text="Add Doc" if name == "Add Extraction" else "Added Extracted")
+        _right_sub_lbl.config(
+            text="Configure extraction labels and run against any document file."
+                 if name == "Add Extraction"
+                 else "Run a saved config against a file and link it to a Client ID.")
+
+    for tab_name in ("Add Extraction", "Added Extracted"):
+        f = tk.Frame(content_area, bg=WHITE)
+        tab_frames[tab_name] = f
+
+    # ── TAB 1: Add Extraction ─────────────────────────────────────────
+    # ── TAB 1: Add Extraction ─────────────────────────────────────────
+    t1 = tab_frames["Add Extraction"]
+    t1_body = tk.Frame(t1, bg=WHITE)
+    t1_body.pack(fill="both", expand=True, padx=32, pady=16)
+
+    def _lbl(parent, text):
+        tk.Label(parent, text=text,
+                 font=("Segoe UI", 8, "bold"), fg="#374151",
+                 bg=WHITE, anchor="w").pack(fill="x", pady=(0, 4))
+
+    def _hint(parent, text):
+        tk.Label(parent, text=text,
+                 font=("Segoe UI", 7), fg="#9AAFC5",
+                 bg=WHITE, anchor="w").pack(fill="x", pady=(0, 10))
+
+    # ── Document Title ────────────────────────────────────────────────
+    _lbl(t1_body, "Document Title  (shown as the button label in 'Added Extracted')")
+    title_var = tk.StringVar()
+    tk.Entry(t1_body, textvariable=title_var,
+             font=("Segoe UI", 10), fg=TXT_NAVY, bg=WHITE,
+             relief="solid", bd=1,
+             insertbackground=NAVY_MID).pack(fill="x", ipady=4, pady=(0, 10))
+
+    # ── File Type Dropdown ────────────────────────────────────────────
+    _lbl(t1_body, "File Type  (select the type of document to process)")
+
+    filetype_var = tk.StringVar(value=_ALL_FILE_TYPES[0])
+
+    filetype_combo = ttk.Combobox(
+        t1_body,
+        textvariable=filetype_var,
+        values=_ALL_FILE_TYPES,
+        state="readonly",
+        font=("Segoe UI", 9),
+        width=60,
+    )
+    filetype_combo.pack(fill="x", pady=(0, 4))
+
+    # ── Mode indicator label ──────────────────────────────────────────
+    mode_lbl = tk.Label(
+        t1_body, text="",
+        font=("Segoe UI", 8, "bold"), fg=NAVY_MID,
+        bg=CARD_WHITE, anchor="w")
+    mode_lbl.pack(fill="x", pady=(0, 8))
+
+    # ── Labels section ────────────────────────────────────────────────
+    labels_frame = tk.Frame(t1_body, bg=WHITE)
+    labels_frame.pack(fill="x")
+    _lbl(labels_frame, "Labels to Fetch  (comma-separated — printed field names on the form)")
+    labels_txt = tk.Text(
+        labels_frame, height=3,
+        font=("Segoe UI", 9), fg=TXT_NAVY, bg=WHITE,
+        relief="solid", bd=1,
+        insertbackground=NAVY_MID, wrap="word")
+    labels_txt.pack(fill="x", pady=(0, 2))
+    _hint(labels_frame, "e.g.  Credit Score, Risk Rating, Loan Purpose, Remarks")
+
+    # ── Column Titles section ─────────────────────────────────────────
+    coltitles_frame = tk.Frame(t1_body, bg=WHITE)
+    coltitles_frame.pack(fill="x")
+    _lbl(coltitles_frame, "Column Titles  (comma-separated, same order as Labels — stored as keys in DB)")
+    coltitles_txt = tk.Text(
+        coltitles_frame, height=3,
+        font=("Segoe UI", 9), fg=TXT_NAVY, bg=WHITE,
+        relief="solid", bd=1,
+        insertbackground=NAVY_MID, wrap="word")
+    coltitles_txt.pack(fill="x", pady=(0, 2))
+    _hint(coltitles_frame, "Must be the same count as Labels.  e.g.  Credit Score, Risk Rating, Loan Purpose, Remarks")
+
+    # ── Dynamic enable/disable based on file type ─────────────────────
+    def _is_data_type(ft: str) -> bool:
+        return ft in _DATA_FILE_TYPES
+
+    def _set_widget_state(widget, enabled: bool):
+        """Enable or disable a Text widget visually."""
+        if enabled:
+            widget.config(
+                state="normal",
+                bg=WHITE,
+                fg=TXT_NAVY,
+                relief="solid")
+        else:
+            widget.config(
+                state="disabled",
+                bg="#F0F0F0",
+                fg="#AAAAAA",
+                relief="flat")
+
+    def _on_filetype_change(*_):
+        ft = filetype_var.get()
+        is_data = _is_data_type(ft)
+
+        if is_data:
+            # CSV/Excel: Column Titles required, Labels disabled
+            _set_widget_state(labels_txt,     enabled=False)
+            _set_widget_state(coltitles_txt,  enabled=True)
+            mode_lbl.config(
+                text="📊  Data file mode — Column Titles are required. Labels field is not used.",
+                fg="#1A4A2A")
+        else:
+            # Document/PDF: Labels required, Column Titles auto-derived (disabled)
+            _set_widget_state(labels_txt,    enabled=True)
+            _set_widget_state(coltitles_txt, enabled=False)
+            mode_lbl.config(
+                text="📄  Document mode — Labels are required. Column Titles will mirror the Labels.",
+                fg="#1A2E5C")
+
+    filetype_combo.bind("<<ComboboxSelected>>", _on_filetype_change)
+    _on_filetype_change()  # apply initial state
+
+    # ── Error label ───────────────────────────────────────────────────
+    err_lbl_t1 = tk.Label(t1_body, text="",
+                           font=("Segoe UI", 8), fg=ACCENT_RED,
+                           bg=WHITE, anchor="w")
+    err_lbl_t1.pack(fill="x")
+
+    # ── Save Config ───────────────────────────────────────────────────
+    def _save_config():
+        title     = title_var.get().strip()
+        file_type = filetype_var.get().strip()
+        ft        = file_type
+        is_data   = _is_data_type(ft)
+
+        if not title:
+            err_lbl_t1.config(text="Document title is required.", fg=ACCENT_RED)
+            return
+
+        if is_data:
+            # CSV/Excel mode — only column titles matter
+            cols_raw   = coltitles_txt.get("1.0", "end-1c").strip()
+            col_titles = [x.strip() for x in cols_raw.split(",") if x.strip()]
+            if not col_titles:
+                err_lbl_t1.config(
+                    text="Column Titles are required for data file types.",
+                    fg=ACCENT_RED)
+                return
+            # Labels mirror column titles for storage consistency
+            labels = col_titles[:]
+        else:
+            # Document mode — labels required; column titles = labels
+            labels_raw = labels_txt.get("1.0", "end-1c").strip()
+            labels     = [x.strip() for x in labels_raw.split(",") if x.strip()]
+            if not labels:
+                err_lbl_t1.config(
+                    text="Labels are required for document/PDF types.",
+                    fg=ACCENT_RED)
+                return
+            # Column titles automatically mirror labels
+            col_titles = labels[:]
+
+        err_lbl_t1.config(text="")
+        try:
+            _db_save_custom_doc_config(title, file_type, labels, col_titles)
+            err_lbl_t1.config(
+                text=f'✓  "{title}" saved — switch to "Added Extracted" to run it.',
+                fg=ACCENT_SUCCESS)
+            _reload_run_tab()
+        except Exception as exc:
+            err_lbl_t1.config(text=f"Save failed: {exc}", fg=ACCENT_RED)
+
+    tk.Frame(t1_body, bg=WHITE, height=10).pack()
+    ctk.CTkButton(t1_body, text="Save Config →",
+                  command=_save_config,
+                  width=180, height=38, corner_radius=8,
+                  fg_color=NAVY_DEEP, hover_color=NAVY_LIGHT,
+                  text_color=WHITE,
+                  font=FF(10, "bold")).pack(anchor="w")
+
+    # ── TAB 2: Added Extracted ────────────────────────────────────────
+    t2 = tab_frames["Added Extracted"]
+
+    t2_info = tk.Frame(t2, bg="#F5F7FA",
+                       highlightbackground=BORDER_MID,
+                       highlightthickness=1)
+    t2_info.pack(fill="x", padx=16, pady=(12, 4))
+    tk.Label(t2_info,
+             text="Click a config button to upload a file and extract data.\n"
+                  "You will be asked for the applicant's Client ID first.",
+             font=("Segoe UI", 8), fg=TXT_MUTED, bg="#F0F4FA",
+             padx=10, pady=8, justify="left").pack(anchor="w")
+
+    status_var = tk.StringVar(value="")
+    status_lbl = tk.Label(t2, textvariable=status_var,
+                           font=("Segoe UI", 9, "bold"),
+                           fg=ACCENT_SUCCESS, bg=WHITE, pady=3)
+    status_lbl.pack(fill="x", padx=16)
+
+    t2_scroll_outer = tk.Frame(t2, bg=WHITE)
+    t2_scroll_outer.pack(fill="both", expand=True, padx=16, pady=4)
+
+    t2_canvas  = tk.Canvas(t2_scroll_outer, bg=WHITE,
+                            highlightthickness=0)
+    t2_vscroll = tk.Scrollbar(t2_scroll_outer, orient="vertical",
+                               command=t2_canvas.yview)
+    t2_canvas.configure(yscrollcommand=t2_vscroll.set)
+    t2_vscroll.pack(side="right", fill="y")
+    t2_canvas.pack(side="left", fill="both", expand=True)
+
+    t2_inner = tk.Frame(t2_canvas, bg=WHITE)
+    t2_cwin  = t2_canvas.create_window((0, 0), window=t2_inner, anchor="nw")
+
+    def _on_t2_cfg(e=None):
+        t2_canvas.configure(scrollregion=t2_canvas.bbox("all"))
+        t2_canvas.itemconfig(t2_cwin, width=t2_canvas.winfo_width())
+    t2_inner.bind("<Configure>", _on_t2_cfg)
+    t2_canvas.bind("<Configure>", _on_t2_cfg)
+
+    def _ask_client_id(config_title: str):
+        result = [None]
+        dlg = tk.Toplevel(win)
+        dlg.configure(bg=CARD_WHITE)
+        dlg.resizable(False, False)
+        dlg.overrideredirect(True)
+        dlg.transient(win)
+        dlg.grab_set()
+        dlg.lift(win)
+        dlg.focus_force()
+
+        d_w, d_h = 440, 200
+        dlg.geometry(
+            f"{d_w}x{d_h}"
+            f"+{win.winfo_rootx() + (w_w - d_w) // 2}"
+            f"+{win.winfo_rooty() + (w_h - d_h) // 2}")
+
+        shell = tk.Frame(dlg, bg=BORDER_MID)
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+        root = tk.Frame(shell, bg=CARD_WHITE)
+        root.pack(fill="both", expand=True)
+
+        hdr2 = tk.Frame(root, bg="#E8EEF8")
+        hdr2.pack(fill="x")
+        tk.Label(hdr2, text=f"Link to Client ID — {config_title}",
+                 font=("Segoe UI", 10, "bold"), fg=NAVY_MID,
+                 bg="#E8EEF8", padx=14, pady=8, anchor="w").pack(fill="x")
+
+        body2 = tk.Frame(root, bg=CARD_WHITE)
+        body2.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+        tk.Label(body2,
+                 text="Enter the applicant's Client ID.\n"
+                      "The extraction will be saved and linked to this ID.",
+                 font=("Segoe UI", 9), fg=TXT_MUTED,
+                 bg=CARD_WHITE, justify="left").pack(anchor="w")
+
+        # Load all client IDs from DB for the dropdown
+        def _load_client_ids():
+            try:
+                with _db_connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT client_id, applicant_name FROM applicants "
+                        "WHERE client_id IS NOT NULL AND TRIM(client_id) != '' "
+                        "ORDER BY applicant_name ASC")
+                    rows = cur.fetchall()
+                    cur.close()
+                return [f"{r[0]}  —  {r[1]}" for r in rows if r[0]]
+            except Exception:
+                return []
+
+        cid_choices = _load_client_ids()
+        cid_var = tk.StringVar()
+        cid_entry = ttk.Combobox(
+            body2, textvariable=cid_var,
+            values=cid_choices,
+            font=("Segoe UI", 10),
+            width=40)
+        cid_entry.pack(fill="x", ipady=4, pady=(8, 0))
+        cid_entry.focus_set()
+
+        err2 = tk.Label(body2, text="",
+                        font=("Segoe UI", 8), fg=ACCENT_RED, bg=CARD_WHITE)
+        err2.pack(anchor="w")
+
+        def _confirm_cid():
+            raw = cid_var.get().strip()
+            # Strip the " — Name" suffix if selected from dropdown
+            cid = raw.split("  —  ")[0].strip() if "  —  " in raw else raw
+            if not cid:
+                err2.config(text="Client ID is required."); return
+            if not _db_verify_client_id_exists(cid):
+                err2.config(
+                    text=f'Client ID "{cid}" not found. '
+                         f'Check spelling or import this applicant first.')
+                return
+            result[0] = cid
+            try: dlg.grab_release()
+            except Exception: pass
+            dlg.destroy()
+
+        def _cancel_cid():
+            result[0] = None
+            try: dlg.grab_release()
+            except Exception: pass
+            dlg.destroy()
+
+        btn_row2 = tk.Frame(body2, bg=CARD_WHITE)
+        btn_row2.pack(fill="x", pady=(8, 0))
+        ctk.CTkButton(btn_row2, text="Cancel", command=_cancel_cid,
+                      width=90, height=28, corner_radius=6,
+                      fg_color="#E8ECF2", hover_color="#DDE2EA",
+                      text_color=TXT_NAVY, font=FF(8, "bold")).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row2, text="✔  Confirm", command=_confirm_cid,
+                      width=100, height=28, corner_radius=6,
+                      fg_color=LIME_MID, hover_color=LIME_BRIGHT,
+                      text_color=TXT_ON_LIME, font=FF(8, "bold")).pack(side="right")
+
+        cid_entry.bind("<Return>", lambda e: _confirm_cid())
+        dlg.bind("<Escape>", lambda e: _cancel_cid())
+        try:
+            dlg.wait_window(dlg)
+        finally:
+            try: dlg.grab_release()
+            except Exception: pass
+        return result[0]
+
+    def _run_extraction(config: dict):
+        ft      = config.get("file_type", "")
+        is_data = _is_data_type(ft)
+
+        # Choose appropriate file dialog filter
+        if is_data:
+            filetypes = [("Data files", "*.xlsx *.csv"),
+                        ("Excel files", "*.xlsx"),
+                        ("CSV files", "*.csv"),
+                        ("All files", "*.*")]
+        else:
+            filetypes = [("Document files", "*.pdf *.docx *.txt *.jpg *.jpeg *.png"),
+                        ("PDF files", "*.pdf"),
+                        ("All files", "*.*")]
+
+        path = filedialog.askopenfilename(
+            title=f"Upload file for: {config['title']}",
+            filetypes=filetypes)
+        if not path:
+            return
+
+        labels     = config["labels"]
+        col_titles = config["col_titles"]
+
+        def _ui_status(msg, color=ACCENT_GOLD):
+            win.after(0, lambda: (
+                status_var.set(msg),
+                status_lbl.config(fg=color)))
+
+        def _worker():
+            try:
+                if is_data:
+                    # ── CSV / Excel extraction ─────────────────────────────
+                    _ui_status(f"⟳  Reading data file '{Path(path).name}'…")
+                    import openpyxl as _oxl
+                    import csv as _csv_mod
+
+                    if path.lower().endswith(".csv"):
+                        with open(path, newline="", encoding="utf-8-sig") as f:
+                            reader  = _csv_mod.DictReader(f)
+                            records = [dict(r) for r in reader]
+                        file_cols = list(records[0].keys()) if records else []
+                    else:
+                        wb  = _oxl.load_workbook(path, read_only=True, data_only=True)
+                        ws  = wb.active
+                        hdr = next(ws.iter_rows(min_row=1, max_row=1), None)
+                        if hdr is None:
+                            raise ValueError("File appears to be empty.")
+                        file_cols = [str(c.value).strip() if c.value else "" for c in hdr]
+                        records = []
+                        for row in ws.iter_rows(min_row=2, values_only=True):
+                            if all(v is None for v in row):
+                                continue
+                            records.append({
+                                file_cols[i]: (str(v).strip() if v is not None else "")
+                                for i, v in enumerate(row) if i < len(file_cols)
+                            })
+                        wb.close()
+
+                    if not records:
+                        raise ValueError("No data rows found in the file.")
+
+                    # ── Detect client_id column in file ────────────────────
+                    def _find_col(cols, *keywords):
+                        for kw in keywords:
+                            kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
+                            for c in cols:
+                                if re.sub(r"[\s_\-]", "", c.lower()) == kw_norm:
+                                    return c
+                        for kw in keywords:
+                            kw_norm = re.sub(r"[\s_\-]", "", kw.lower())
+                            for c in cols:
+                                if kw_norm in re.sub(r"[\s_\-]", "", c.lower()):
+                                    return c
+                        return None
+
+                    col_cid = _find_col(file_cols,
+                                        "clientid", "client id", "client_id", "cid")
+                    if not col_cid:
+                        raise ValueError(
+                            f"No Client ID column found in file.\n\n"
+                            f"File has: {', '.join(file_cols)}\n\n"
+                            f"Add a 'Client ID' column to the file so each row "
+                            f"can be matched to the correct applicant.")
+
+                    # ── Process each row by its client_id ─────────────────
+                    saved_count   = 0
+                    skipped_count = 0
+                    not_found     = []
+
+                    for file_row in records:
+                        client_id = str(file_row.get(col_cid, "") or "").strip()
+                        if not client_id:
+                            skipped_count += 1
+                            continue
+
+                        if not _db_verify_client_id_exists(client_id):
+                            not_found.append(client_id)
+                            continue
+
+                        # Map col_titles → file columns for this row
+                        data_to_store: dict[str, str] = {}
+                        for ct in col_titles:
+                            ct_norm = re.sub(r"[\s_\-]", "", ct.lower())
+                            matched_col = next(
+                                (fc for fc in file_cols
+                                if re.sub(r"[\s_\-]", "", fc.lower()) == ct_norm),
+                                None)
+                            if matched_col is None:
+                                matched_col = next(
+                                    (fc for fc in file_cols
+                                    if ct_norm in re.sub(r"[\s_\-]", "", fc.lower())),
+                                    None)
+                            val = str(file_row.get(matched_col, "") or "").strip() \
+                                if matched_col else ""
+                            data_to_store[ct] = val
+
+                        if any(v for v in data_to_store.values()):
+                            _db_upsert_custom_extraction(
+                                client_id, config["id"],
+                                config["title"], data_to_store)
+                            saved_count += 1
+                            _log_action(
+                                self, "custom_extract",
+                                f"[{config['title']}] "
+                                f"{len(data_to_store)} field(s) → "
+                                f"client_id={client_id}")
+
+                    _refresh_summary(self)
+
+                    msg = f"✓  Saved {saved_count} record(s)"
+                    if skipped_count:
+                        msg += f"  ·  {skipped_count} skipped (no client ID)"
+                    if not_found:
+                        msg += f"  ·  {len(not_found)} client ID(s) not in DB"
+                    _ui_status(msg, ACCENT_SUCCESS)
+
+                else:
+                    # ── PDF / Document — still ask for client ID manually ──
+                    # (PDFs don't have structured rows with client IDs)
+                    client_id = _ask_client_id(config["title"])
+                    if not client_id:
+                        return
+
+                    pdf_bytes = Path(path).read_bytes()
+                    _ui_status(
+                        f"⟳  Extracting {len(labels)} field(s) "
+                        f"from '{Path(path).name}'…")
+
+                    extracted = _gemini_extract_custom_labels(
+                        pdf_bytes, labels, ft, api_key)
+
+                    if not extracted:
+                        _ui_status(
+                            "✗  Gemini returned no data — check the document.",
+                            ACCENT_RED)
+                        return
+
+                    data_to_store = {
+                        col_title: str(extracted.get(label, "") or "").strip()
+                        for label, col_title in zip(labels, col_titles)
+                    }
+
+                    if not data_to_store:
+                        _ui_status("✗  No data could be extracted.", ACCENT_RED)
+                        return
+
+                    _db_upsert_custom_extraction(
+                        client_id, config["id"],
+                        config["title"], data_to_store)
+
+                    _refresh_summary(self)
+                    _ui_status(
+                        f"✓  Saved {len(data_to_store)} field(s) "
+                        f"for Client ID: {client_id}",
+                        ACCENT_SUCCESS)
+                    _log_action(
+                        self, "custom_extract",
+                        f"[{config['title']}] "
+                        f"{len(data_to_store)} field(s) → "
+                        f"client_id={client_id}")
+
+            except Exception as exc:
+                _ui_status(f"✗  Error: {exc}", ACCENT_RED)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _reload_run_tab():
+        for w in t2_inner.winfo_children():
+            w.destroy()
+
+        configs = _db_load_custom_doc_configs()
+
+        if not configs:
+            tk.Label(t2_inner,
+                     text='No extraction configs yet.\n'
+                          'Go to "Add Extraction" to create one.',
+                     font=("Segoe UI", 9), fg=TXT_MUTED,
+                     bg=CARD_WHITE, pady=20).pack()
+            return
+
+        for cfg in configs:
+            ft       = cfg.get("file_type", "")
+            is_data  = _is_data_type(ft)
+            type_tag = "📊" if is_data else "📄"
+
+            row_f = tk.Frame(t2_inner, bg=ROW_BG_EVEN,
+                             highlightbackground=BORDER_MID,
+                             highlightthickness=1)
+            row_f.pack(fill="x", pady=3)
+
+            info_f = tk.Frame(row_f, bg=ROW_BG_EVEN)
+            info_f.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+
+            tk.Label(info_f, text=f"{type_tag}  {cfg['title']}",
+                     font=("Segoe UI", 10, "bold"),
+                     fg=NAVY_DEEP, bg=ROW_BG_EVEN).pack(anchor="w")
+
+            if ft:
+                tk.Label(info_f, text=f"Type: {ft}",
+                         font=("Segoe UI", 8), fg=TXT_MUTED,
+                         bg=ROW_BG_EVEN).pack(anchor="w")
+
+            if is_data:
+                preview = ", ".join(cfg["col_titles"][:5])
+                extra   = len(cfg["col_titles"]) - 5
+                lbl_txt = f"Columns: {preview}" + (f" … +{extra} more" if extra > 0 else "")
+            else:
+                preview = ", ".join(cfg["labels"][:5])
+                extra   = len(cfg["labels"]) - 5
+                lbl_txt = f"Labels: {preview}" + (f" … +{extra} more" if extra > 0 else "")
+
+            tk.Label(info_f, text=lbl_txt,
+                     font=("Segoe UI", 7), fg=TXT_SOFT,
+                     bg=ROW_BG_EVEN, wraplength=420,
+                     justify="left").pack(anchor="w")
+
+            btn_f = tk.Frame(row_f, bg=ROW_BG_EVEN)
+            btn_f.pack(side="right", padx=8, pady=8)
+
+            ctk.CTkButton(
+                btn_f,
+                text=f"📂  Run: {cfg['title']}",
+                command=lambda c=cfg: _run_extraction(c),
+                width=180, height=32, corner_radius=6,
+                fg_color=NAVY_LIGHT, hover_color=NAVY_PALE,
+                text_color=WHITE,
+                font=FF(9, "bold"),
+            ).pack(side="left", padx=(0, 6))
+
+            ctk.CTkButton(
+                btn_f, text="🗑",
+                command=lambda cid=cfg["id"], ct=cfg["title"]: (
+                    _db_delete_custom_doc_config(cid)
+                    or _reload_run_tab()
+                ) if messagebox.askyesno(
+                    "Delete Config",
+                    f'Delete "{ct}"?\n\n'
+                    f'All saved extractions for this config '
+                    f'will also be deleted.') else None,
+                width=36, height=32, corner_radius=6,
+                fg_color="#3D1010", hover_color="#5C1A1A",
+                text_color="#FF8A80",
+                font=FF(9, "bold"),
+            ).pack(side="left")
+
+    _reload_run_tab()
+
+    btn_bar = tk.Frame(right_panel, bg=WHITE,
+                       highlightbackground="#E8EEF8",
+                       highlightthickness=1)
+    btn_bar.pack(fill="x", padx=32, pady=(4, 16))
+    ctk.CTkButton(btn_bar, text="Close",
+                  command=win.destroy,
+                  width=100, height=32, corner_radius=6,
+                  fg_color="#F0F4FA", hover_color="#E0E8F0",
+                  text_color=TXT_NAVY,
+                  font=FF(9, "bold")).pack(side="right", pady=8)
+
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    _update_sidebar_nav("Add Extraction")
+    _switch_tab("Add Extraction")
 
 
 # ═══════════════════════════════════════════════════════════════════════
