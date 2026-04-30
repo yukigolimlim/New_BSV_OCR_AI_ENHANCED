@@ -26,5 +26,5 @@ Thumbs.db
 .idea/
 *.db
 
-_NEWOCR_AI_ENHANCED/lu_risk_settings.json
-_NEWOCR_AI_ENHANCED/.remember_me
+lu_risk_settings.json
+.remember_me
