@@ -65,22 +65,22 @@ _ALLOWED_DOMAINS = {"rvtgroupofcompanies.com", "bsv.ph", "bancosanvicente.com"}
 
 # ── Column definitions: (label, db_key, width, anchor, sortable?) ──────────────
 _COLUMNS = [
-    ("ID",          "id",            52,   "center", True),
-    ("Username",    "username",      130,  "w",      True),
-    ("Email",       "email",         200,  "w",      True),
-    ("Position",    "position",      145,  "w",      True),
-    ("Role",        "role",          108,  "center", True),
-    ("Status",      "status",        88,   "center", True),
-    ("Created",     "created_at",    138,  "center", True),
-    ("Last Login",  "last_login_at", 138,  "center", True),
-    ("Delete",      "_delete",       52,   "center", False),
-    ("Edit",        "_edit",         52,   "center", False),
+    ("ID",          "id",            60,   "center", True),
+    ("Username",    "username",      180,  "w",      True),
+    ("Email",       "email",         60,   "w",      True),
+    ("Position",    "position",      260,  "w",      True),
+    ("Role",        "role",          160,  "center", True),
+    ("Status",      "status",        90,   "center", True),
+    ("Created",     "created_at",    140,  "center", True),
+    ("Last Login",  "last_login_at", 140,  "center", True),
+    ("Delete",      "_delete",       60,   "center", False),
+    ("Edit",        "_edit",         60,   "center", False),
 ]
 
 _ROLE_BADGE = {
     "super admin":         ("#FFFFFF",  "#1E5C1E", "#1E5C1E"),
-    "Account Officer":     (_NAVY_MID,  _NAVY_MIST, _NAVY_LIGHT),
-    "Credit Risk Officer": (_TXT_SOFT,  "#F0F4F8",  _BORDER_MID),
+    "account officer":     (_NAVY_MID,  _NAVY_MIST, _NAVY_LIGHT),
+    "credit risk officer": (_TXT_SOFT,  "#F0F4F8",  _BORDER_MID),
 }
 _STATUS_BADGE = {
     "active":   (_ACCENT_SUCCESS, "#E8F7EE", "#2E8B4A"),
@@ -351,16 +351,16 @@ def _filtered(self):
 def _open_edit_dialog(self, user_row):
     """Edit username, email, position, role and status for an existing user."""
     dlg = tk.Toplevel(self)
-    dlg.title(f"Edit User — {user_row.get('username','')}")
+    dlg.title(f"Edit Mode")
     dlg.configure(bg=_PAGE_BG)
     dlg.resizable(False, False)
     dlg.grab_set()
-    _center_dialog(dlg, 460, 530)
+    _center_dialog(dlg, 500, 530)
     dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
     hdr = tk.Frame(dlg, bg=_HDR_BG, height=54)
     hdr.pack(fill="x"); hdr.pack_propagate(False)
-    tk.Label(hdr, text=f"✏   Edit User  ·  {user_row.get('username','')}",
+    tk.Label(hdr, text=f"✏   Edit User  —  {user_row.get('username','')}",
              font=("Segoe UI", 12, "bold"), fg=_WHITE, bg=_HDR_BG,
              anchor="w").pack(side="left", padx=20, fill="y")
 
@@ -369,9 +369,9 @@ def _open_edit_dialog(self, user_row):
 
     r = tk.Frame(body, bg=_PAGE_BG); r.pack(fill="x", pady=3)
     tk.Label(r, text="ID:", font=("Segoe UI", 9, "bold"),
-             fg=_TXT_SOFT, bg=_PAGE_BG, width=12, anchor="w").pack(side="left")
+             fg=_TXT_SOFT, bg=_PAGE_BG, width=10, anchor="w").pack(side="left")
     tk.Label(r, text=str(user_row.get("id") or "—"),
-             font=("Segoe UI", 9), fg=_TXT_MUTED, bg=_PAGE_BG,
+             font=("Segoe UI", 9), bg=_PAGE_BG,
              anchor="w").pack(side="left")
 
     tk.Frame(body, bg=_BORDER_LIGHT, height=1).pack(fill="x", pady=(6, 4))
@@ -381,7 +381,7 @@ def _open_edit_dialog(self, user_row):
     def _entry_field(label, key):
         r = tk.Frame(body, bg=_PAGE_BG); r.pack(fill="x", pady=4)
         tk.Label(r, text=label + ":", font=("Segoe UI", 9, "bold"),
-                 fg=_TXT_SOFT, bg=_PAGE_BG, width=12, anchor="w").pack(side="left")
+                 fg=_TXT_SOFT, bg=_PAGE_BG, width=10, anchor="w").pack(side="left")
         wrap = tk.Frame(r, bg=_WHITE,
                         highlightbackground=_BORDER_MID, highlightthickness=1)
         wrap.pack(side="left", fill="x", expand=True)
@@ -397,21 +397,23 @@ def _open_edit_dialog(self, user_row):
 
     tk.Frame(body, bg=_BORDER_MID, height=1).pack(fill="x", pady=(10, 6))
 
-    role_var   = tk.StringVar(value=str(user_row.get("role")   or "user"))
-    status_var = tk.StringVar(value=str(user_row.get("status") or "active"))
+    role_val   = str(user_row.get("role") or "").strip().title()   # "super admin" → "Super Admin"
+    status_val = str(user_row.get("status") or "").strip().capitalize()  # "active" → "Active"
+    role_var   = tk.StringVar(value=role_val   or "Account Officer")
+    status_var = tk.StringVar(value=status_val or "Active")
 
     for label, var, vals in [
-        ("Role:",   role_var,   ["super admin", "Account Officer", "Credit Risk Officer"]),
-        ("Status:", status_var, ["active", "inactive", "pending"]),
+        ("Role:",   role_var,   ["Super Admin", "Account Officer", "Credit Risk Officer"]),
+        ("Status:", status_var, ["Active", "Inactive", "Pending"]),
     ]:
         r = tk.Frame(body, bg=_PAGE_BG); r.pack(fill="x", pady=6)
         tk.Label(r, text=label, font=("Segoe UI", 9, "bold"),
-                 fg=_TXT_SOFT, bg=_PAGE_BG, width=12, anchor="w").pack(side="left")
+                 fg=_TXT_SOFT, bg=_PAGE_BG, width=10, anchor="w").pack(side="left")
         ctk.CTkOptionMenu(
             r, variable=var, values=vals,
-            width=220, height=32, corner_radius=6,
-            fg_color=_NAVY_MIST, button_color=_NAVY_MID,
-            button_hover_color=_NAVY_LIGHT,
+            width=180, height=32, corner_radius=6,
+            fg_color=_NAVY_MIST, button_color=_NAVY_LIGHT,   # ← was _NAVY_MID (too dark)
+            button_hover_color=_BORDER_MID,                   # ← lighter hover
             text_color=_TXT_NAVY, dropdown_fg_color=_WHITE,
         ).pack(side="left")
 
@@ -425,8 +427,8 @@ def _open_edit_dialog(self, user_row):
         new_username = edit_vars["username"].get().strip()
         new_email    = edit_vars["email"].get().strip()
         new_position = edit_vars["position"].get().strip()
-        new_role     = role_var.get().strip()
-        new_status   = status_var.get().strip()
+        new_role     = role_var.get().strip().lower()
+        new_status   = status_var.get().strip().lower()
 
         if not new_username or not new_email:
             messagebox.showwarning("Missing Fields",
@@ -469,13 +471,13 @@ def _open_edit_dialog(self, user_row):
                                  f"Could not update user:\n{e}", parent=dlg)
 
     ctk.CTkButton(btn_row, text="💾  Save Changes", command=_save,
-                  width=140, height=36, corner_radius=7,
-                  fg_color=_SB_ACCENT, hover_color="#4CAF35",
-                  text_color="#0A1628", font=("Segoe UI", 10, "bold")).pack(side="left")
+            width=140, height=36, corner_radius=7,
+            fg_color=_SB_ACCENT, hover_color="#4CAF35",
+            text_color="#0A1628", font=("Segoe UI", 10, "bold")).pack(side="right", padx=(10, 0))
     ctk.CTkButton(btn_row, text="Cancel", command=dlg.destroy,
-                  width=90, height=36, corner_radius=7,
-                  fg_color=_NAVY_MIST, hover_color=_NAVY_GHOST,
-                  text_color=_TXT_SOFT, font=("Segoe UI", 10)).pack(side="left", padx=(10, 0))
+                width=90, height=36, corner_radius=7,
+                fg_color=_BORDER_MID, hover_color="#B0C4D8",   # ← more visible
+                text_color=_TXT_NAVY, font=("Segoe UI", 10)).pack(side="right")
 
 
 def _open_delete_dialog(self, user_row):
@@ -488,7 +490,7 @@ def _open_delete_dialog(self, user_row):
     dlg.configure(bg=_PAGE_BG)
     dlg.resizable(False, False)
     dlg.grab_set()
-    _center_dialog(dlg, 420, 290)
+    _center_dialog(dlg, 480, 400)
     dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
     hdr = tk.Frame(dlg, bg="#7A1818", height=54)
@@ -507,10 +509,27 @@ def _open_delete_dialog(self, user_row):
     info_box = tk.Frame(body, bg="#FEF0F0",
                         highlightbackground="#F5CCCC", highlightthickness=1)
     info_box.pack(fill="x", pady=(8, 0))
+
     tk.Label(info_box,
-             text=f"  ID {uid}  ·  {uname}  ·  {user_row.get('email','—')}",
-             font=("Segoe UI", 10, "bold"), fg="#7A1818", bg="#FEF0F0",
-             anchor="w", pady=8).pack(anchor="w", padx=8)
+             text=f"  ID: {uid}",
+             font=("Segoe UI", 9, "bold"), fg="#7A1818", bg="#FEF0F0",
+             anchor="w").pack(anchor="w", padx=10, pady=(8, 0))
+    tk.Label(info_box,
+             text=f"  Username: {uname}",
+             font=("Segoe UI", 9, "bold"), fg="#7A1818", bg="#FEF0F0",
+             anchor="w").pack(anchor="w", padx=10)
+    tk.Label(info_box,
+             text=f"  Email: {user_row.get('email','—')}",
+             font=("Segoe UI", 9, "bold"), fg="#7A1818", bg="#FEF0F0",
+             anchor="w").pack(anchor="w", padx=10)
+    tk.Label(info_box,
+             text=f"  Position: {user_row.get('position','—')}",
+             font=("Segoe UI", 9, "bold"), fg="#7A1818", bg="#FEF0F0",
+             anchor="w").pack(anchor="w", padx=10)
+    tk.Label(info_box,
+             text=f"  Role: {str(user_row.get('role','—')).title()}",
+             font=("Segoe UI", 9, "bold"), fg="#7A1818", bg="#FEF0F0",
+             anchor="w").pack(anchor="w", padx=10, pady=(0, 8))
 
     tk.Label(body, text="⚠  This action cannot be undone.",
              font=("Segoe UI", 9, "italic"), fg=_ACCENT_RED, bg=_PAGE_BG,
@@ -546,11 +565,11 @@ def _open_delete_dialog(self, user_row):
     ctk.CTkButton(btn_row, text="🗑  Yes, Delete", command=_confirm,
                   width=130, height=36, corner_radius=7,
                   fg_color=_ACCENT_RED, hover_color="#BF2222",
-                  text_color=_WHITE, font=("Segoe UI", 10, "bold")).pack(side="left")
+                  text_color=_WHITE, font=("Segoe UI", 10, "bold")).pack(side="right")
     ctk.CTkButton(btn_row, text="Cancel", command=dlg.destroy,
                   width=90, height=36, corner_radius=7,
-                  fg_color=_NAVY_MIST, hover_color=_NAVY_GHOST,
-                  text_color=_TXT_SOFT, font=("Segoe UI", 10)).pack(side="left", padx=(10, 0))
+                  fg_color=_BORDER_MID, hover_color="#B0C4D8",   # ← more visible
+                  text_color=_TXT_NAVY, font=("Segoe UI", 10)).pack(side="right", padx=(0, 10))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -574,11 +593,11 @@ def _open_add_dialog(self):
              • "↺ Resend" generates a fresh code and re-sends it
     """
     dlg = tk.Toplevel(self)
-    dlg.title("Add New User")
+    dlg.title("New User")
     dlg.configure(bg=_PAGE_BG)
     dlg.resizable(False, False)
     dlg.grab_set()
-    _center_dialog(dlg, 460, 540)
+    _center_dialog(dlg, 500, 546)
     dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
     # Mutable state for the pending OTP
@@ -602,7 +621,7 @@ def _open_add_dialog(self):
         r = tk.Frame(body, bg=_PAGE_BG)
         r.pack(fill="x", pady=4)
         tk.Label(r, text=label + ":", font=("Segoe UI", 9, "bold"),
-                 fg=_TXT_SOFT, bg=_PAGE_BG, width=12, anchor="w").pack(side="left")
+                 fg=_TXT_SOFT, bg=_PAGE_BG, width=10, anchor="w").pack(side="left")
         wrap = tk.Frame(r, bg=_WHITE,
                         highlightbackground=_BORDER_MID, highlightthickness=1)
         wrap.pack(side="left", fill="x", expand=True)
@@ -618,39 +637,39 @@ def _open_add_dialog(self):
 
     # Domain hint shown under the email row
     tk.Label(body,
-             text="  ✉  Only @bsv.ph or @bancosanvicente.com addresses are accepted",
-             font=("Segoe UI", 8, "italic"),
+             text="✉ Only @bsv.ph/@bancosanvicente.com addresses are accepted.",
+             font=("Segoe UI", 7, "italic"),
              fg=_TXT_MUTED, bg=_PAGE_BG, anchor="w").pack(
-                 fill="x", padx=(90, 0), pady=(0, 4))
+                 fill="x", padx=(95, 0), pady=(0, 4))
 
     _entry_field("Password", "password", show="•")
     _entry_field("Position", "position")
 
     role_var   = tk.StringVar(value="Account Officer")
-    status_var = tk.StringVar(value="active")
+    status_var = tk.StringVar(value="Active")
 
     for label, var, opts in [
-        ("Role",   role_var,   ["super admin", "Account Officer", "Credit Risk Officer"]),
-        ("Status", status_var, ["active", "inactive", "pending"]),
+        ("Role",   role_var,   ["Super Admin", "Account Officer", "Credit Risk Officer"]),
+        ("Status", status_var, ["Active", "Inactive"]),
     ]:
         r = tk.Frame(body, bg=_PAGE_BG)
         r.pack(fill="x", pady=4)
         tk.Label(r, text=label + ":", font=("Segoe UI", 9, "bold"),
-                 fg=_TXT_SOFT, bg=_PAGE_BG, width=12, anchor="w").pack(side="left")
+                 fg=_TXT_SOFT, bg=_PAGE_BG, width=10, anchor="w").pack(side="left")
         ctk.CTkOptionMenu(r, variable=var, values=opts,
-                          width=200, height=32, corner_radius=6,
-                          fg_color=_NAVY_MIST, button_color=_NAVY_MID,
+                          width=180, height=32, corner_radius=6,
+                          fg_color=_NAVY_MIST, button_color=_NAVY_LIGHT,
                           button_hover_color=_NAVY_LIGHT,
                           text_color=_TXT_NAVY,
                           dropdown_fg_color=_WHITE).pack(side="left")
 
     # ── Verification code section (hidden until code is sent) ─────────────
-    code_section = tk.Frame(dlg, bg=_PAGE_BG)
+    code_section = tk.Frame(body, bg=_PAGE_BG)
     # packed later by _send_code()
 
     code_box = tk.Frame(code_section, bg="#EBF7EE",
                         highlightbackground="#A8D5B5", highlightthickness=1)
-    code_box.pack(fill="x", padx=26, pady=(8, 4))
+    code_box.pack(fill="x")
 
     tk.Label(code_box,
              text="✉  A 6-digit code has been sent to the email address.",
@@ -658,7 +677,7 @@ def _open_add_dialog(self):
              anchor="w").pack(anchor="w", padx=10, pady=(8, 2))
 
     code_row = tk.Frame(code_box, bg="#EBF7EE")
-    code_row.pack(fill="x", padx=10, pady=(2, 8))
+    code_row.pack(fill="x", padx=10, pady=(8, 8))
 
     tk.Label(code_row, text="Enter code:", font=("Segoe UI", 9, "bold"),
              fg=_TXT_SOFT, bg="#EBF7EE", width=10, anchor="w").pack(side="left")
@@ -668,10 +687,16 @@ def _open_add_dialog(self):
                                highlightthickness=1)
     code_entry_wrap.pack(side="left")
     code_var = tk.StringVar()
+
+    def _validate_code(P):
+        return P.isdigit() and len(P) <= 6 or P == ""
+    vcmd = dlg.register(_validate_code)
+
     tk.Entry(code_entry_wrap, textvariable=code_var,
-             font=("Segoe UI", 14, "bold"),
-             fg=_TXT_NAVY, bg=_WHITE, relief="flat", bd=4,
-             width=9, justify="center",
+             font=("Segoe UI", 11, "bold"),
+             fg=_TXT_NAVY, bg=_WHITE, relief="flat", bd=2,
+             width=10, justify="center",
+             validate="key", validatecommand=(vcmd, "%P"),
              insertbackground=_NAVY_MID).pack()
 
     # ── Divider + button row ──────────────────────────────────────────────
@@ -717,9 +742,9 @@ def _open_add_dialog(self):
         # Transition UI to Step 2
         send_btn.pack_forget()
         code_var.set("")
-        code_section.pack(fill="x")       # show green OTP box
-        create_btn.pack(side="left")
-        resend_btn.pack(side="left", padx=(8, 0))
+        code_section.pack(fill="x", pady=(8, 0))       # show green OTP box
+        create_btn.pack(side="right")
+        resend_btn.pack(side="right", padx=(0, 8))
 
     # ── STEP 2: verify OTP then insert into DB ────────────────────────────
     def _create():
@@ -742,8 +767,8 @@ def _open_add_dialog(self):
         email    = fields["email"].get().strip()
         password = fields["password"].get().strip()
         position = fields["position"].get().strip()
-        role     = role_var.get().strip()
-        status   = status_var.get().strip()
+        role     = role_var.get().strip().lower()
+        status   = status_var.get().strip().lower()
 
         try:
             conn = self.get_conn()
@@ -800,7 +825,7 @@ def _open_add_dialog(self):
         width=195, height=36, corner_radius=7,
         fg_color=_NAVY_MID, hover_color=_NAVY_LIGHT,
         text_color=_WHITE, font=("Segoe UI", 10, "bold"))
-    send_btn.pack(side="left")
+    send_btn.pack(side="right")
 
     # Step-2 buttons (hidden until code is sent)
     create_btn = ctk.CTkButton(
@@ -820,9 +845,9 @@ def _open_add_dialog(self):
     # Cancel is always visible on the right
     ctk.CTkButton(btn_row, text="Cancel", command=dlg.destroy,
                   width=90, height=36, corner_radius=7,
-                  fg_color=_NAVY_MIST, hover_color=_NAVY_GHOST,
-                  text_color=_TXT_SOFT,
-                  font=("Segoe UI", 10)).pack(side="right")
+                  fg_color=_BORDER_MID, hover_color="#B0C4D8",   # ← more visible
+                  text_color=_TXT_NAVY,
+                  font=("Segoe UI", 10)).pack(side="left")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -910,7 +935,8 @@ def _build_row(self, row, idx, bg):
         elif col_key == "role":
             v = str(val).lower() if val else "user"
             fg, pbg, bd = _ROLE_BADGE.get(v, (_TXT_SOFT, "#F0F4F8", _BORDER_MID))
-            pill = _pill(cell, val or "user", fg, pbg, bd)
+            display_role = str(val).title() if val else "User"
+            pill = _pill(cell, display_role, fg, pbg, bd)
             pill.place(relx=0.5, rely=0.5, anchor="center")
             pill._is_badge = True
             for child in _all_children(pill):
@@ -936,11 +962,12 @@ def _build_row(self, row, idx, bg):
 
         else:
             display  = str(val) if val is not None else "—"
-            anchor_x = 0.5 if col_anchor == "center" else 0.05
             lbl = tk.Label(cell, text=display, font=("Segoe UI", 9),
-                           fg=_TXT_NAVY, bg=bg, anchor=col_anchor)
-            lbl.place(relx=anchor_x, rely=0.5,
-                      anchor="center" if col_anchor == "center" else "w")
+               fg=_TXT_NAVY, bg=bg, anchor=col_anchor)
+            if col_anchor == "center":
+                lbl.place(relx=0.5, rely=0.5, anchor="center")
+            else:
+                lbl.pack(side="left", padx=(8, 0), fill="y")
 
     tk.Frame(self._acct_body, bg=_SEP_CLR, height=1).pack(fill="x")
 
@@ -1071,6 +1098,8 @@ def _build_accounts_panel(self, parent):
     hdr_frame.pack(fill="x")
     hdr_frame.pack_propagate(False)
 
+    tk.Frame(hdr_frame, bg=_HDR_BG, width=8).pack(side="right", fill="y")
+    
     for col_label, col_key, col_w, col_anchor, sortable in _COLUMNS:
         hcell = tk.Frame(hdr_frame, bg=_HDR_BG, width=col_w,
                  cursor="hand2" if sortable else "arrow")
@@ -1083,7 +1112,6 @@ def _build_accounts_panel(self, parent):
         hcell.pack_propagate(False)
 
         init_text = _col_header_text(self, col_label, col_key, sortable)
-        anchor_x  = 0.5 if col_anchor == "center" else 0.07
 
         lbl = tk.Label(hcell, text=init_text,
                        font=("Segoe UI", 9, "bold"),
@@ -1091,8 +1119,10 @@ def _build_accounts_panel(self, parent):
                           else _HDR_FG,
                        bg=_HDR_BG, anchor=col_anchor,
                        cursor="hand2" if sortable else "arrow")
-        lbl.place(relx=anchor_x, rely=0.5,
-                  anchor="center" if col_anchor == "center" else "w")
+        if col_anchor == "center":
+            lbl.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            lbl.pack(side="left", padx=(8, 0), fill="y")
 
         self._acct_hdr_labels[col_key] = lbl
 

@@ -40,16 +40,12 @@ LIME_DARK      = "#3D8F26"
 
 # Action badge colours  {keyword_in_action: (bg, fg)}
 _ACTION_COLORS = {
-    "login":    ("#E3F5E8", "#1A6B35"),
-    "logout":   ("#FFF4E0", "#8A5A00"),
-    "create":   ("#E8F0FF", "#1A3A8A"),
-    "update":   ("#EEF0FF", "#3A2E8A"),
-    "delete":   ("#FFE8E8", "#8A1A1A"),
-    "export":   ("#E0F7FA", "#005F6B"),
-    "upload":   ("#E8F5E9", "#1B5E20"),
-    "error":    ("#FFE8E8", "#8A1A1A"),
-    "view":     ("#F3E8FF", "#5A1A8A"),
-    "search":   ("#E8F4FF", "#0A4A7A"),
+    "logged in":      ("#E3F5E8", "#1A6B35"),
+    "logged out":     ("#FFE8E8", "#8A1A1A"),
+    "edit_cell":      ("#FFF9E0", "#8A6A00"),
+    "edit_requested": ("#FFF9E0", "#8A6A00"),
+    "edit_row":       ("#FFF9E0", "#8A6A00"),
+    "edit_user":      ("#FFF9E0", "#8A6A00"),
 }
 _ACTION_DEFAULT = ("#EDF1F7", "#3A4A5E")
 
@@ -58,12 +54,12 @@ _PAGE_SIZE = 20
 # Column config: (key, header, pixel_width, anchor)
 # pixel_width = 0 means "expand to fill remaining space"
 _COLUMNS = [
-    ("id",          "ID",          55,  "center"),
-    ("user_id",     "User ID",     72,  "center"),
-    ("email",       "Email",       210, "w"),
-    ("action",      "Action",      120, "center"),
+    ("id",          "ID",          60,  "center"),
+    ("user_id",     "User ID",     75,  "center"),
+    ("email",       "User",        200, "w"),
+    ("action",      "Action",      180, "center"),
     ("description", "Description", 0,   "w"),
-    ("time",        "Timestamp",   162, "center"),
+    ("time",        "Timestamp",   165, "center"),
 ]
 
 
@@ -301,7 +297,7 @@ def _build_header_row(self):
     for w in self._logs_hdr_row.winfo_children():
         w.destroy()
 
-    for col_key, col_label, col_w, _ in _COLUMNS:
+    for idx, (col_key, col_label, col_w, _) in enumerate(_COLUMNS):  # ← add idx, enumerate
         is_expand = (col_w == 0)
 
         cell = tk.Frame(self._logs_hdr_row, bg=NAVY_DEEP,
@@ -335,8 +331,11 @@ def _build_header_row(self):
         lbl.bind("<Enter>", _he)
         lbl.bind("<Leave>", _hl)
 
-        tk.Frame(self._logs_hdr_row, bg="#1E3A5F", width=1).pack(
-            side="left", fill="y", pady=8)
+        if idx < len(_COLUMNS) - 1:                                    # ← skip separator on last column
+            tk.Frame(self._logs_hdr_row, bg="#1E3A5F", width=1).pack(
+                side="left", fill="y", pady=8)
+
+    tk.Frame(self._logs_hdr_row, bg=NAVY_DEEP, width=8).pack(side="right", fill="y")  # ← scrollbar spacer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -459,6 +458,114 @@ def _page_logs(self, direction):
         self._logs_page = new_page
         _render_page(self)
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  ROW DETAIL VIEW
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _show_log_detail(self, row):
+    win = tk.Toplevel(self._logs_frame)
+    win.title("Log Detail")
+    win.configure(bg=NAVY_DEEP)
+    win.resizable(False, False)
+    win.grab_set()
+
+    # ── Header (dark navy) ───────────────────────────────────────
+    hdr = tk.Frame(win, bg=NAVY_DEEP)
+    hdr.pack(fill="x", padx=24, pady=(18, 14))
+
+    top_row = tk.Frame(hdr, bg=NAVY_DEEP)
+    top_row.pack(fill="x")
+
+    title_col = tk.Frame(top_row, bg=NAVY_DEEP)
+    title_col.pack(side="left")
+    tk.Label(title_col, text="Log Entry Detail",
+             font=_F(self, 13, "bold"), fg=WHITE, bg=NAVY_DEEP).pack(anchor="w")
+    tk.Label(title_col, text=f"Record #{row['id']}  ·  {row['time']}",
+             font=_F(self, 8), fg=TXT_SOFT, bg=NAVY_DEEP).pack(anchor="w", pady=(3, 0))
+
+    bbg, bfg = _action_color(row["action"])
+    tk.Label(top_row, text=row["action"],
+             font=_F(self, 8, "bold"), fg=bfg, bg=bbg,
+             padx=10, pady=4).pack(side="right", anchor="n")
+
+    # ── Header / body divider ────────────────────────────────────
+    tk.Frame(win, bg=NAVY_LIGHT, height=1).pack(fill="x")
+
+    # ── Body (white) ─────────────────────────────────────────────
+    body = tk.Frame(win, bg=WHITE, width=500)
+    body.pack(fill="x")
+
+    fields = [
+        ("🔢", "User ID",     row["user_id"]),
+        ("👤", "User",        row["email"]),
+        # ("⚡", "Action",      row["action"]),
+        # ("🕐", "Timestamp",   row["time"]),
+        ("📋", "Description", row["description"]),
+    ]
+
+    for i, (icon, label, value) in enumerate(fields):
+        row_bg = WHITE if i % 2 == 0 else OFF_WHITE
+
+        rf = tk.Frame(body, bg=row_bg)
+        rf.pack(fill="x")
+
+        # Icon
+        tk.Label(rf, text=icon,
+                 font=("Segoe UI Emoji", 12),
+                 bg=row_bg, fg=TXT_SOFT,
+                 width=4, anchor="center").pack(side="left", padx=(8, 0), pady=10)
+
+        # Vertical rule
+        tk.Frame(rf, bg=BORDER_LIGHT, width=1).pack(side="left", fill="y", pady=6)
+
+        # Label + value stacked
+        text_col = tk.Frame(rf, bg=row_bg)
+        text_col.pack(side="left", fill="both", expand=True, padx=14, pady=8)
+
+        tk.Label(text_col, text=label,
+                 font=_F(self, 7, "bold"),
+                 fg=TXT_MUTED, bg=row_bg,
+                 anchor="w").pack(fill="x")
+
+        val_lbl = tk.Label(text_col, text=value,
+                           font=_F(self, 10),
+                           fg=TXT_NAVY, bg=row_bg,
+                           anchor="w", justify="left")
+        val_lbl.pack(fill="x", pady=(2, 0))
+
+        def _on_cfg(e, l=val_lbl):
+            l.config(wraplength=e.width)
+            win.update_idletasks()
+            new_h = win.winfo_reqheight()
+            sx = win.winfo_screenwidth()
+            sy = win.winfo_screenheight()
+            win.geometry(f"500x{new_h}+{(sx - 500)//2}+{(sy - new_h)//2}")
+        val_lbl.bind("<Configure>", _on_cfg)
+
+        # Row bottom hairline
+        tk.Frame(body, bg=BORDER_LIGHT, height=1).pack(fill="x")
+
+    # ── Footer ───────────────────────────────────────────────────
+    tk.Frame(win, bg=BORDER_LIGHT, height=1).pack(fill="x")
+
+    footer = tk.Frame(win, bg=NAVY_DEEP)
+    footer.pack(fill="x", padx=20, pady=10)
+
+    ctk.CTkButton(
+        footer, text="Close",
+        command=win.destroy,
+        width=100, height=32, corner_radius=6,
+        fg_color=NAVY_LIGHT, hover_color=NAVY_MID,
+        text_color=WHITE, font=_F(self, 9, "bold")
+    ).pack(side="right")
+
+    # ── Center after widgets are built ───────────────────────────
+    win.update_idletasks()
+    win_w = 500
+    win_h = win.winfo_reqheight()
+    sx = win.winfo_screenwidth()
+    sy = win.winfo_screenheight()
+    win.geometry(f"{win_w}x{win_h}+{(sx - win_w)//2}+{(sy - win_h)//2}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  TABLE RENDER
@@ -526,7 +633,7 @@ def _render_page(self):
                          padx=9, pady=2).pack()
                 hover_widgets.append((badge_frame, row_bg))
             else:
-                short = _trunc(val, col_w if not is_expand else 500)
+                short = _trunc(val, 0 if is_expand else col_w)
                 lbl = tk.Label(
                     cell, text=short,
                     font=_F(self, 9),
@@ -572,11 +679,24 @@ def _render_page(self):
             w.bind("<Enter>", _enter)
             w.bind("<Leave>", _leave)
 
+        def _on_dbl_click(e, r=row):
+            _show_log_detail(self, r)
+        rf.bind("<Double-Button-1>", _on_dbl_click)
+        for w, _ in hover_widgets:
+            w.bind("<Double-Button-1>", _on_dbl_click)
+
+        _bind_mousewheel(self, rf)
+        for w, _ in hover_widgets:
+            _bind_mousewheel(self, w)
+
     self._logs_canvas.yview_moveto(0)
     self._logs_canvas.after(
         30, lambda: self._logs_canvas.configure(
             scrollregion=self._logs_canvas.bbox("all")))
 
+def _bind_mousewheel(self, widget):
+    widget.bind("<MouseWheel>", lambda e: self._logs_canvas.yview_scroll(
+        int(-1 * (e.delta / 120)), "units"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SMALL HELPERS
@@ -785,6 +905,7 @@ def _export_logs_excel(self):
         _set_status(self, f"✔  Report saved: {os.path.basename(save_path)}", ACCENT_SUCCESS)
     except Exception as e:
         _set_status(self, f"✘ Save failed: {e}", ACCENT_RED)
+
 def attach(cls):
     """Called by ui_panels.attach() — injects _build_logs_panel into the app class."""
     cls._build_logs_panel = _build_logs_panel
