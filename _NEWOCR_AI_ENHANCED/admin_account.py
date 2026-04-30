@@ -570,6 +570,707 @@ def _open_delete_dialog(self, user_row):
                   width=90, height=36, corner_radius=7,
                   fg_color=_BORDER_MID, hover_color="#B0C4D8",   # ← more visible
                   text_color=_TXT_NAVY, font=("Segoe UI", 10)).pack(side="right", padx=(0, 10))
+    
+# ─────────────────────────────────────────────────────────────────────────────
+#  CONFIGURE ROLE TABS DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ALL_TABS = [
+    ("dashboard",      "🏠  Dashboard"),
+    ("cibi",           "📋  CIBI Mode"),
+    ("extract",        "📄  Extracted"),
+    ("analysis",       "🏦  CIBI Analysis"),
+    ("summary",        "📊  Summary"),
+    ("lookup",         "🔎  Look-Up"),
+    ("lookup_summary", "📋  LU Summary"),
+    ("lu_analysis",    "📈  LU Analysis"),
+    ("logs",           "🗒  Logs"),
+    ("accounts",       "👤  Accounts"),
+    ("approvals",      "✅  Approvals"),
+]
+
+_ALL_ROLES = [
+    "super admin",
+    "account officer",
+    "credit risk officer",
+    "user",
+]
+
+
+def _load_role_tab_config(self) -> dict:
+    live_roles = _load_all_roles(self)
+    result = {r: set() for r in live_roles}
+    try:
+        conn = self.get_conn()
+        cur  = conn.cursor()
+        cur.execute("SELECT role, tab_access FROM role_tab_config")
+        for role, tabs in cur.fetchall():
+            if tabs:
+                result[role] = set(tabs)
+        cur.close()
+    except Exception as e:
+        print(f"[_load_role_tab_config] {e}")
+    return result
+
+
+def _save_role_tab_config(self, config: dict):
+    """
+    Upserts {role: set_of_tab_keys} into role_tab_config.
+    Uses PostgreSQL array literal for tab_access column.
+    """
+    try:
+        conn = self.get_conn()
+        cur  = conn.cursor()
+        for role, tabs in config.items():
+            cur.execute(
+                """
+                INSERT INTO role_tab_config (role, tab_access)
+                VALUES (%s, %s)
+                ON CONFLICT (role) DO UPDATE
+                    SET tab_access = EXCLUDED.tab_access
+                """,
+                (role, list(tabs))
+            )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        raise RuntimeError(f"DB write failed: {e}")
+    
+def _load_all_roles(self) -> list:
+    """Load role names from the roles table. Falls back to hardcoded list."""
+    try:
+        conn = self.get_conn()
+        cur  = conn.cursor()
+        cur.execute("SELECT role FROM roles ORDER BY role")
+        rows = cur.fetchall()
+        cur.close()
+        if rows:
+            return [r[0] for r in rows]
+    except Exception as e:
+        print(f"[_load_all_roles] {e}")
+    return list(_ALL_ROLES)
+
+
+def _open_role_tabs_dialog(self):
+    live_roles     = _load_all_roles(self)
+    current_config = _load_role_tab_config(self)
+
+    # Working state — no DB writes until Save is clicked
+    # Each entry: {"original": str|None, "current": str, "deleted": bool}
+    # original=None means it's a newly added role (not yet in DB)
+    roles_state = [{"original": r, "current": r, "deleted": False}
+                   for r in live_roles]
+
+    # check_vars[tab_key][original_role] = BooleanVar
+    check_vars = {}
+    for tab_key, _ in _ALL_TABS:
+        check_vars[tab_key] = {}
+        for r in live_roles:
+            check_vars[tab_key][r] = tk.BooleanVar(
+                value=tab_key in current_config.get(r, set()))
+
+    dlg = tk.Toplevel(self)
+    dlg.title("Configure Role Tab Access")
+    dlg.configure(bg="#0B1622")
+    dlg.resizable(False, False)
+    dlg.overrideredirect(True)
+    dlg.grab_set()
+    _center_dialog(dlg, 800, 640)
+    def _on_close():
+        # Clean up traces before destroying
+        for (v, tid) in getattr(dlg, '_tab_traces', []):
+            try:
+                v.trace_remove("write", tid)
+            except Exception:
+                pass
+        dlg.destroy()
+
+    dlg.protocol("WM_DELETE_WINDOW", _on_close)
+
+    selected_orig = tk.StringVar(
+        value=roles_state[0]["original"] if roles_state else "")
+
+    # ── Root layout ───────────────────────────────────────────────────────
+    root_frame = tk.Frame(dlg, bg="#0B1622",
+                          highlightbackground="#5BBF3E",
+                          highlightthickness=2)
+    root_frame.pack(fill="both", expand=True)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  LEFT SIDEBAR
+    # ══════════════════════════════════════════════════════════════════════
+    sidebar = tk.Frame(root_frame, bg="#0B1622", width=230)
+    sidebar.pack(side="left", fill="y")
+    sidebar.pack_propagate(False)
+
+    # Header branding
+    sb_hdr = tk.Frame(sidebar, bg="#0B1622")
+    sb_hdr.pack(fill="x", padx=16, pady=(18, 4))
+    tk.Label(sb_hdr, text="⚙", font=("Segoe UI Emoji", 16),
+             fg="#5BBF3E", bg="#0B1622").pack(side="left", padx=(0, 8))
+    sb_tc = tk.Frame(sb_hdr, bg="#0B1622")
+    sb_tc.pack(side="left")
+    tk.Label(sb_tc, text="CONFIGURE",
+             font=("Segoe UI", 8, "bold"), fg="#4A6480",
+             bg="#0B1622", anchor="w").pack(anchor="w")
+    tk.Label(sb_tc, text="Role Tab Access",
+             font=("Segoe UI", 11, "bold"), fg="#EEF3FA",
+             bg="#0B1622", anchor="w").pack(anchor="w")
+
+    tk.Label(sidebar,
+             text="Add, rename or remove roles.\nChanges apply on Save.",
+             font=("Segoe UI", 8), fg="#4A6480", bg="#0B1622",
+             justify="left", anchor="w", wraplength=200
+             ).pack(anchor="w", padx=20, pady=(2, 8))
+
+    tk.Frame(sidebar, bg="#1A2F47", height=1).pack(fill="x", padx=12, pady=(0, 6))
+
+    # "ROLES" label + ＋ Add button on same row
+    sec_row = tk.Frame(sidebar, bg="#0B1622")
+    sec_row.pack(fill="x", padx=14, pady=(0, 4))
+    tk.Label(sec_row, text="ROLES",
+             font=("Segoe UI", 7, "bold"), fg="#2D4F7A",
+             bg="#0B1622").pack(side="left")
+    add_lbl = tk.Label(sec_row, text="＋ Add Role",
+                       font=("Segoe UI", 7, "bold"), fg="#5BBF3E",
+                       bg="#0B1622", cursor="hand2")
+    add_lbl.pack(side="right")
+
+    # Pills live here — rebuilt whenever roles_state changes
+    pills_frame = tk.Frame(sidebar, bg="#0B1622")
+    pills_frame.pack(fill="x")
+
+    # Spacer + version footer
+    tk.Frame(sidebar, bg="#0B1622").pack(fill="both", expand=True)
+    tk.Frame(sidebar, bg="#1A2F47", height=1).pack(fill="x", padx=12)
+    tk.Label(sidebar, text="BSV AI-OCR v2.0",
+             font=("Segoe UI", 7), fg="#2D4F7A",
+             bg="#0B1622", anchor="w").pack(anchor="w", padx=20, pady=(6, 12))
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  RIGHT PANEL
+    # ══════════════════════════════════════════════════════════════════════
+    right = tk.Frame(root_frame, bg="#F4F6FA")
+    right.pack(side="left", fill="both", expand=True)
+
+    # Right header
+    r_hdr = tk.Frame(right, bg="#FFFFFF", height=56)
+    r_hdr.pack(fill="x")
+    r_hdr.pack_propagate(False)
+    tk.Frame(right, bg="#E8ECF2", height=1).pack(fill="x")
+
+    right_title_lbl = tk.Label(r_hdr, text="",
+                               font=("Segoe UI", 14, "bold"),
+                               fg="#1A2F47", bg="#FFFFFF")
+    right_title_lbl.pack(side="left", anchor="center", padx=(20, 0))
+
+    close_x = tk.Label(r_hdr, text="✕",
+                       font=("Segoe UI", 11, "bold"),
+                       fg="#7A94B0", bg="#FFFFFF",
+                       cursor="hand2", padx=14)
+    close_x.pack(side="right", fill="y")
+    close_x.bind("<Enter>",    lambda e: close_x.config(fg="#E05555", bg="#FFF0F0"))
+    close_x.bind("<Leave>",    lambda e: close_x.config(fg="#7A94B0", bg="#FFFFFF"))
+    # FIXED — calls cleanup first
+    close_x.bind("<Button-1>", lambda e: _on_close())
+
+    hint_lbl = tk.Label(right, text="",
+                        font=("Segoe UI", 8), fg="#8A9BB0",
+                        bg="#F4F6FA", anchor="w")
+    hint_lbl.pack(anchor="w", padx=20, pady=(10, 0))
+
+    # Scrollable tab cards
+    card_outer = tk.Frame(right, bg="#E8ECF2", padx=1, pady=1)
+    card_outer.pack(fill="both", expand=True, padx=20, pady=(8, 0))
+    card_area = tk.Frame(card_outer, bg="#FFFFFF")
+    card_area.pack(fill="both", expand=True)
+
+    vsb = tk.Scrollbar(card_area, orient="vertical", relief="flat",
+                       troughcolor="#F0F4F8", bg="#C8D8E8", width=8, bd=0)
+    vsb.pack(side="right", fill="y")
+    tab_canvas = tk.Canvas(card_area, bg="#FFFFFF",
+                           highlightthickness=0, yscrollcommand=vsb.set)
+    tab_canvas.pack(side="left", fill="both", expand=True)
+    vsb.config(command=tab_canvas.yview)
+
+    tab_body = tk.Frame(tab_canvas, bg="#FFFFFF")
+    _tc_win  = tab_canvas.create_window((0, 0), window=tab_body, anchor="nw")
+    tab_body.bind("<Configure>",
+                  lambda e: tab_canvas.configure(
+                      scrollregion=tab_canvas.bbox("all")))
+    tab_canvas.bind("<Configure>",
+                    lambda e: tab_canvas.itemconfig(_tc_win, width=e.width))
+
+    def _on_wheel(e):
+        tab_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+    tab_canvas.bind("<MouseWheel>", _on_wheel)
+    tab_body.bind("<MouseWheel>",   _on_wheel)
+
+    # Footer with Save / Cancel
+    tk.Frame(right, bg="#E8ECF2", height=1).pack(fill="x", pady=(6, 0))
+    footer_bar = tk.Frame(right, bg="#FFFFFF")
+    footer_bar.pack(fill="x", padx=20, pady=10)
+
+    tk.Label(footer_bar,
+             text="Changes apply on next login.",
+             font=("Segoe UI", 8, "italic"),
+             fg="#8A9BB0", bg="#FFFFFF").pack(side="left")
+
+    # ── SAVE ──────────────────────────────────────────────────────────────
+    def _save():
+        try:
+            conn = self.get_conn()
+            cur  = conn.cursor()
+
+            for rs in roles_state:
+                orig    = rs["original"]   # None if brand-new
+                current = rs["current"].strip()
+                deleted = rs["deleted"]
+
+                if deleted:
+                    if orig:   # only touch DB for existing roles
+                        cur.execute(
+                            "DELETE FROM role_tab_config WHERE role = %s", (orig,))
+                        cur.execute(
+                            "DELETE FROM roles WHERE role = %s", (orig,))
+                        # Reset affected users to 'user'
+                        cur.execute(
+                            "UPDATE users SET role = 'user' WHERE role = %s", (orig,))
+                    continue
+
+                if not current:
+                    continue  # skip blank entries
+
+                if orig is None:
+                    # Brand-new role — insert into roles table
+                    cur.execute(
+                        "INSERT INTO roles (role) VALUES (%s) ON CONFLICT DO NOTHING",
+                        (current,))
+                elif orig != current:
+                    # Renamed — propagate everywhere
+                    cur.execute(
+                        "UPDATE roles SET role = %s WHERE role = %s",
+                        (current, orig))
+                    cur.execute(
+                        "UPDATE role_tab_config SET role = %s WHERE role = %s",
+                        (current, orig))
+                    cur.execute(
+                        "UPDATE users SET role = %s WHERE role = %s",
+                        (current, orig))
+
+                # Save tab access (upsert) using the *current* (possibly new) name
+                tabs = [
+                    tk_key for tk_key, _ in _ALL_TABS
+                    if check_vars.get(tk_key, {}).get(orig) is not None
+                    and check_vars[tk_key][orig].get()
+                ]
+                cur.execute(
+                    """
+                    INSERT INTO role_tab_config (role, tab_access)
+                    VALUES (%s, %s)
+                    ON CONFLICT (role) DO UPDATE
+                        SET tab_access = EXCLUDED.tab_access
+                    """,
+                    (current, tabs))
+
+            conn.commit()
+            cur.close()
+
+            _log_action(self, "configure_role_tabs",
+                        "Updated roles and tab access configuration")
+            messagebox.showinfo(
+                "Saved",
+                "Configuration saved successfully.\n"
+                "Users will see the changes on next login.",
+                parent=dlg)
+            dlg.destroy()
+
+        except Exception as e:
+            try:   conn.rollback()
+            except Exception: pass
+            messagebox.showerror("DB Error",
+                                 f"Could not save configuration:\n{e}",
+                                 parent=dlg)
+
+    ctk.CTkButton(footer_bar, text="💾  Save Configuration",
+                  command=_save,
+                  width=180, height=36, corner_radius=7,
+                  fg_color="#5BBF3E", hover_color="#4CAF35",
+                  text_color="#0A1628",
+                  font=("Segoe UI", 10, "bold")).pack(side="right", padx=(8, 0))
+    ctk.CTkButton(footer_bar, text="Cancel",
+                  command=_on_close,
+                  width=90, height=36, corner_radius=7,
+                  fg_color="#C8D8E8", hover_color="#B0C4D8",
+                  text_color="#1A2F47",
+                  font=("Segoe UI", 10)).pack(side="right")
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  REFRESH RIGHT PANEL
+    # ══════════════════════════════════════════════════════════════════════
+    def _refresh_right():
+        orig = selected_orig.get()
+        rs   = next((r for r in roles_state
+                     if r["original"] == orig and not r["deleted"]), None)
+        if not rs:
+            # Nothing to show — blank slate
+            right_title_lbl.config(text="No role selected")
+            hint_lbl.config(text="")
+            for w in tab_body.winfo_children():
+                w.destroy()
+            return
+
+        display = rs["current"]
+        right_title_lbl.config(text=display)
+        hint_lbl.config(
+            text=f'Tabs visible to  "{display}"  role:')
+
+        for w in tab_body.winfo_children():
+            w.destroy()
+
+        # Select All / Deselect All row
+        ctrl_row = tk.Frame(tab_body, bg="#FFFFFF")
+        ctrl_row.pack(fill="x", padx=16, pady=(10, 4))
+        tk.Label(ctrl_row, text="TABS",
+                 font=("Segoe UI", 8, "bold"), fg="#4A6480",
+                 bg="#FFFFFF").pack(side="left")
+
+        def _sel_all():
+            for tk_key, _ in _ALL_TABS:
+                if orig in check_vars.get(tk_key, {}):
+                    check_vars[tk_key][orig].set(True)
+
+        def _desel_all():
+            for tk_key, _ in _ALL_TABS:
+                if orig in check_vars.get(tk_key, {}):
+                    check_vars[tk_key][orig].set(False)
+
+        desel_lbl = tk.Label(ctrl_row, text="Deselect All",
+                             font=("Segoe UI", 8), fg="#E05555",
+                             bg="#FFFFFF", cursor="hand2")
+        desel_lbl.pack(side="right")
+        desel_lbl.bind("<Button-1>", lambda e: _desel_all())
+
+        tk.Label(ctrl_row, text=" · ",
+                 font=("Segoe UI", 8), fg="#8A9BB0",
+                 bg="#FFFFFF").pack(side="right")
+
+        sel_lbl = tk.Label(ctrl_row, text="Select All",
+                           font=("Segoe UI", 8), fg="#5BBF3E",
+                           bg="#FFFFFF", cursor="hand2")
+        sel_lbl.pack(side="right")
+        sel_lbl.bind("<Button-1>", lambda e: _sel_all())
+
+        tk.Frame(tab_body, bg="#E8ECF2", height=1).pack(
+            fill="x", padx=16, pady=(0, 6))
+        
+        # Remove all previously registered traces
+        for (v, tid) in getattr(dlg, '_tab_traces', []):
+            try:
+                v.trace_remove("write", tid)
+            except Exception:
+                pass
+        dlg._tab_traces = []
+
+        for idx, (tab_key, tab_label) in enumerate(_ALL_TABS):
+            card_bg = "#FFFFFF" if idx % 2 == 0 else "#FAFBFD"
+
+            # Ensure BooleanVar exists (needed for newly added roles)
+            if orig not in check_vars.get(tab_key, {}):
+                check_vars.setdefault(tab_key, {})[orig] = tk.BooleanVar(value=False)
+            var = check_vars[tab_key][orig]
+
+            card = tk.Frame(tab_body, bg=card_bg,
+                            highlightbackground="#E8ECF2",
+                            highlightthickness=1, height=52)
+            card.pack(fill="x", padx=16, pady=3)
+            card.pack_propagate(False)
+
+            acc = tk.Frame(card, bg="#5BBF3E", width=4)
+
+            def _upd(v=var, a=acc):
+                # Guard: skip if widget was destroyed
+                try:
+                    if not a.winfo_exists():
+                        return
+                    if v.get():
+                        a.place(x=0, y=0, width=4, relheight=1.0)
+                        a.lift()
+                    else:
+                        a.place_forget()
+                except Exception:
+                    pass
+
+            trace_id = var.trace_add("write", lambda *_, fn=_upd: fn())
+            # Store trace for cleanup on next rebuild
+            dlg._tab_traces.append((var, trace_id))
+            _upd()
+
+            icon_txt = tab_label.split("  ")[0] if "  " in tab_label else "📄"
+            name_txt = (tab_label.split("  ", 1)[1]
+                        if "  " in tab_label else tab_label)
+
+            left = tk.Frame(card, bg=card_bg)
+            left.pack(side="left", fill="y", padx=(14, 0))
+            tk.Label(left, text=icon_txt,
+                     font=("Segoe UI Emoji", 14),
+                     fg="#5BBF3E", bg=card_bg
+                     ).pack(side="left", padx=(0, 10), pady=14)
+            tk.Label(left, text=name_txt,
+                     font=("Segoe UI", 10, "bold"),
+                     fg="#1A2F47", bg=card_bg, anchor="w"
+                     ).pack(side="left", anchor="center")
+
+            cb_frame = tk.Frame(card, bg=card_bg, padx=16)
+            cb_frame.pack(side="right", fill="y")
+            tk.Checkbutton(
+                cb_frame, variable=var,
+                bg=card_bg, activebackground=card_bg,
+                selectcolor="#D6EFD0",
+                relief="flat", bd=0, cursor="hand2",
+                padx=6, pady=6
+            ).pack(anchor="center", expand=True)
+
+            all_cw = [card, left] + list(left.winfo_children())
+
+            def _hov_on(e=None, wl=all_cw):
+                for w in wl:
+                    try: w.config(bg="#EEF7EC")
+                    except Exception: pass
+
+            def _hov_off(e=None, wl=all_cw, bg=card_bg):
+                for w in wl:
+                    try: w.config(bg=bg)
+                    except Exception: pass
+
+            def _toggle(e=None, v=var):
+                v.set(not v.get())
+
+            for w in all_cw:
+                w.bind("<Enter>",    _hov_on)
+                w.bind("<Leave>",    _hov_off)
+                w.bind("<Button-1>", _toggle)
+
+        tk.Frame(tab_body, bg="#FFFFFF", height=12).pack()
+        tab_canvas.yview_moveto(0)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  BUILD / REBUILD SIDEBAR PILLS
+    # ══════════════════════════════════════════════════════════════════════
+    def _rebuild_pills():
+        for w in pills_frame.winfo_children():
+            w.destroy()
+
+        active_exists = any(
+            rs["original"] == selected_orig.get() and not rs["deleted"]
+            for rs in roles_state)
+        if not active_exists and roles_state:
+            # Select first non-deleted
+            first = next(
+                (rs for rs in roles_state if not rs["deleted"]), None)
+            selected_orig.set(first["original"] if first else "")
+
+        for rs in roles_state:
+            if rs["deleted"]:
+                continue
+
+            orig   = rs["original"]
+            is_act = (selected_orig.get() == orig)
+            p_bg   = "#162438" if is_act else "#0B1622"
+            t_fg   = "#EEF3FA" if is_act else "#7A94B0"
+
+            pill = tk.Frame(pills_frame, bg=p_bg, height=46, cursor="hand2")
+            pill.pack(fill="x", padx=8, pady=1)
+            pill.pack_propagate(False)
+
+            stripe = tk.Frame(pill, bg="#5BBF3E", width=3)
+            if is_act:
+                stripe.place(x=0, y=0, width=3, relheight=1.0)
+
+            tk.Label(pill, text="👤",
+                     font=("Segoe UI Emoji", 11),
+                     fg="#5BBF3E" if is_act else "#4A6480",
+                     bg=p_bg, width=3).pack(side="left", padx=(10, 4))
+
+            name_var = tk.StringVar(value=rs["current"])
+            name_lbl = tk.Label(
+                pill, textvariable=name_var,
+                font=("Segoe UI", 9, "bold") if is_act else ("Segoe UI", 9),
+                fg=t_fg, bg=p_bg, anchor="w",
+                width=13, wraplength=0) 
+
+            # Delete icon — pack RIGHT before name expands
+            del_ico = tk.Label(pill, text="🗑",
+                               font=("Segoe UI Emoji", 10),
+                               fg="#663333", bg=p_bg,
+                               cursor="hand2", padx=4)
+            del_ico.pack(side="right", padx=(0, 2))
+
+            # Rename icon — pack RIGHT before name expands
+            ren_ico = tk.Label(pill, text="✎",
+                               font=("Segoe UI", 11),
+                               fg="#2D4F7A", bg=p_bg,
+                               cursor="hand2", padx=4)
+            ren_ico.pack(side="right")
+
+            # Name label last — now it only fills what's left
+            name_lbl.pack(side="left", fill="x", expand=True)
+
+            # Activate on click
+            def _activate(e=None, o=orig):
+                selected_orig.set(o)
+                _rebuild_pills()
+                _refresh_right()
+
+            def _p_enter(e=None, p=pill, n=name_lbl, o=orig):
+                if selected_orig.get() != o:
+                    for w in (p, n): w.config(bg="#131D2D")
+
+            def _p_leave(e=None, p=pill, n=name_lbl, o=orig):
+                if selected_orig.get() != o:
+                    for w in (p, n): w.config(bg="#0B1622")
+
+            for w in (pill, name_lbl):
+                w.bind("<Button-1>", _activate)
+                w.bind("<Enter>",    _p_enter)
+                w.bind("<Leave>",    _p_leave)
+
+            # ── Rename popover ────────────────────────────────────────────
+            def _open_rename(e=None, rs_ref=rs, nv=name_var, p=pill):
+                pop = tk.Toplevel(dlg)
+                pop.overrideredirect(True)
+                pop.configure(bg="#1A2F47")
+                pop.grab_set()
+                px = p.winfo_rootx()
+                py = p.winfo_rooty() + p.winfo_height() + 4
+                pop.geometry(f"230x46+{px}+{py}")
+
+                inner = tk.Frame(pop, bg="#1A2F47",
+                                 highlightbackground="#2D5F8A",
+                                 highlightthickness=1)
+                inner.pack(fill="both", expand=True)
+
+                ent_var = tk.StringVar(value=rs_ref["current"])
+                ent = tk.Entry(inner, textvariable=ent_var,
+                               font=("Segoe UI", 10),
+                               fg="#EEF3FA", bg="#0B1622",
+                               relief="flat", bd=6,
+                               insertbackground="#5BBF3E")
+                ent.pack(side="left", fill="x", expand=True, padx=(6, 0))
+                ent.focus_set()
+                ent.select_range(0, "end")
+
+                def _apply(e=None):
+                    new_name = ent_var.get().strip()
+                    if new_name:
+                        rs_ref["current"] = new_name
+                        nv.set(new_name)
+                        if selected_orig.get() == rs_ref["original"]:
+                            right_title_lbl.config(text=new_name)
+                            hint_lbl.config(
+                                text=f'Tabs visible to  "{new_name}"  role:')
+                    pop.destroy()
+
+                ok_lbl = tk.Label(inner, text="✔",
+                                  font=("Segoe UI", 11, "bold"),
+                                  fg="#5BBF3E", bg="#1A2F47",
+                                  cursor="hand2", padx=8)
+                ok_lbl.pack(side="right")
+                ok_lbl.bind("<Button-1>", _apply)
+                ent.bind("<Return>",  _apply)
+                ent.bind("<Escape>",  lambda e: pop.destroy())
+
+            ren_ico.bind("<Button-1>", _open_rename)
+
+            # ── Mark deleted (no DB change yet) ───────────────────────────
+            def _mark_delete(e=None, rs_ref=rs, o=orig):
+                confirmed = messagebox.askyesno(
+                    "Delete Role",
+                    f'Remove role  "{rs_ref["current"]}"?\n\n'
+                    f'Users with this role will be reset to  "user"  on Save.',
+                    parent=dlg)
+                if not confirmed:
+                    return
+                rs_ref["deleted"] = True
+                # If it was selected, move selection to first available
+                if selected_orig.get() == o:
+                    first = next(
+                        (r for r in roles_state if not r["deleted"]), None)
+                    selected_orig.set(first["original"] if first else "")
+                _rebuild_pills()
+                _refresh_right()
+
+            del_ico.bind("<Button-1>", _mark_delete)
+
+    # ── Add Role handler ──────────────────────────────────────────────────
+    def _add_role(e=None):
+        # Inline popover below the Add label
+        pop = tk.Toplevel(dlg)
+        pop.overrideredirect(True)
+        pop.configure(bg="#1A2F47")
+        pop.grab_set()
+        px = add_lbl.winfo_rootx()
+        py = add_lbl.winfo_rooty() + add_lbl.winfo_height() + 4
+        pop.geometry(f"230x46+{px}+{py}")
+
+        inner = tk.Frame(pop, bg="#1A2F47",
+                         highlightbackground="#2D5F8A",
+                         highlightthickness=1)
+        inner.pack(fill="both", expand=True)
+
+        ent_var = tk.StringVar()
+        ent = tk.Entry(inner, textvariable=ent_var,
+                       font=("Segoe UI", 10),
+                       fg="#EEF3FA", bg="#0B1622",
+                       relief="flat", bd=6,
+                       insertbackground="#5BBF3E",
+                       width=18)
+        ent.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ent.focus_set()
+
+        def _confirm_add(e=None):
+            name = ent_var.get().strip().lower()
+            pop.destroy()
+            if not name:
+                return
+            # Check duplicate
+            existing = [rs["current"].lower() for rs in roles_state
+                        if not rs["deleted"]]
+            if name in existing:
+                messagebox.showwarning("Duplicate",
+                                       f'Role "{name}" already exists.',
+                                       parent=dlg)
+                return
+            # Add to working state with original=None (new)
+            new_rs = {"original": None, "current": name, "deleted": False}
+            roles_state.append(new_rs)
+            # Pre-create BooleanVars for new role
+            for tk_key, _ in _ALL_TABS:
+                check_vars.setdefault(tk_key, {})[None] = tk.BooleanVar(value=False)
+            # Since multiple new roles would all share original=None,
+            # use a unique sentinel — the index
+            sentinel = f"__new_{len(roles_state)}__"
+            new_rs["original"] = sentinel
+            for tk_key, _ in _ALL_TABS:
+                check_vars.setdefault(tk_key, {})[sentinel] = tk.BooleanVar(value=False)
+            selected_orig.set(sentinel)
+            _rebuild_pills()
+            _refresh_right()
+
+        ok_lbl = tk.Label(inner, text="✔",
+                          font=("Segoe UI", 11, "bold"),
+                          fg="#5BBF3E", bg="#1A2F47",
+                          cursor="hand2", padx=8)
+        ok_lbl.pack(side="right")
+        ok_lbl.bind("<Button-1>", _confirm_add)
+        ent.bind("<Return>",  _confirm_add)
+        ent.bind("<Escape>",  lambda e: pop.destroy())
+
+    add_lbl.bind("<Button-1>", _add_role)
+
+    # Initial render
+    _rebuild_pills()
+    _refresh_right()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1055,6 +1756,12 @@ def _build_accounts_panel(self, parent):
                   text_color=_TXT_SOFT, font=("Segoe UI", 9),
                   border_width=1, border_color=_BORDER_MID,
                   ).pack(side="right", padx=(0, 6))
+    ctk.CTkButton(toolbar, text="⚙  Role Tabs",
+                  command=lambda: _open_role_tabs_dialog(self),
+                  width=100, height=30, corner_radius=6,
+                  fg_color=_NAVY_MID, hover_color=_NAVY_LIGHT,
+                  text_color=_WHITE, font=("Segoe UI", 9, "bold"),
+                  ).pack(side="right", padx=(0, 6))
 
     # ── Search bar ────────────────────────────────────────────────────────
     sb_row = tk.Frame(frame, bg=_PAGE_BG)
@@ -1224,4 +1931,7 @@ def _build_accounts_panel(self, parent):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def attach(cls):
-    cls._build_accounts_panel = _build_accounts_panel
+    cls._build_accounts_panel  = _build_accounts_panel
+    cls._load_role_tab_config  = _load_role_tab_config
+    cls._save_role_tab_config  = _save_role_tab_config
+    cls._load_all_roles        = _load_all_roles

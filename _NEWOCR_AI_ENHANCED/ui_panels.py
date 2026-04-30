@@ -364,25 +364,31 @@ def _build_left(self, p):
     self._active_tab_key = tk.StringVar(value="dashboard")
 
     # ── Role-based nav visibility ─────────────────────────────────────
-    # Define which tabs each role can see
-    _ROLE_TABS = {
-        "super admin": {
-            "dashboard",
-            "lookup_summary", "lu_analysis",
-            "logs", "accounts", "approvals",
-        },
-        "account officer": {
-            "cibi", "extract", "analysis", "summary",
-        },
-        "credit risk officer": {
-            "lookup", "lookup_summary", "lu_analysis",
-        },
-        "user": {
-            "cibi",
-        },
+    _ROLE_TABS_FALLBACK = {
+        "super admin":         {"dashboard","lookup_summary","lu_analysis","logs","accounts","approvals"},
+        "account officer":     {"cibi","extract","analysis","summary"},
+        "credit risk officer": {"lookup","lookup_summary","lu_analysis"},
+        "user":                {"cibi"},
     }
-    # Fall back to "user" permissions if role is unrecognised
-    _allowed = _ROLE_TABS.get(_user_role, _ROLE_TABS["user"])
+    # For unknown/new roles fall back to minimal access, not "user" preset
+    _allowed = _ROLE_TABS_FALLBACK.get(_user_role, {"cibi"})
+
+    try:
+        _rtc_conn = self.get_conn()
+        if _rtc_conn:
+            _rtc_cur = _rtc_conn.cursor()
+            _rtc_cur.execute(
+                "SELECT tab_access FROM role_tab_config WHERE role = %s",
+                (_user_role,)
+            )
+            _rtc_row = _rtc_cur.fetchone()
+            _rtc_cur.close()
+            if _rtc_row and _rtc_row[0]:
+                _allowed = set(_rtc_row[0])
+            # If role exists in DB but has no role_tab_config row yet,
+            # keep the fallback (cibi only) — safe minimum access
+    except Exception:
+        pass   # silently keep the fallback
 
     nav_container = tk.Frame(sidebar, bg=_SB_BG)
     nav_container.pack(fill="x", padx=8)

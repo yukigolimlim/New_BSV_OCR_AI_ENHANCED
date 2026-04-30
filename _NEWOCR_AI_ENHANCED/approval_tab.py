@@ -724,7 +724,10 @@ def _open_review_popup(self, row: dict):
         val_box = tk.Frame(col, bg=card_bg,
                            highlightbackground=accent, highlightthickness=1)
         val_box.pack(fill="x")
-        tk.Label(val_box, text=row.get(val_key, "—"),
+        display_val = row.get(val_key, "—")
+        if val_key == "new_value" and display_val == "__DROP_COLUMN__":
+            display_val = "⚠  DROP COLUMN (permanent schema change)"
+        tk.Label(val_box, text=display_val,
                  font=_F(self, 10, "bold"), fg=txt_col, bg=card_bg,
                  wraplength=230, justify="left",
                  padx=12, pady=12, anchor="w").pack(fill="x")
@@ -938,17 +941,35 @@ def _process_request(self, row: dict, decision: str, reason: str, popup: tk.Topl
 def _apply_edit(cur, row: dict):
     """
     Apply the approved edit to the applicants table.
-    Uses applicant_id (record_id) and col_name (field_name) from edit_requests.
+    Handles both regular cell edits and column deletion requests.
     """
     field_name = (row.get("field_name") or "").strip()
+    new_value  = row.get("new_value", "")
+
+    # ── Column deletion request ────────────────────────────────────────
+    if new_value == "__DROP_COLUMN__":
+        # Validate col name is safe (only a-z, 0-9, underscore)
+        import re as _re
+        if not field_name or not _re.match(r'^[a-z0-9_]+$', field_name):
+            raise ValueError(f"Unsafe column name for DROP: '{field_name}'")
+        # Check the column actually exists before trying to drop it
+        cur.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='applicants' AND column_name=%s
+        """, (field_name,))
+        if not cur.fetchone():
+            raise ValueError(
+                f"Column '{field_name}' does not exist in applicants table.")
+        cur.execute(f"ALTER TABLE applicants DROP COLUMN {field_name}")
+        return
+
+    # ── Regular cell edit ──────────────────────────────────────────────
     if not field_name or not field_name.replace("_", "").isalnum():
         raise ValueError(f"Invalid field name: '{field_name}'")
 
     applicant_id = row.get("record_id")
-    if not applicant_id:
+    if not applicant_id or applicant_id == "—":
         raise ValueError("Missing applicant_id — cannot apply edit.")
-
-    new_value = row.get("new_value")
 
     sql = f'UPDATE applicants SET "{field_name}" = %s WHERE id = %s'
     cur.execute(sql, (new_value, int(applicant_id)))

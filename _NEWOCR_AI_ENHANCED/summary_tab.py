@@ -1675,6 +1675,14 @@ def _build_lookup_summary_panel(self, parent):
     hover_color="#7A2020", text_color="#FF8A80",
     font=FF(8, "bold"), border_width=0)
     self._sum_adv_delete_btn.pack(side="left", padx=(4, 0))
+    
+    self._sum_del_col_btn = ctk.CTkButton(
+    btn_block, text="🗑  Delete Col", command=lambda: _delete_custom_column(self),
+    width=90, height=30, corner_radius=6, fg_color="#4A1A3A",
+    hover_color="#6A2050", text_color="#FFB0D8",
+    font=FF(8, "bold"), border_width=0)
+    self._sum_del_col_btn.pack(side="left", padx=(4, 0))
+
     self._sum_add_doc_btn = ctk.CTkButton(
     btn_block, text="📄  Add Doc",
     command=lambda: _open_add_doc_dialog(self),
@@ -2384,6 +2392,23 @@ def _db_submit_edit_request(row_id: int, applicant_name: str,
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (row_id, applicant_name, col_name,
              old_value, new_value, reason, requested_by)
+        )
+        conn.commit()
+        cur.close()
+def _db_submit_delete_column_request(col_name: str, reason: str,
+                                      requested_by: str):
+    """Submit a column deletion request for admin approval."""
+    with _db_connect() as conn:
+        cur = conn.cursor()
+        # Use 0 as a sentinel applicant_id for schema-level operations
+        # (avoids NOT NULL constraint; 0 never matches a real applicant row)
+        cur.execute(
+            "INSERT INTO edit_requests "
+            "(applicant_id, applicant_name, col_name, old_value, new_value, "
+            " reason, requested_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (0, "[COLUMN DELETION]", col_name,
+             col_name, "__DROP_COLUMN__", reason, requested_by)
         )
         conn.commit()
         cur.close()
@@ -3163,6 +3188,154 @@ def _delete_row(self, row_id: int):
         return
     _db_delete_row(row_id)
     _refresh_summary(self)
+
+def _delete_custom_column(self):
+    try:
+        custom_cols = _db_get_custom_columns()
+    except Exception as exc:
+        messagebox.showerror("Delete Column", f"Could not load custom columns:\n{exc}")
+        return
+
+    if not custom_cols:
+        messagebox.showinfo("Delete Column", "No custom columns found to delete.")
+        return
+
+    win = tk.Toplevel(self)
+    win.title("Delete Custom Column")
+    win.configure(bg=CARD_WHITE)
+    win.resizable(False, False)
+    win.grab_set()
+
+    p_x = self.winfo_rootx(); p_y = self.winfo_rooty()
+    p_w = self.winfo_width(); p_h = self.winfo_height()
+    w_w, w_h = 520, 380
+    win.geometry(f"{w_w}x{w_h}+{p_x + (p_w - w_w)//2}+{p_y + (p_h - w_h)//2}")
+
+    hdr = tk.Frame(win, bg=NAVY_DEEP)
+    hdr.pack(fill="x")
+    tk.Label(hdr, text="🗑  Delete Custom Column",
+             font=("Segoe UI", 12, "bold"), fg=WHITE, bg=NAVY_DEEP,
+             padx=16, pady=10).pack(side="left")
+
+    body = tk.Frame(win, bg=CARD_WHITE)
+    body.pack(fill="both", expand=True, padx=20, pady=16)
+
+    tk.Label(body,
+             text="Select a custom column to permanently remove from the database.\n"
+                  "This will DROP the column and all its data from every row.",
+             font=("Segoe UI", 9), fg=TXT_MUTED, bg=CARD_WHITE,
+             justify="left", wraplength=460).pack(anchor="w", pady=(0, 12))
+
+    col_display_map = {
+        f"{display_label}  ({db_col})": db_col
+        for db_col, display_label, _ in custom_cols
+    }
+    choice_var = tk.StringVar(value=list(col_display_map.keys())[0])
+
+    col_menu = ttk.Combobox(
+        body,
+        textvariable=choice_var,
+        values=list(col_display_map.keys()),
+        state="readonly",
+        font=("Segoe UI", 9),
+        width=55)
+    col_menu.current(0)
+    col_menu.pack(fill="x", pady=(0, 16))
+
+    preview_var = tk.StringVar(value="")
+    tk.Label(body, textvariable=preview_var,
+             font=("Segoe UI", 9, "bold"),
+             fg=ACCENT_RED, bg=CARD_WHITE, anchor="w").pack(fill="x")
+
+    def _update_preview(*_):
+        db_col = col_display_map.get(choice_var.get(), "")
+        if not db_col:
+            return
+        try:
+            with _db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    f"SELECT COUNT(*) FROM applicants "
+                    f"WHERE {db_col} IS NOT NULL AND TRIM({db_col}::text) != ''")
+                count = cur.fetchone()[0]
+                cur.close()
+            preview_var.set(
+                f"⚠  {count} row(s) have data in this column — all will be lost.")
+        except Exception as exc:
+            preview_var.set(f"Error: {exc}")
+
+    col_menu.bind("<<ComboboxSelected>>", _update_preview)
+    _update_preview()
+
+    btn_bar = tk.Frame(win, bg=CARD_WHITE,
+                       highlightbackground=BORDER_MID, highlightthickness=1)
+    btn_bar.pack(fill="x", padx=20, pady=(12, 14))
+
+    def _on_delete():
+        db_col = col_display_map.get(choice_var.get(), "")
+        if not db_col:
+            return
+
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        win.destroy()
+
+        if not messagebox.askyesno(
+                "Confirm Delete Column",
+                f"Permanently DROP column:\n\n  {db_col}\n\n"
+                f"This cannot be undone. Continue?",
+                icon="warning"):
+            return
+
+        reason = _ask_edit_reason(self, f"Delete column: {db_col}")
+        if reason is None:
+            return
+
+        requested_by = getattr(self, "_current_username", "") or "unknown"
+
+        def _submit_worker():
+            try:
+                _db_submit_delete_column_request(db_col, reason, requested_by)
+                def _done():
+                    win.destroy()
+                    if hasattr(self, "_sum_save_status_lbl"):
+                        self._sum_save_status_lbl.config(
+                            text="Column deletion submitted for approval",
+                            fg=ACCENT_GOLD)
+                        try:
+                            if getattr(self, "_sum_save_status_after", None):
+                                self.after_cancel(self._sum_save_status_after)
+                        except Exception:
+                            pass
+                        self._sum_save_status_after = self.after(
+                            3000, lambda: self._sum_save_status_lbl.config(text=""))
+                    _log_action(self, "delete_col_requested",
+                                f"Column '{db_col}' deletion submitted for approval "
+                                f"reason='{reason}'")
+                _summary_ui_dispatch(self, _done)
+            except Exception as exc:
+                err = str(exc)
+                _summary_ui_dispatch(self,
+                    lambda: messagebox.showerror("Submit Failed", err))
+
+        threading.Thread(target=_submit_worker, daemon=True).start()
+
+    tk.Button(btn_bar, text="✕  Cancel",
+              font=("Segoe UI", 9, "bold"), fg=TXT_SOFT, bg="#F0F0F0",
+              activebackground="#E0E0E0", relief="flat", bd=0,
+              padx=14, pady=7, cursor="hand2",
+              command=win.destroy).pack(side="right", padx=(4, 8), pady=8)
+
+    ctk.CTkButton(btn_bar, text="🗑  Delete Column",
+                  command=_on_delete,
+                  width=140, height=32, corner_radius=6,
+                  fg_color="#7A2020", hover_color="#9B2226",
+                  text_color=WHITE,
+                  font=FF(9, "bold")).pack(side="right", padx=(0, 4), pady=8)
+
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
 
 def _advanced_delete(self):
     DELETE_COLS = [
