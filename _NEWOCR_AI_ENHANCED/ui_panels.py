@@ -325,8 +325,6 @@ def _build_left(self, p):
             if _row:
                 if _row[0]:
                     _position = _row[0]
-                    if len(_position) > 22:
-                        _position = _position[:20] + "…"
                 if _row[1]:
                     _user_role = _row[1].strip().lower()
     except Exception:
@@ -350,7 +348,9 @@ def _build_left(self, p):
     self._position_sidebar_lbl = tk.Label(
         text_col, text=_position,
         font=F(7), fg=_SB_TXT_DIM, bg=_SB_BG,
-        anchor="w"
+        anchor="w",
+        wraplength=170,
+        justify="left"
     )
     self._position_sidebar_lbl.pack(anchor="w")
 
