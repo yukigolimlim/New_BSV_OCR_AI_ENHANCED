@@ -432,6 +432,7 @@ def _lu_rescore_all(self):
             is_high_industry=high_ind,
             is_medium_industry=medium_ind,
             product_matched_token=_pr_matched,
+            final_risk_label=label_val,
         )
     # Keep the clients dict in sync
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}

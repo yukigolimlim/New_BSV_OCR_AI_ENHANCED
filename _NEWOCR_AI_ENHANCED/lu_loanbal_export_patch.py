@@ -1138,6 +1138,7 @@ def _generate_loanbal_excel(
     document_title: str | None = None,
     client_sheet_title: str | None = None,
     client_sheet_subtitle_suffix: str = "",
+    include_total_amortized_cost: bool = True,
     export_scope_note: str | None = None,
     exported_by: str | None = None,
 ):
@@ -1316,6 +1317,8 @@ def _generate_loanbal_excel(
         ("Risk Label", "score_label", 12, "text"),
         ("Risk Reasoning", "risk_reasoning", 46, "text"),
     ]
+    if not include_total_amortized_cost:
+        cli_cols = [c for c in cli_cols if c[1] != "total_amortized_cost"]
 
     _cli_end = get_column_letter(len(cli_cols))
     ws2 = wb.create_sheet("Client Breakdown", 2)

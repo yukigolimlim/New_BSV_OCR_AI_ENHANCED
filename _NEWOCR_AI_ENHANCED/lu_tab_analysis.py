@@ -242,6 +242,7 @@ def _lu_apply_risk_overrides(self):
             is_high_industry=high_ind,
             is_medium_industry=medium_ind,
             product_matched_token=pr_matched,
+            final_risk_label=label_val,
         )
     all_data["clients"] = {r["client"]: r for r in all_data.get("general", [])}
     _lu_populate_client_dropdown(self)
@@ -788,6 +789,7 @@ def _lu_analysis_export_high_risk_sector_excel(self):
             document_title=doc_title,
             client_sheet_title="Risk Clients (High + Medium) — Individual Breakdown",
             client_sheet_subtitle_suffix="Subset: clients with HIGH or MEDIUM risk.",
+            include_total_amortized_cost=False,
             export_scope_note=(
                 "Analysis export — includes only clients with HIGH or MEDIUM risk. "
                 "Detailed rules follow on this sheet."

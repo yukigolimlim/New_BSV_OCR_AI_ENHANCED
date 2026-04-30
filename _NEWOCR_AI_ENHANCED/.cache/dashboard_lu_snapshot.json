@@ -1,54 +1,54 @@
 {
-  "clients": 494,
-  "high": 483,
+  "clients": 511,
+  "high": 0,
   "industries": 14,
-  "total_loan": 197940693.35,
-  "total_net": 27819104.710000012,
+  "total_loan": 205343012.64,
+  "total_net": 29964223.77000001,
   "series_loan": [
-    27607291.23999999,
-    44052671.59,
-    35505781.239999995,
-    6616698.040000001,
+    28450196.29999999,
+    45536723.39,
+    38748950.529999994,
+    6729918.720000001,
     8524081.270000001,
-    11285014.840000002,
-    6874359.8100000005,
+    12274621.400000002,
+    7603725.710000001,
     0.0,
     5919301.099999999,
-    14374833.360000001,
     17215074.3,
+    14374833.360000001,
     381331.1
   ],
   "series_net": [
-    11409.363668341703,
-    106800.48689320387,
-    67112.67641025642,
-    67661.96857142859,
+    11338.991039603956,
+    104843.09729729728,
+    64698.074047619055,
+    66022.6913888889,
     36054.64766666667,
-    77560.09625,
-    94524.40933333333,
-    108182.67545454545,
+    75021.53647058824,
+    162698.6405882353,
+    118699.39699999997,
     23199.388750000002,
-    134317.8383333333,
     84209.93428571429,
+    134317.8383333333,
     20311.22
   ],
   "industry_low": [
-    2,
-    2,
-    3,
-    0,
-    0,
-    1,
-    0
+    202,
+    111,
+    42,
+    36,
+    30,
+    17,
+    17
   ],
   "industry_high": [
-    197,
-    101,
-    36,
-    35,
-    30,
-    15,
-    15
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
   ],
   "industry_names": [
     "Household Use",
@@ -59,69 +59,7 @@
     "Accomodation and Food Services",
     "Others Service Activities"
   ],
-  "at_risk_names": [
-    "Household Use",
-    "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle",
-    "Real Estate Activities",
-    "Transportation and Storage",
-    "Agriculture, Forestry and Fishing",
-    "Accomodation and Food Services",
-    "Others Service Activities",
-    "Unknown Industry",
-    "Household Use, Real Estate Activities",
-    "Mining and Quarrying",
-    "Construction",
-    "Household Use, Agriculture, Forestry and Fishing"
-  ],
+  "at_risk_names": [],
   "top_sector": "Other",
-  "high_rows": [
-    {
-      "client": "MICHAEL JALIMAO PERIDO",
-      "industry": "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle",
-      "loan_balance": 38346.48,
-      "net_income": -33804.05
-    },
-    {
-      "client": "TUSCANO, ROSIE G.",
-      "industry": "Trading (Wholesale and Retail), Repair of Motor Vehicle and Motorcycle",
-      "loan_balance": 13060.3,
-      "net_income": 27.7
-    },
-    {
-      "client": "MALONG, PHILIP RAFAEL DETERALA",
-      "industry": "Agriculture, Forestry and Fishing",
-      "loan_balance": 100000.0,
-      "net_income": 154.11
-    },
-    {
-      "client": "ECO, GERRY VALEROS",
-      "industry": "Household Use",
-      "loan_balance": 88337.66,
-      "net_income": 589.5
-    },
-    {
-      "client": "RICARDO NOBLE OCAN JR.",
-      "industry": "Household Use",
-      "loan_balance": 206527.95,
-      "net_income": 680.19
-    },
-    {
-      "client": "Jacela, Marilyn Clacio",
-      "industry": "Household Use",
-      "loan_balance": 67706.61,
-      "net_income": 694.63
-    },
-    {
-      "client": "MARICEL PALMES PERCIL",
-      "industry": "Household Use",
-      "loan_balance": 60000.0,
-      "net_income": 826.45
-    },
-    {
-      "client": "VISORDE, ARLEN",
-      "industry": "Agriculture, Forestry and Fishing",
-      "loan_balance": 11250.29,
-      "net_income": 895.08
-    }
-  ]
+  "high_rows": []
 }

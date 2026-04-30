@@ -22,6 +22,7 @@ from decimal import Decimal
 from pathlib import Path
 from datetime import datetime
 import json
+import os
 
 try:
     import openpyxl
@@ -34,16 +35,34 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────
 _HIGH_RISK_INDUSTRIES = set()
 _MEDIUM_RISK_INDUSTRIES = set()
-_SETTINGS_PATH = Path(__file__).with_name("lu_risk_settings.json")
+
+
+def _risk_settings_paths() -> list[Path]:
+    """
+    Candidate settings paths, ordered by preference.
+    1) User-level app data (best persistence for packaged/runtime environments)
+    2) Module directory (backward-compatible fallback)
+    """
+    candidates: list[Path] = []
+    appdata = os.getenv("APPDATA", "").strip()
+    if appdata:
+        candidates.append(Path(appdata) / "DocExtractPro" / "lu_risk_settings.json")
+    else:
+        candidates.append(Path.home() / ".docextractpro" / "lu_risk_settings.json")
+    candidates.append(Path(__file__).with_name("lu_risk_settings.json"))
+    return candidates
 
 
 def _load_risk_settings() -> None:
     """Best-effort load of persisted risk settings from JSON."""
     global _HIGH_RISK_INDUSTRIES, _MEDIUM_RISK_INDUSTRIES, _PRODUCT_RISK_OVERRIDES, _EXPENSE_RISK_OVERRIDES
     try:
-        if not _SETTINGS_PATH.exists():
+        existing = [p for p in _risk_settings_paths() if p.exists()]
+        if not existing:
             return
-        data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8") or "{}")
+        # If multiple files exist (legacy + new path), prefer the most recently updated one.
+        src = max(existing, key=lambda p: p.stat().st_mtime)
+        data = json.loads(src.read_text(encoding="utf-8") or "{}")
         inds = data.get("high_risk_industries") or []
         if isinstance(inds, list):
             _HIGH_RISK_INDUSTRIES = set(str(x) for x in inds if str(x).strip())
@@ -63,16 +82,21 @@ def _load_risk_settings() -> None:
 
 def _save_risk_settings() -> None:
     """Best-effort persist of current risk settings to JSON."""
-    try:
-        payload = {
-            "high_risk_industries": sorted({str(x) for x in _HIGH_RISK_INDUSTRIES if str(x).strip()}),
-            "medium_risk_industries": sorted({str(x) for x in _MEDIUM_RISK_INDUSTRIES if str(x).strip()}),
-            "product_risk_overrides": get_product_risk_overrides(),
-            "expense_risk_overrides": get_expense_risk_overrides(),
-        }
-        _SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        return
+    payload = {
+        "high_risk_industries": sorted({str(x) for x in _HIGH_RISK_INDUSTRIES if str(x).strip()}),
+        "medium_risk_industries": sorted({str(x) for x in _MEDIUM_RISK_INDUSTRIES if str(x).strip()}),
+        "product_risk_overrides": get_product_risk_overrides(),
+        "expense_risk_overrides": get_expense_risk_overrides(),
+    }
+    wrote_any = False
+    for p in _risk_settings_paths():
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            wrote_any = True
+        except Exception:
+            continue
+    return wrote_any
 
 def set_high_risk_industries(industries):
     """Replace the high‑risk industry set with a new list."""
@@ -1267,6 +1291,7 @@ def _compute_risk_reasoning(
     is_high_industry: bool,
     is_medium_industry: bool = False,
     product_matched_token: str = "",
+    final_risk_label: str = "",
 ) -> str:
     """Human-readable explanation for why final risk is HIGH/MEDIUM/LOW."""
     if product_override == "HIGH":
@@ -1274,6 +1299,12 @@ def _compute_risk_reasoning(
         return (
             f"This client is HIGH RISK because the loan product includes '{detail}' "
             "(HIGH product override)."
+        )
+    if product_override in ("MEDIUM", "MODERATE"):
+        detail = (product_matched_token or product_name).strip()
+        return (
+            f"This client is MEDIUM RISK because the loan product includes '{detail}' "
+            "(MEDIUM product override)."
         )
     if product_override == "LOW":
         return (
@@ -1288,7 +1319,12 @@ def _compute_risk_reasoning(
         return f"This client is HIGH RISK because they are under the industry '{industry}'."
     if is_medium_industry:
         return f"This client is MEDIUM RISK because they are under the industry '{industry}'."
-    return "This client is LOW RISK because they do not fall in under any HIGH RISK category."
+    final = str(final_risk_label or "").strip().upper()
+    if final == "HIGH":
+        return "This client is HIGH RISK based on the current product/expense/industry rules."
+    if final in ("MEDIUM", "MODERATE"):
+        return "This client is MEDIUM RISK based on the current product/expense/industry rules."
+    return "This client is LOW RISK because they do not fall in under any HIGH or MEDIUM risk category."
 def _normalize_header_cell(val) -> str:
     """Normalize Excel header text (NBSP, unicode spaces, NFKC) for reliable matching."""
     if val is None:
@@ -1499,6 +1535,7 @@ def _row_to_client(row: tuple, cols: dict[str, int]) -> dict | None:
         is_high_industry=is_high_ind,
         is_medium_industry=is_medium_ind,
         product_matched_token=pr_matched,
+        final_risk_label=risk_label,
     )
     return rec
 
